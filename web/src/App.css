@@ -1354,6 +1354,161 @@ pre {
   line-height: 1.4;
 }
 
+/* Админ-страница: пользователи организации */
+.adminUsersPage {
+  min-height: 100vh;
+  background: var(--tg-bg, #0e1621);
+  color: var(--tg-text, #e6edf3);
+  padding: 20px 16px 48px;
+  box-sizing: border-box;
+}
+
+.adminUsersHeader {
+  max-width: 1100px;
+  margin: 0 auto 20px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  align-items: flex-start;
+}
+
+.adminUsersTitle {
+  margin: 0 0 6px;
+  font-size: 1.35rem;
+  font-weight: 700;
+}
+
+.adminUsersSub {
+  margin: 0;
+  font-size: 13px;
+  opacity: 0.85;
+}
+
+.adminUsersSub code {
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.adminUsersHint {
+  margin: 10px 0 0;
+  font-size: 12px;
+  opacity: 0.75;
+  max-width: 52rem;
+  line-height: 1.45;
+}
+
+.adminUsersBanner {
+  max-width: 1100px;
+  margin: 0 auto 16px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(255, 180, 100, 0.12);
+  border: 1px solid rgba(255, 200, 120, 0.25);
+  font-size: 13px;
+}
+
+.adminUsersCard {
+  max-width: 1100px;
+  margin: 0 auto 20px;
+  padding: 16px;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(0, 0, 0, 0.2);
+}
+
+.adminUsersCardTitle {
+  margin: 0 0 12px;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.adminUsersForm {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.adminUsersForm input,
+.adminUsersForm select {
+  min-width: 160px;
+  flex: 1;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(0, 0, 0, 0.25);
+  color: inherit;
+  font: inherit;
+  box-sizing: border-box;
+}
+
+.adminUsersForm button[type="submit"] {
+  padding: 8px 16px;
+  border-radius: 10px;
+  border: none;
+  background: rgba(100, 160, 255, 0.35);
+  color: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.adminUsersTableWrap {
+  max-width: 1100px;
+  margin: 0 auto;
+  overflow: auto;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(0, 0, 0, 0.15);
+}
+
+.adminUsersTable {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.adminUsersTable th,
+.adminUsersTable td {
+  padding: 10px 12px;
+  text-align: left;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  vertical-align: middle;
+}
+
+.adminUsersTable th {
+  font-weight: 600;
+  opacity: 0.9;
+  background: rgba(0, 0, 0, 0.25);
+}
+
+.adminUsersPwdMask {
+  opacity: 0.5;
+  margin-right: 8px;
+  letter-spacing: 1px;
+}
+
+.adminUsersPwdBtn {
+  font-size: 12px;
+}
+
+.adminUsersActions {
+  white-space: nowrap;
+}
+
+.adminUsersTable .chip.danger {
+  border-color: rgba(255, 120, 120, 0.45);
+  color: #ffb4b4;
+}
+
+.adminUsersTable .chip.danger:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.adminUsersEmpty {
+  padding: 16px;
+}
+
 @media (max-width: 1199px) {
   .layout.layout--info {
     grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);

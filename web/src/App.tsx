@@ -164,6 +164,13 @@ export default function App() {
   const [authError, setAuthError] = useState("");
   const [chatSearch, setChatSearch] = useState("");
   const [showCompanyCabinet, setShowCompanyCabinet] = useState(false);
+  const [showAdminUsersPage, setShowAdminUsersPage] = useState(false);
+  const [adminOrgName, setAdminOrgName] = useState("");
+  const [adminPanelMsg, setAdminPanelMsg] = useState("");
+  const [adminNewEmail, setAdminNewEmail] = useState("");
+  const [adminNewPassword, setAdminNewPassword] = useState("");
+  const [adminNewFullName, setAdminNewFullName] = useState("");
+  const [adminNewRole, setAdminNewRole] = useState<"owner" | "admin" | "manager" | "employee" | "guest">("employee");
   const [showUserCabinet, setShowUserCabinet] = useState(false);
   const [companyTab, setCompanyTab] = useState<"employees" | "invites" | "settings" | "admin">("employees");
   const [companyUserQuery, setCompanyUserQuery] = useState("");
@@ -1920,7 +1927,90 @@ export default function App() {
       token,
     );
     setCompanyActionMsg("Пользователь деактивирован");
+    if (showAdminUsersPage) setAdminPanelMsg("Пользователь деактивирован.");
     await loadUsers();
+  }
+
+  async function loadAdminOrganizationName() {
+    if (!token || !organizationId) return;
+    const data = await gql<{ organization: { id: string; name: string } }>(
+      `query($organizationId: ID!) { organization(organizationId: $organizationId) { id name } }`,
+      { organizationId },
+      token,
+    );
+    setAdminOrgName(data.organization.name);
+  }
+
+  function openAdminUsersPanel() {
+    if (!isCompanyAdmin) return;
+    setShowAdminUsersPage(true);
+    setAdminPanelMsg("");
+    void (async () => {
+      try {
+        await loadAdminOrganizationName();
+        await loadUsers();
+      } catch (e: unknown) {
+        setAdminPanelMsg(e instanceof Error ? e.message : String(e));
+      }
+    })();
+  }
+
+  async function adminPanelCreateUser(e: FormEvent) {
+    e.preventDefault();
+    if (!isCompanyAdmin || !token || !organizationId) return;
+    const em = adminNewEmail.trim().toLowerCase();
+    const pw = adminNewPassword.trim();
+    if (!em || pw.length < 8) {
+      setAdminPanelMsg("Укажите email и пароль не короче 8 символов.");
+      return;
+    }
+    setAdminPanelMsg("Создание…");
+    try {
+      await gql<{
+        createOrganizationUser: { id: string; email: string; role: string };
+      }>(
+        `mutation($input: CreateOrganizationUserInput!) {
+          createOrganizationUser(input: $input) { id email role department title }
+        }`,
+        {
+          input: {
+            organizationId,
+            email: em,
+            password: pw,
+            fullName: adminNewFullName.trim() || undefined,
+            role: adminNewRole,
+            department: undefined,
+          },
+        },
+        token,
+      );
+      setAdminNewEmail("");
+      setAdminNewPassword("");
+      setAdminNewFullName("");
+      setAdminPanelMsg(`Пользователь создан: ${em}`);
+      await loadUsers();
+    } catch (err: unknown) {
+      setAdminPanelMsg(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function adminPanelSetPassword(targetUserId: string) {
+    if (!isCompanyAdmin || !token || !organizationId) return;
+    const pw = window.prompt("Новый пароль пользователя (минимум 8 символов)?");
+    if (!pw || pw.length < 8) {
+      if (pw) setAdminPanelMsg("Пароль слишком короткий.");
+      return;
+    }
+    try {
+      await gql<{ setUserPassword: boolean }>(
+        `mutation($input: SetUserPasswordInput!) { setUserPassword(input: $input) }`,
+        { input: { organizationId, userId: targetUserId, password: pw } },
+        token,
+      );
+      setAdminPanelMsg("Пароль обновлён.");
+    } catch (err: unknown) {
+      setAdminPanelMsg(err instanceof Error ? err.message : String(err));
+    }
   }
 
   function openChatMenu(e: MouseEvent, key: string) {
@@ -2592,6 +2682,114 @@ export default function App() {
     );
   }
 
+  if (token && showAdminUsersPage && isCompanyAdmin) {
+    return (
+      <div className="adminUsersPage">
+        <header className="adminUsersHeader">
+          <button type="button" className="chip" onClick={() => setShowAdminUsersPage(false)}>
+            ← К мессенджеру
+          </button>
+          <div>
+            <h1 className="adminUsersTitle">Пользователи организации</h1>
+            <p className="adminUsersSub">
+              Компания: <strong>{adminOrgName || "…"}</strong> · ID: <code>{organizationId}</code>
+            </p>
+            <p className="adminUsersHint">
+              Пароли в системе хранятся только в виде хеша; открытый текст показать нельзя. Используйте «Задать пароль» для сброса.
+            </p>
+          </div>
+        </header>
+        {adminPanelMsg ? <div className="adminUsersBanner">{adminPanelMsg}</div> : null}
+        <section className="adminUsersCard">
+          <h2 className="adminUsersCardTitle">Добавить пользователя</h2>
+          <form className="adminUsersForm" onSubmit={(e) => void adminPanelCreateUser(e)}>
+            <input
+              type="email"
+              placeholder="Email (логин)"
+              value={adminNewEmail}
+              onChange={(e) => setAdminNewEmail(e.target.value)}
+              autoComplete="off"
+            />
+            <input
+              type="password"
+              placeholder="Пароль (мин. 8 символов)"
+              value={adminNewPassword}
+              onChange={(e) => setAdminNewPassword(e.target.value)}
+              autoComplete="new-password"
+            />
+            <input
+              type="text"
+              placeholder="Имя (необязательно)"
+              value={adminNewFullName}
+              onChange={(e) => setAdminNewFullName(e.target.value)}
+            />
+            <select value={adminNewRole} onChange={(e) => setAdminNewRole(e.target.value as typeof adminNewRole)}>
+              <option value="employee">employee</option>
+              <option value="manager">manager</option>
+              <option value="guest">guest</option>
+              <option value="admin">admin</option>
+              {viewerRole === "owner" ? <option value="owner">owner</option> : null}
+            </select>
+            <button type="submit">Создать</button>
+          </form>
+        </section>
+        <section className="adminUsersTableWrap">
+          <table className="adminUsersTable">
+            <thead>
+              <tr>
+                <th>Email (логин)</th>
+                <th>Роль</th>
+                <th>Отдел</th>
+                <th>Компания</th>
+                <th>Пароль</th>
+                <th />
+              </tr>
+            </thead>
+            <tbody>
+              {users.map((u) => {
+                const isSelf = u.id === userId;
+                const targetIsElevated = u.role === "owner" || u.role === "admin";
+                const adminCannotManage = viewerRole === "admin" && targetIsElevated;
+                return (
+                  <tr key={u.id}>
+                    <td>{u.email}</td>
+                    <td>{u.role ?? "—"}</td>
+                    <td>{u.department ?? "—"}</td>
+                    <td>{adminOrgName || "—"}</td>
+                    <td>
+                      <span className="adminUsersPwdMask">••••••••</span>
+                      <button
+                        type="button"
+                        className="chip adminUsersPwdBtn"
+                        disabled={adminCannotManage}
+                        title={adminCannotManage ? "Недостаточно прав (только owner)" : "Задать новый пароль"}
+                        onClick={() => void adminPanelSetPassword(u.id)}
+                      >
+                        Задать пароль
+                      </button>
+                    </td>
+                    <td className="adminUsersActions">
+                      <button
+                        type="button"
+                        className="chip danger"
+                        disabled={isSelf || adminCannotManage}
+                        title={isSelf ? "Нельзя деактивировать себя" : adminCannotManage ? "Только owner может удалить эту роль" : "Деактивировать"}
+                        onClick={() => void deactivateCompanyUser(u.id)}
+                      >
+                        Удалить
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          {users.length === 0 ? <div className="empty adminUsersEmpty">Нет активных пользователей. Нажмите «К мессенджеру», откройте меню ⋮ — при необходимости загрузите список из кабинета компании.</div> : null}
+        </section>
+      </div>
+    );
+  }
+
   return (
     <div className={`layout ${showRightPanel ? "layout--info" : ""} ${viewportW < 800 && mobileSidebarOpen ? "layout--sidebarOpen" : ""}`}>
       {viewportW < 800 && mobileSidebarOpen ? (
@@ -3002,6 +3200,19 @@ export default function App() {
                   >
                     Кабинет компании
                   </button>
+                  {isCompanyAdmin ? (
+                    <button
+                      type="button"
+                      className="moreMenuWideBtn"
+                      onClick={() => {
+                        openAdminUsersPanel();
+                        setMoreMenuOpen(false);
+                      }}
+                      disabled={!token || !organizationId}
+                    >
+                      Админ: пользователи
+                    </button>
+                  ) : null}
                   <button
                     type="button"
                     className="moreMenuWideBtn"
@@ -3456,6 +3667,40 @@ export default function App() {
 
               {companyTab === "employees" ? (
                 <div className="companyBody">
+                  {isCompanyAdmin ? (
+                    <div
+                      className="row"
+                      style={{
+                        marginBottom: 12,
+                        padding: "12px 14px",
+                        borderRadius: 12,
+                        background: "rgba(100, 160, 255, 0.1)",
+                        border: "1px solid rgba(100, 160, 255, 0.22)",
+                        flexWrap: "wrap",
+                        gap: 10,
+                        alignItems: "center",
+                      }}
+                    >
+                      <div style={{ flex: 1, minWidth: 200, fontSize: 13, lineHeight: 1.4 }}>
+                        <strong>Админ: пользователи</strong> — отдельная страница: таблица, создание учётной записи, сброс пароля, деактивация.
+                      </div>
+                      <button
+                        type="button"
+                        className="chip"
+                        onClick={() => {
+                          setShowCompanyCabinet(false);
+                          openAdminUsersPanel();
+                        }}
+                      >
+                        Открыть страницу
+                      </button>
+                    </div>
+                  ) : (
+                    <p style={{ fontSize: 12, opacity: 0.75, margin: "0 0 12px" }}>
+                      Раздел «Админ: пользователи» доступен только ролям <strong>owner</strong> и <strong>admin</strong>. Ваша роль:{" "}
+                      <strong>{viewerRole || "—"}</strong>.
+                    </p>
+                  )}
                   <div className="row">
                     <input
                       value={companyUserQuery}
@@ -4299,6 +4544,16 @@ export default function App() {
                 >
                   Кабинет компании
                 </button>
+                {isCompanyAdmin ? (
+                  <button
+                    type="button"
+                    className="moreMenuWideBtn"
+                    onClick={() => void openAdminUsersPanel()}
+                    disabled={!token || !organizationId}
+                  >
+                    Админ: пользователи
+                  </button>
+                ) : null}
                 <button
                   type="button"
                   className="moreMenuWideBtn"
