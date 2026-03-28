@@ -1,4 +1,4 @@
-import { RegisterOrganizationInput, LoginInput, RefreshInput, TwoFaVerifyInput, UpdateUserInput, InviteUserInput, CreateOrganizationUserInput, AcceptInviteInput, VerifyEmailInput, DeactivateUserInput, RevokeInviteInput, SetUserRoleInput, UpdateOrganizationSettingsInput, } from "./schemas.js";
+import { RegisterOrganizationInput, LoginInput, RefreshInput, TwoFaVerifyInput, UpdateUserInput, InviteUserInput, CreateOrganizationUserInput, AcceptInviteInput, VerifyEmailInput, SetUserPasswordInput, DeactivateUserInput, RevokeInviteInput, SetUserRoleInput, UpdateOrganizationSettingsInput, } from "./schemas.js";
 import { getCookieValue } from "../../web/cookies.js";
 function requireViewer(ctx) {
     if (!ctx?.viewer)
@@ -25,6 +25,12 @@ function mapUserWithMember(member) {
 }
 export const authResolvers = {
     Query: {
+        organization: async (_p, args, ctx) => {
+            const viewer = requireViewer(ctx);
+            if (viewer.organizationId !== args.organizationId)
+                throw new Error("Forbidden");
+            return ctx.authService.getOrganization(viewer, args.organizationId);
+        },
         users: async (_parent, args, ctx) => {
             const viewer = requireViewer(ctx);
             if (viewer.organizationId !== args.organizationId)
@@ -190,6 +196,16 @@ export const authResolvers = {
                 department: input.department,
             });
             return mapUserWithMember(member);
+        },
+        setUserPassword: async (_p, args, ctx) => {
+            const viewer = requireViewer(ctx);
+            const input = SetUserPasswordInput.parse(args.input);
+            if (input.organizationId !== viewer.organizationId)
+                throw new Error("Forbidden");
+            return ctx.authService.setUserPassword(viewer, {
+                userId: input.userId,
+                password: input.password,
+            });
         },
         acceptInvite: async (_p, args, ctx) => {
             const input = AcceptInviteInput.parse(args.input);

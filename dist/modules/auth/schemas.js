@@ -59,6 +59,11 @@ export const VerifyEmailInput = z.object({
     organizationId: z.string().min(1),
     token: z.string().min(10),
 });
+export const SetUserPasswordInput = z.object({
+    organizationId: z.string().min(1),
+    userId: z.string().min(1),
+    password: z.string().min(8).max(200),
+});
 export const DeactivateUserInput = z.object({
     organizationId: z.string().min(1),
     userId: z.string().min(1),

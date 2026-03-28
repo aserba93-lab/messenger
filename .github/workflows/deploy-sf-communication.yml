@@ -1,0 +1,34 @@
+# Автодеплой на VPS при push в ветку main.
+# Настройка один раз (см. комментарии внизу файла в ответе ассистента или в репозитории GitHub → Settings → Secrets).
+name: Deploy production
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          script_stop: true
+          script: |
+            set -e
+            cd /var/www/messenger
+            git fetch origin
+            git pull --ff-only origin main
+            npm ci
+            npm run build
+            npx prisma migrate deploy
+            npx prisma generate
+            cd /var/www/messenger/web
+            npm ci
+            npm run build
+            sudo systemctl restart messenger
+            sudo systemctl reload nginx

@@ -227,6 +227,36 @@ export class AuthRepository {
             },
         });
     }
+    async getOrganizationById(organizationId) {
+        return prisma.organization.findUnique({ where: { id: organizationId } });
+    }
+    async updateUserPasswordHash(params) {
+        return prisma.$transaction(async (tx) => {
+            const member = await tx.organizationMember.findUnique({
+                where: { organizationId_userId: { organizationId: params.organizationId, userId: params.userId } },
+            });
+            if (!member || member.deactivatedAt)
+                throw new Error("Not a member");
+            await tx.user.update({
+                where: { id: params.userId },
+                data: {
+                    passwordHash: params.passwordHash,
+                    failedLoginAttempts: 0,
+                    lockedUntil: null,
+                },
+            });
+            await tx.auditLog.create({
+                data: {
+                    organizationId: params.organizationId,
+                    actorUserId: params.actorUserId,
+                    action: "PASSWORD_RESET_BY_ADMIN",
+                    entityType: "User",
+                    entityId: params.userId,
+                    metadata: {},
+                },
+            });
+        });
+    }
     async listUsers(params) {
         // Fetch memberships joined with user profile.
         const memberships = await prisma.organizationMember.findMany({

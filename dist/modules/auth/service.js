@@ -56,6 +56,20 @@ export class AuthService {
             status: params.status,
         });
     }
+    async getOrganization(viewer, organizationId) {
+        if (viewer.organizationId !== organizationId)
+            throw new Error("Forbidden");
+        const org = await this.repo.getOrganizationById(organizationId);
+        if (!org)
+            throw new Error("Not found");
+        return {
+            id: org.id,
+            name: org.name,
+            domain: org.domain,
+            logoUrl: org.logoUrl,
+            settings: org.settings,
+        };
+    }
     async getMe(viewer) {
         const member = await this.repo.getUserInOrganization({ organizationId: viewer.organizationId, userId: viewer.userId });
         if (!member)
@@ -139,6 +153,26 @@ export class AuthService {
             role: input.role ?? "employee",
             department: input.department ?? null,
         });
+    }
+    async setUserPassword(viewer, input) {
+        if (viewer.role !== "owner" && viewer.role !== "admin")
+            throw new Error("Forbidden");
+        const target = await this.repo.getUserInOrganization({ organizationId: viewer.organizationId, userId: input.userId });
+        if (!target || target.deactivatedAt)
+            throw new Error("Not a member");
+        if (viewer.role === "admin") {
+            if (target.role === "owner" || target.role === "admin") {
+                throw new Error("Forbidden");
+            }
+        }
+        const passwordHash = await hashPassword(input.password);
+        await this.repo.updateUserPasswordHash({
+            organizationId: viewer.organizationId,
+            userId: input.userId,
+            passwordHash,
+            actorUserId: viewer.userId,
+        });
+        return true;
     }
     async revokeInvite(viewer, input) {
         if (viewer.role !== "owner" && viewer.role !== "admin")

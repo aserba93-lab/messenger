@@ -50,6 +50,7 @@ export const typeDefs = /* GraphQL */ `
 
   type Query {
     health: String!
+    organization(organizationId: ID!): Organization!
     users(organizationId: ID!, role: OrgRole, department: String, status: PresenceStatus): [User!]!
     organizationInvites(organizationId: ID!, role: OrgRole, status: InviteStatus, query: String, limit: Int = 50, offset: Int = 0): [Invite!]!
     me: User
@@ -97,6 +98,7 @@ export const typeDefs = /* GraphQL */ `
     updateUser(input: UpdateUserInput!): User!
     inviteUser(input: InviteUserInput!): Invite!
     createOrganizationUser(input: CreateOrganizationUserInput!): User!
+    setUserPassword(input: SetUserPasswordInput!): Boolean!
     revokeInvite(input: RevokeInviteInput!): Boolean!
     deactivateUser(input: DeactivateUserInput!): Boolean!
     setUserRole(input: SetUserRoleInput!): User!
@@ -453,6 +455,12 @@ export const typeDefs = /* GraphQL */ `
   input VerifyEmailInput {
     organizationId: ID!
     token: String!
+  }
+
+  input SetUserPasswordInput {
+    organizationId: ID!
+    userId: ID!
+    password: String!
   }
 
   input DeactivateUserInput {
