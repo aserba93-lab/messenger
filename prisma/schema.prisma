@@ -1,0 +1,482 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+generator client_js {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum MemberRole {
+  owner
+  admin
+  member
+  guest
+}
+
+enum PresenceStatus {
+  online
+  offline
+  away
+  dnd
+}
+
+enum ChannelType {
+  public
+  private
+  broadcast
+}
+
+enum MessageType {
+  text
+  file
+  voice
+  system
+}
+
+enum FileAvStatus {
+  pending
+  clean
+  infected
+  error
+}
+
+model User {
+  id                 String   @id @default(cuid())
+  email              String   @unique
+  passwordHash       String
+  firstName          String?
+  lastName           String?
+  avatarUrl          String?
+  status             PresenceStatus @default(offline)
+  lastSeen           DateTime?
+
+  emailVerifiedAt    DateTime?
+  failedLoginAttempts Int?    @default(0)
+  lockedUntil        DateTime?
+
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  organizationMembers OrganizationMember[]
+  workspaceMembers    WorkspaceMember[]
+  channelMembers      ChannelMember[]
+  groupChatMembers    GroupChatMember[]
+  directChatMembers   DirectChatMember[]
+
+  authoredMessages    Message[] @relation("MessageAuthor")
+  reactions           Reaction[]
+
+  refreshSessions     RefreshSession[]
+  twoFactor           TwoFactor?
+  backupCodes         TwoFactorBackupCode[]
+  emailVerifyTokens   EmailVerificationToken[]
+
+  createdWorkspaces   Workspace[] @relation("WorkspaceCreatedBy")
+  createdChannels     Channel[] @relation("ChannelCreatedBy")
+  createdGroupChats   GroupChat[] @relation("GroupChatCreatedBy")
+
+  invitesCreated      Invite[] @relation("InviteCreatedBy")
+  uploadedFiles       File[]   @relation("FileUploadedBy")
+
+  auditLogs           AuditLog[] @relation("AuditActor")
+
+  notifications        Notification[]
+  notificationPreferences NotificationPreference[]
+}
+
+model Organization {
+  id        String   @id @default(cuid())
+  name      String
+  domain    String?  @unique
+  logoUrl   String?
+  settings  Json     @default("{}")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  members    OrganizationMember[]
+  workspaces Workspace[]
+  channels   Channel[]
+  messages   Message[]
+  groupChats GroupChat[]
+  directChats DirectChat[]
+  files      File[]
+  invites    Invite[]
+  notifications Notification[]
+  notificationPreferences NotificationPreference[]
+  emailVerificationTokens EmailVerificationToken[]
+  auditLogs AuditLog[]
+}
+
+model OrganizationMember {
+  id             String   @id @default(cuid())
+  organizationId String
+  userId         String
+  role           MemberRole @default(member)
+  department     String?
+  title          String?
+  status         PresenceStatus @default(offline)
+  deactivatedAt  DateTime?
+
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, userId])
+  @@index([organizationId, createdAt])
+}
+
+model Workspace {
+  id             String   @id @default(cuid())
+  organizationId String
+  name           String
+  description    String?
+  isArchived     Boolean  @default(false)
+  createdByUserId String
+
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdBy      User         @relation("WorkspaceCreatedBy", fields: [createdByUserId], references: [id])
+
+  members        WorkspaceMember[]
+  channels       Channel[]
+
+  @@index([organizationId, createdAt])
+  @@unique([organizationId, name])
+}
+
+model WorkspaceMember {
+  id          String   @id @default(cuid())
+  workspaceId String
+  userId      String
+  role        MemberRole @default(member)
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, userId])
+  @@index([userId])
+}
+
+model Channel {
+  id             String   @id @default(cuid())
+  organizationId String
+  workspaceId    String
+  name           String
+  type           ChannelType @default(public)
+  description    String?
+  isSystem       Boolean  @default(false)
+  isArchived     Boolean  @default(false)
+  createdByUserId String
+
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  workspace      Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  createdBy      User         @relation("ChannelCreatedBy", fields: [createdByUserId], references: [id])
+
+  members        ChannelMember[]
+  messages       Message[]
+
+  @@index([workspaceId, createdAt])
+  @@unique([workspaceId, name])
+}
+
+model ChannelMember {
+  id        String   @id @default(cuid())
+  channelId String
+  userId    String
+  createdAt DateTime @default(now())
+
+  channel   Channel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  user      User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([channelId, userId])
+  @@index([userId])
+}
+
+model GroupChat {
+  id             String   @id @default(cuid())
+  organizationId String
+  name           String
+  createdByUserId String
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdBy      User         @relation("GroupChatCreatedBy", fields: [createdByUserId], references: [id])
+  members        GroupChatMember[]
+  messages       Message[]
+
+  @@index([organizationId, createdAt])
+  @@unique([organizationId, name])
+}
+
+model GroupChatMember {
+  id         String   @id @default(cuid())
+  groupChatId String
+  userId     String
+  role       MemberRole @default(member)
+  createdAt  DateTime @default(now())
+
+  groupChat  GroupChat @relation(fields: [groupChatId], references: [id], onDelete: Cascade)
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([groupChatId, userId])
+  @@index([userId])
+}
+
+model DirectChat {
+  id             String   @id @default(cuid())
+  organizationId String
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  members        DirectChatMember[]
+  messages       Message[]
+
+  @@index([organizationId, createdAt])
+}
+
+model DirectChatMember {
+  id           String   @id @default(cuid())
+  directChatId String
+  userId       String
+  createdAt    DateTime @default(now())
+
+  directChat   DirectChat @relation(fields: [directChatId], references: [id], onDelete: Cascade)
+  user         User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([directChatId, userId])
+  @@index([userId])
+}
+
+model Message {
+  id             String   @id @default(cuid())
+  organizationId String
+  channelId      String?
+  groupChatId    String?
+  directChatId   String?
+  authorId       String
+  content        String
+  type           MessageType @default(text)
+  parentMessageId String?
+  fileId         String?
+  isDeleted      Boolean @default(false)
+  editedAt       DateTime?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  channel        Channel?      @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  groupChat      GroupChat?    @relation(fields: [groupChatId], references: [id], onDelete: Cascade)
+  directChat     DirectChat?   @relation(fields: [directChatId], references: [id], onDelete: Cascade)
+  author         User          @relation("MessageAuthor", fields: [authorId], references: [id], onDelete: Cascade)
+  file           File?         @relation(fields: [fileId], references: [id], onDelete: SetNull)
+
+  reactions      Reaction[]
+  pins           MessagePin[]
+  saves          MessageSave[]
+
+  @@index([channelId, createdAt])
+  @@index([groupChatId, createdAt])
+  @@index([directChatId, createdAt])
+  @@index([parentMessageId, createdAt])
+  @@index([fileId])
+}
+
+model Reaction {
+  id        String   @id @default(cuid())
+  messageId String
+  userId    String
+  emoji     String
+  createdAt DateTime @default(now())
+
+  message   Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  user      User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([messageId, userId, emoji])
+  @@index([messageId])
+  @@index([userId])
+}
+
+model File {
+  id             String   @id @default(cuid())
+  organizationId String
+  bucket         String
+  key            String   @unique
+  url            String?
+  mimeType       String
+  size           Int
+  originalName   String?
+  uploadedByUserId String
+
+  avStatus       FileAvStatus @default(pending)
+  avCheckedAt    DateTime?
+  blockedReason  String?
+
+  createdAt      DateTime @default(now())
+
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  uploadedBy     User         @relation("FileUploadedBy", fields: [uploadedByUserId], references: [id])
+  messages       Message[]
+
+  @@index([organizationId, createdAt])
+  @@index([uploadedByUserId, createdAt])
+}
+
+model RefreshSession {
+  id               String   @id @default(cuid())
+  userId           String
+  sessionId        String   @unique
+  refreshTokenHash String
+  revokedAt        DateTime?
+  createdAt        DateTime @default(now())
+  expiresAt        DateTime
+  userAgent        String?
+  ip               String?
+
+  user             User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+}
+
+model TwoFactor {
+  id              String   @id @default(cuid())
+  userId          String   @unique
+  secretEncrypted String
+  enabledAt       DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  user            User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model TwoFactorBackupCode {
+  id        String   @id @default(cuid())
+  userId    String
+  codeHash  String   @unique
+  usedAt    DateTime?
+  createdAt DateTime @default(now())
+
+  user      User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model EmailVerificationToken {
+  id             String   @id @default(cuid())
+  organizationId String
+  userId         String
+  tokenHash      String   @unique
+  expiresAt      DateTime
+  usedAt         DateTime?
+  createdAt      DateTime @default(now())
+
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, createdAt])
+  @@index([userId, createdAt])
+}
+
+model Invite {
+  id             String   @id @default(cuid())
+  organizationId String
+  email          String
+  role           MemberRole @default(member)
+  department     String?
+  tokenHash      String   @unique
+  expiresAt      DateTime
+  acceptedAt     DateTime?
+  createdByUserId String
+  createdAt      DateTime @default(now())
+
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdBy      User         @relation("InviteCreatedBy", fields: [createdByUserId], references: [id])
+
+  @@index([organizationId, createdAt])
+  @@index([email])
+}
+
+model AuditLog {
+  id             String   @id @default(cuid())
+  organizationId String
+  actorUserId    String?
+  action         String
+  entityType     String?
+  entityId       String?
+  metadata       Json     @default("{}")
+  createdAt      DateTime @default(now())
+
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  actor          User?        @relation("AuditActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, createdAt])
+}
+
+model Notification {
+  id             String   @id @default(cuid())
+  organizationId String
+  userId         String
+  type           String
+  payload        Json     @default("{}")
+  isRead         Boolean  @default(false)
+  createdAt      DateTime @default(now())
+
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([organizationId, createdAt])
+}
+
+model NotificationPreference {
+  id             String   @id @default(cuid())
+  organizationId String
+  userId         String
+  channelId      String?
+  groupChatId    String?
+  directChatId   String?
+  mode           String
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, userId, updatedAt])
+}
+
+model MessagePin {
+  messageId   String @id
+  pinnedByUserId String?
+  createdAt   DateTime @default(now())
+
+  message     Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+}
+
+model MessageSave {
+  userId    String
+  messageId String
+  createdAt DateTime @default(now())
+
+  message   Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@id([userId, messageId])
+  @@index([messageId])
+}
