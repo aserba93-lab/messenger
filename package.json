@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "dev:worker:filescan": "tsx watch src/workers/fileScanWorker.ts",
-    "build": "tsc -p tsconfig.json",
+    "build": "node scripts/build-backend.mjs",
     "start": "node dist/server.js",
     "seed": "tsx prisma/seed.ts",
     "prisma:generate": "prisma generate",

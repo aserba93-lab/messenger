@@ -403,6 +403,7 @@ model Invite {
   tokenHash      String   @unique
   expiresAt      DateTime
   acceptedAt     DateTime?
+  revokedAt      DateTime?
   createdByUserId String
   createdAt      DateTime @default(now())
 

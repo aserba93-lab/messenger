@@ -150,6 +150,14 @@ export default function App() {
   const [showDev, setShowDev] = useState(false);
   const [moreMenuOpen, setMoreMenuOpen] = useState(false);
   const [newChatMenuOpen, setNewChatMenuOpen] = useState(false);
+  const [newThingWizardKind, setNewThingWizardKind] = useState<null | "dm" | "group" | "channel">(null);
+  const [wizardUserQuery, setWizardUserQuery] = useState("");
+  const [wizardSelectedUserIds, setWizardSelectedUserIds] = useState<string[]>([]);
+  const [wizardGroupName, setWizardGroupName] = useState("Новая группа");
+  const [wizardChannelName, setWizardChannelName] = useState("new-channel");
+  const [wizardChannelType, setWizardChannelType] = useState<"public" | "private" | "broadcast">("public");
+  const [wizardBusy, setWizardBusy] = useState(false);
+  const [wizardError, setWizardError] = useState("");
   const [showRightPanel, setShowRightPanel] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [viewportW, setViewportW] = useState(() => (typeof window !== "undefined" ? window.innerWidth : 1280));
@@ -237,6 +245,15 @@ export default function App() {
       return roleOk && textOk;
     });
   }, [users, companyUserQuery, companyRoleFilter]);
+
+  const newThingWizardUsers = useMemo(() => {
+    const q = wizardUserQuery.trim().toLowerCase();
+    return users
+      .filter((u) => u.id !== userId)
+      .filter((u) => !q || `${u.email} ${u.department ?? ""}`.toLowerCase().includes(q))
+      .slice()
+      .sort((a, b) => a.email.localeCompare(b.email));
+  }, [users, userId, wizardUserQuery]);
 
   const [presenceByUserId, setPresenceByUserId] = useState<Record<string, { status: string; lastSeen?: string }>>({});
   const isCompanyAdmin = viewerRole === "owner" || viewerRole === "admin";
@@ -1234,63 +1251,6 @@ export default function App() {
     }
   }
 
-  async function createChannelQuick() {
-    if (!token || !workspaceId) return;
-    if (!canCreateChannelsAndGroups) {
-      setChatError("Недостаточно прав для создания канала");
-      return;
-    }
-    const name = (window.prompt("Название канала", "new-channel") ?? "").trim();
-    if (!name) return;
-    const typeRaw = (window.prompt("Тип канала: public/private/broadcast", "public") ?? "public").trim().toLowerCase();
-    const type = (["public", "private", "broadcast"].includes(typeRaw) ? typeRaw : "public") as "public" | "private" | "broadcast";
-    await gql<{ createChannel: { id: string } }>(
-      `mutation($input: CreateChannelInput!) {
-        createChannel(input: $input) { id name type workspaceId }
-      }`,
-      { input: { workspaceId, name, type } },
-      token,
-    );
-    await loadChannels();
-    setMode("channels");
-    pushLog(`Канал создан: #${name}`);
-  }
-
-  async function createGroupChatQuick() {
-    if (!token) return;
-    if (!canCreateChannelsAndGroups) {
-      setChatError("Недостаточно прав для создания группы");
-      return;
-    }
-    const name = (window.prompt("Название группового чата", "Новая группа") ?? "").trim();
-    if (!name) return;
-    const emailsRaw = (window.prompt("Email участников через запятую (опционально)", "") ?? "").trim();
-    const emails = emailsRaw
-      ? emailsRaw
-          .split(",")
-          .map((x) => x.trim().toLowerCase())
-          .filter(Boolean)
-      : [];
-    const idsFromEmails = users.filter((u) => emails.includes(String(u.email).toLowerCase())).map((u) => u.id);
-    const memberIds = Array.from(new Set([...idsFromEmails, userId].filter(Boolean)));
-    if (!memberIds.length) {
-      setChatError("Не удалось определить участников группы");
-      return;
-    }
-    const data = await gql<{ createGroupChat: { id: string; name: string } }>(
-      `mutation($input: CreateGroupChatInput!) {
-        createGroupChat(input: $input) { id name memberIds }
-      }`,
-      { input: { name, memberIds } },
-      token,
-    );
-    await loadGroupChats();
-    setMode("groups");
-    setActiveGroupChatId(data.createGroupChat.id);
-    await loadGroupMessages(data.createGroupChat.id);
-    pushLog(`Группа создана: ${data.createGroupChat.name}`);
-  }
-
   async function sendServiceMessageToCurrentChat(content: string) {
     if (!token || !content.trim()) return;
     if (mode === "channels") {
@@ -1509,6 +1469,165 @@ export default function App() {
     setActiveDirectChatId(data.ensureDirectChat.id);
     await loadDirectChats();
     await loadDirectMessages(data.ensureDirectChat.id);
+  }
+
+  function closeNewThingWizard() {
+    setNewThingWizardKind(null);
+    setWizardSelectedUserIds([]);
+    setWizardError("");
+    setWizardUserQuery("");
+    setWizardBusy(false);
+  }
+
+  async function openNewThingWizard(kind: "dm" | "group" | "channel") {
+    setNewChatMenuOpen(false);
+    setNewThingWizardKind(kind);
+    setWizardSelectedUserIds([]);
+    setWizardError("");
+    setWizardUserQuery("");
+    if (kind === "group") setWizardGroupName("Новая группа");
+    if (kind === "channel") {
+      setWizardChannelName("new-channel");
+      setWizardChannelType("public");
+    }
+    if (token && organizationId && users.length === 0) await loadUsers();
+  }
+
+  function toggleWizardUser(pickId: string) {
+    if (!newThingWizardKind || pickId === userId) return;
+    if (newThingWizardKind === "dm") {
+      setWizardSelectedUserIds((prev) => (prev[0] === pickId ? [] : [pickId]));
+      return;
+    }
+    if (newThingWizardKind === "group") {
+      setWizardSelectedUserIds((prev) => {
+        const s = new Set(prev);
+        if (s.has(pickId)) s.delete(pickId);
+        else if (s.size >= 100) return prev;
+        else s.add(pickId);
+        return Array.from(s);
+      });
+      return;
+    }
+    setWizardSelectedUserIds((prev) => {
+      const s = new Set(prev);
+      if (s.has(pickId)) s.delete(pickId);
+      else s.add(pickId);
+      return Array.from(s);
+    });
+  }
+
+  function wizardSelectAllCompanyUsers() {
+    setWizardSelectedUserIds(users.map((u) => u.id).filter((id) => id !== userId));
+  }
+
+  async function submitNewThingWizard() {
+    if (!newThingWizardKind || !token) return;
+    setWizardError("");
+    if (newThingWizardKind === "dm") {
+      if (!canReadChats) {
+        setWizardError("Недостаточно прав для личных чатов");
+        return;
+      }
+      if (wizardSelectedUserIds.length !== 1) {
+        setWizardError("Выберите ровно одного пользователя");
+        return;
+      }
+      setWizardBusy(true);
+      try {
+        await ensureDmWithUser(wizardSelectedUserIds[0]);
+        closeNewThingWizard();
+        setMobileSidebarOpen(false);
+        pushLog("Личный чат открыт");
+      } catch (e: unknown) {
+        setWizardError(e instanceof Error ? e.message : String(e));
+      } finally {
+        setWizardBusy(false);
+      }
+      return;
+    }
+    if (newThingWizardKind === "group") {
+      if (!canCreateChannelsAndGroups) {
+        setWizardError("Недостаточно прав для создания группы");
+        return;
+      }
+      const gName = wizardGroupName.trim();
+      if (!gName) {
+        setWizardError("Введите название группы");
+        return;
+      }
+      const others = wizardSelectedUserIds.filter((id) => id !== userId);
+      if (others.length < 1 || others.length > 100) {
+        setWizardError("Выберите от 1 до 100 участников");
+        return;
+      }
+      const memberIds = Array.from(new Set([userId, ...others]));
+      setWizardBusy(true);
+      try {
+        const data = await gql<{ createGroupChat: { id: string; name: string } }>(
+          `mutation($input: CreateGroupChatInput!) {
+            createGroupChat(input: $input) { id name memberIds }
+          }`,
+          { input: { name: gName, memberIds } },
+          token,
+        );
+        await loadGroupChats();
+        setMode("groups");
+        setActiveGroupChatId(data.createGroupChat.id);
+        await loadGroupMessages(data.createGroupChat.id);
+        closeNewThingWizard();
+        setMobileSidebarOpen(false);
+        pushLog(`Группа создана: ${data.createGroupChat.name}`);
+      } catch (e: unknown) {
+        setWizardError(e instanceof Error ? e.message : String(e));
+      } finally {
+        setWizardBusy(false);
+      }
+      return;
+    }
+    if (!workspaceId) {
+      setWizardError("Не выбран workspace");
+      return;
+    }
+    if (!canCreateChannelsAndGroups) {
+      setWizardError("Недостаточно прав для создания канала");
+      return;
+    }
+    const chName = wizardChannelName.trim();
+    if (!chName) {
+      setWizardError("Введите название канала");
+      return;
+    }
+    setWizardBusy(true);
+    try {
+      const data = await gql<{ createChannel: { id: string } }>(
+        `mutation($input: CreateChannelInput!) {
+          createChannel(input: $input) { id name type workspaceId }
+        }`,
+        { input: { workspaceId, name: chName, type: wizardChannelType } },
+        token,
+      );
+      const channelId = data.createChannel.id;
+      for (const uid of wizardSelectedUserIds) {
+        if (uid === userId) continue;
+        await gql<{ channelAddMember: boolean }>(
+          `mutation($input: ChannelAddMemberInput!) { channelAddMember(input: $input) }`,
+          { input: { channelId, userId: uid } },
+          token,
+        );
+      }
+      await loadChannels();
+      setMode("channels");
+      setActiveChannelId(channelId);
+      await loadMessages(channelId);
+      closeNewThingWizard();
+      setMobileSidebarOpen(false);
+      pushLog(`Канал создан: #${chName}`);
+    } catch (e: unknown) {
+      setWizardError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setWizardBusy(false);
+    }
   }
 
   async function inviteCompanyUser() {
@@ -2497,37 +2616,39 @@ export default function App() {
               <button
                 type="button"
                 className="tgCircleBtn"
-                title="Новый чат"
+                title="Создать чат, группу или канал"
                 onClick={() => {
                   setNewChatMenuOpen((v) => !v);
                   setMoreMenuOpen(false);
                 }}
               >
-                ✏️
+                +
               </button>
               {newChatMenuOpen ? (
                 <div className="tgPopoverMenu">
                   <button
                     type="button"
                     className="tgPopoverItem"
-                    onClick={() => {
-                      void createChannelQuick();
-                      setNewChatMenuOpen(false);
-                    }}
-                    disabled={!token || !workspaceId || !canCreateChannelsAndGroups}
+                    onClick={() => void openNewThingWizard("dm")}
+                    disabled={!token || !organizationId || !canReadChats}
                   >
-                    Новый канал
+                    Новый личный чат
                   </button>
                   <button
                     type="button"
                     className="tgPopoverItem"
-                    onClick={() => {
-                      void createGroupChatQuick();
-                      setNewChatMenuOpen(false);
-                    }}
-                    disabled={!token || !canCreateChannelsAndGroups}
+                    onClick={() => void openNewThingWizard("group")}
+                    disabled={!token || !organizationId || !canCreateChannelsAndGroups}
                   >
                     Новая группа
+                  </button>
+                  <button
+                    type="button"
+                    className="tgPopoverItem"
+                    onClick={() => void openNewThingWizard("channel")}
+                    disabled={!token || !workspaceId || !organizationId || !canCreateChannelsAndGroups}
+                  >
+                    Новый канал
                   </button>
                 </div>
               ) : null}
@@ -2569,14 +2690,6 @@ export default function App() {
             </button>
             <button className={mode === "dms" ? "active" : ""} onClick={() => setMode("dms")} disabled={!canReadChats}>
               DM
-            </button>
-          </div>
-          <div className="row" style={{ marginTop: 6 }}>
-            <button onClick={() => void createChannelQuick()} disabled={!token || !workspaceId || !canCreateChannelsAndGroups}>
-              + Канал
-            </button>
-            <button onClick={() => void createGroupChatQuick()} disabled={!token || !canCreateChannelsAndGroups}>
-              + Группа
             </button>
           </div>
           <div className="row tgFolderTabs">
@@ -4215,6 +4328,149 @@ export default function App() {
               <p className="infoPanelFootnote">Медиа, файлы и участники в общем списке — следующие итерации UI.</p>
             </div>
           </aside>
+        </div>
+      ) : null}
+
+      {newThingWizardKind ? (
+        <div
+          className="companyModalBackdrop newChatWizardBackdrop"
+          onClick={() => {
+            if (!wizardBusy) closeNewThingWizard();
+          }}
+        >
+          <section className="companyModal newChatWizardModal" onClick={(e) => e.stopPropagation()}>
+            <div className="companyModalHeader">
+              <div>
+                <div style={{ fontWeight: 700 }}>
+                  {newThingWizardKind === "dm"
+                    ? "Новый личный чат"
+                    : newThingWizardKind === "group"
+                      ? "Новая группа"
+                      : "Новый канал"}
+                </div>
+                <div style={{ fontSize: 12, opacity: 0.75, marginTop: 4 }}>
+                  {newThingWizardKind === "dm"
+                    ? "Выберите одного собеседника"
+                    : newThingWizardKind === "group"
+                      ? "Выберите от 1 до 100 участников (вы сами будете добавлены автоматически)"
+                      : "Выберите участников — можно добавить всех сотрудников компании"}
+                </div>
+              </div>
+              <button type="button" className="chip" disabled={wizardBusy} onClick={closeNewThingWizard}>
+                Закрыть
+              </button>
+            </div>
+
+            {newThingWizardKind === "group" ? (
+              <div className="row" style={{ marginBottom: 10 }}>
+                <input
+                  value={wizardGroupName}
+                  onChange={(e) => setWizardGroupName(e.target.value)}
+                  placeholder="Название группы"
+                  style={{ flex: 1, minWidth: 0 }}
+                />
+              </div>
+            ) : null}
+
+            {newThingWizardKind === "channel" ? (
+              <div className="row" style={{ marginBottom: 10, flexWrap: "wrap", gap: 8 }}>
+                <input
+                  value={wizardChannelName}
+                  onChange={(e) => setWizardChannelName(e.target.value)}
+                  placeholder="Название канала"
+                  style={{ flex: 1, minWidth: 160 }}
+                />
+                <select
+                  value={wizardChannelType}
+                  onChange={(e) => setWizardChannelType(e.target.value as "public" | "private" | "broadcast")}
+                  style={{
+                    boxSizing: "border-box",
+                    padding: "8px 10px",
+                    borderRadius: 10,
+                    border: "1px solid rgba(255,255,255,0.12)",
+                    background: "rgba(0,0,0,0.25)",
+                    color: "inherit",
+                  }}
+                >
+                  <option value="public">public</option>
+                  <option value="private">private</option>
+                  <option value="broadcast">broadcast</option>
+                </select>
+              </div>
+            ) : null}
+
+            <div className="row" style={{ marginBottom: 8, flexWrap: "wrap", gap: 8 }}>
+              <input
+                value={wizardUserQuery}
+                onChange={(e) => setWizardUserQuery(e.target.value)}
+                placeholder="Поиск по email или отделу"
+                style={{ flex: 1, minWidth: 0 }}
+              />
+              {newThingWizardKind === "channel" ? (
+                <button type="button" onClick={wizardSelectAllCompanyUsers} disabled={!users.length || wizardBusy}>
+                  Все сотрудники
+                </button>
+              ) : null}
+            </div>
+
+            {wizardError ? (
+              <div className="empty" style={{ color: "#f08080", marginBottom: 8 }}>
+                {wizardError}
+              </div>
+            ) : null}
+
+            <div className="companyList newChatWizardUserList">
+              {newThingWizardUsers.length === 0 ? (
+                <div className="empty" style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
+                  <span>Нет пользователей в списке.</span>
+                  <button type="button" onClick={() => void loadUsers()} disabled={!token || !organizationId || wizardBusy}>
+                    Загрузить
+                  </button>
+                </div>
+              ) : (
+                newThingWizardUsers.map((u) => (
+                  <button
+                    key={u.id}
+                    type="button"
+                    className={`newChatWizardRow ${wizardSelectedUserIds.includes(u.id) ? "selected" : ""}`}
+                    onClick={() => toggleWizardUser(u.id)}
+                  >
+                    <span className="newChatWizardCheck" aria-hidden>
+                      {newThingWizardKind === "dm"
+                        ? wizardSelectedUserIds[0] === u.id
+                          ? "◉"
+                          : "○"
+                        : wizardSelectedUserIds.includes(u.id)
+                          ? "☑"
+                          : "☐"}
+                    </span>
+                    <span className="newChatWizardEmail">{u.email}</span>
+                    {u.department ? <span className="newChatWizardMeta">{u.department}</span> : null}
+                  </button>
+                ))
+              )}
+            </div>
+
+            <div className="row" style={{ marginTop: 12, justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+              <div style={{ fontSize: 12, opacity: 0.8 }}>
+                {newThingWizardKind === "group" || newThingWizardKind === "channel"
+                  ? `Выбрано: ${wizardSelectedUserIds.length}${newThingWizardKind === "group" ? " (макс. 100)" : ""}`
+                  : "\u00a0"}
+              </div>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                <button type="button" className="chip" disabled={wizardBusy} onClick={closeNewThingWizard}>
+                  Отмена
+                </button>
+                <button type="button" disabled={wizardBusy} onClick={() => void submitNewThingWizard()}>
+                  {newThingWizardKind === "dm"
+                    ? "Открыть чат"
+                    : newThingWizardKind === "group"
+                      ? "Создать группу"
+                      : "Создать канал"}
+                </button>
+              </div>
+            </div>
+          </section>
         </div>
       ) : null}
 

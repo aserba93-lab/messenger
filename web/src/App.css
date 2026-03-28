@@ -961,6 +961,70 @@ pre {
   margin-bottom: 10px;
 }
 
+.newChatWizardBackdrop {
+  z-index: 75;
+}
+
+.newChatWizardModal.companyModal {
+  width: min(520px, 100%);
+  max-height: min(640px, calc(100vh - 32px));
+  display: flex;
+  flex-direction: column;
+}
+
+.newChatWizardUserList {
+  flex: 1;
+  min-height: 0;
+  max-height: min(380px, 48vh);
+}
+
+.newChatWizardRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  text-align: left;
+  padding: 8px 10px;
+  margin: 0;
+  border: none;
+  border-radius: 10px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  box-sizing: border-box;
+}
+
+.newChatWizardRow:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.newChatWizardRow.selected {
+  background: rgba(100, 160, 255, 0.14);
+}
+
+.newChatWizardCheck {
+  flex: 0 0 1.5em;
+  opacity: 0.85;
+  font-size: 14px;
+}
+
+.newChatWizardEmail {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.newChatWizardMeta {
+  font-size: 12px;
+  opacity: 0.65;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .companyTabs {
   display: flex;
   gap: 8px;
