@@ -125,6 +125,7 @@ app.get("/files/local/:fileId", async (req, res) => {
                   ? inferred
                   : storedMime || "application/octet-stream";
         res.setHeader("content-type", contentType);
+        res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
         return res.status(200).send(body);
     }
     catch (e) {

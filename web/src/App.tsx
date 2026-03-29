@@ -265,6 +265,92 @@ function isSingleStickerContent(content: string): boolean {
   }
 }
 
+/**
+ * Если UI (например :5173) и API (:3000) на разных origin, <img>/<audio> не шлют Bearer —
+ * встраиваемые медиа с /files/… не открываются. Тогда подгружаем байты через fetch + Authorization → blob:.
+ * Внешние presigned URL и тот же origin, что у страницы, оставляем прямой ссылкой.
+ */
+function useAuthenticatedBlobMediaUrl(downloadUrl: string | null | undefined, token: string | null): string {
+  const direct0 = normalizeDownloadUrl(downloadUrl);
+  const [src, setSrc] = useState(direct0);
+
+  useEffect(() => {
+    const u = normalizeDownloadUrl(downloadUrl);
+    if (!u) {
+      setSrc("");
+      return;
+    }
+    const base = API_BASE.replace(/\/$/, "");
+    const isOurApi = Boolean(token && base) && (u === base || u.startsWith(`${base}/`));
+    if (!isOurApi) {
+      setSrc(u);
+      return;
+    }
+    const needBearerFetch =
+      typeof window !== "undefined" && !u.startsWith(window.location.origin);
+
+    if (!needBearerFetch) {
+      setSrc(u);
+      return;
+    }
+
+    let cancelled = false;
+    let objectUrl: string | null = null;
+
+    (async () => {
+      try {
+        const r = await fetch(u, { headers: { authorization: `Bearer ${token}` } });
+        if (!r.ok || cancelled) return;
+        const blob = await r.blob();
+        if (cancelled) return;
+        objectUrl = URL.createObjectURL(blob);
+        setSrc(objectUrl);
+      } catch {
+        if (!cancelled) setSrc(u);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [downloadUrl, token]);
+
+  return src;
+}
+
+function ChatAttachmentImage(props: {
+  downloadUrl: string | null | undefined;
+  token: string | null;
+  alt: string;
+  className?: string;
+  fileId?: string;
+  onNeedsUrlRefresh?: (fileId: string) => void;
+}) {
+  const src = useAuthenticatedBlobMediaUrl(props.downloadUrl, props.token);
+  return (
+    <img
+      src={src}
+      alt={props.alt}
+      className={props.className}
+      loading="lazy"
+      onError={() => {
+        if (props.fileId && props.onNeedsUrlRefresh) props.onNeedsUrlRefresh(props.fileId);
+      }}
+    />
+  );
+}
+
+function ChatAttachmentAudioSource(props: {
+  downloadUrl: string | null | undefined;
+  token: string | null;
+  mimeType: string;
+}) {
+  const src = useAuthenticatedBlobMediaUrl(props.downloadUrl, props.token);
+  if (!src) return null;
+  return <source src={src} type={props.mimeType} />;
+}
+
 export default function App() {
   const [organizationId, setOrganizationId] = useState(() => initialSession?.organizationId ?? "");
   const [organizationCode, setOrganizationCode] = useState("");
@@ -5357,10 +5443,6 @@ export default function App() {
                     <div className="companyModalSubhead" style={{ marginTop: 12 }}>
                       Массовый импорт из Excel/CSV
                     </div>
-                    <div className="empty" style={{ textAlign: "left", marginBottom: 8 }}>
-                      Колонки: <code>lastName</code>/<code>Фамилия</code>, <code>firstName</code>/<code>Имя</code>, <code>middleName</code>/<code>Отчество</code>,{" "}
-                      <code>email</code>, <code>phone</code>, <code>role</code>, <code>department</code>, <code>password</code>.
-                    </div>
                     <input
                       type="file"
                       accept=".xlsx,.xls,.csv"
@@ -5773,9 +5855,10 @@ export default function App() {
                               preload="metadata"
                               playsInline
                             >
-                              <source
-                                src={normalizeDownloadUrl(m.file.downloadUrl)}
-                                type={
+                              <ChatAttachmentAudioSource
+                                downloadUrl={m.file.downloadUrl}
+                                token={token}
+                                mimeType={
                                   effectiveAudioMimeForElement(m.type, m.file.mimeType, m.file.originalName) ||
                                   "audio/webm"
                                 }
@@ -5806,14 +5889,13 @@ export default function App() {
                             rel="noreferrer"
                             className="chatImageLink"
                           >
-                            <img
-                              src={normalizeDownloadUrl(m.file.downloadUrl)}
+                            <ChatAttachmentImage
+                              downloadUrl={m.file.downloadUrl}
+                              token={token}
                               alt={m.file.originalName ?? "image"}
                               className="chatImage"
-                              loading="lazy"
-                              onError={() => {
-                                if (m.file?.id) void hydrateDownloadUrl(m.file.id);
-                              }}
+                              fileId={m.file.id}
+                              onNeedsUrlRefresh={(fid) => void hydrateDownloadUrl(fid)}
                             />
                           </a>
                         </div>
@@ -6522,7 +6604,7 @@ export default function App() {
                           rel="noreferrer"
                           className="infoPanelPhotoCell"
                         >
-                          <img src={normalizeDownloadUrl(m.file?.downloadUrl)} alt="" />
+                          <ChatAttachmentImage downloadUrl={m.file?.downloadUrl} token={token} alt="" />
                         </a>
                       ))}
                     </div>
@@ -6586,9 +6668,10 @@ export default function App() {
                       {infoPanelVoice.map((m) => (
                         <li key={m.id} className="infoPanelVoiceRow">
                           <audio controls preload="metadata">
-                            <source
-                              src={normalizeDownloadUrl(m.file?.downloadUrl)}
-                              type={
+                            <ChatAttachmentAudioSource
+                              downloadUrl={m.file?.downloadUrl}
+                              token={token}
+                              mimeType={
                                 effectiveAudioMimeForElement(
                                   m.type,
                                   m.file?.mimeType,
