@@ -14,9 +14,13 @@ jobs:
       - name: Deploy over SSH
         uses: appleboy/ssh-action@v1.0.3
         with:
+          # Только имя хоста или IP, БЕЗ https:// и БЕЗ / в конце (иначе dial tcp ... unknown port)
           host: ${{ secrets.DEPLOY_HOST }}
+          port: 22
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.DEPLOY_SSH_KEY }}
+          timeout: 60s
+          command_timeout: 20m
           script_stop: true
           script: |
             set -e
