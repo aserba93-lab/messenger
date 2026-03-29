@@ -403,23 +403,6 @@ io.on("connection", (socket) => {
                 .catch(() => { });
         }
     });
-    /** WebRTC сигналинг (1:1): клиент шлёт targetUserId + SDP/ICE, сервер пересылает адресату */
-    socket.on("call:signal", (data) => {
-        const targetUserId = String(data?.targetUserId ?? "");
-        const payload = data?.payload;
-        if (!targetUserId || payload == null)
-            return;
-        io.to(`user:${targetUserId}`).emit("call:signal", {
-            fromUserId: viewer.userId,
-            payload,
-        });
-    });
-    socket.on("call:end", (data) => {
-        const targetUserId = String(data?.targetUserId ?? "");
-        if (!targetUserId)
-            return;
-        io.to(`user:${targetUserId}`).emit("call:end", { fromUserId: viewer.userId });
-    });
 });
 server.listen(env.PORT, () => {
     // eslint-disable-next-line no-console
