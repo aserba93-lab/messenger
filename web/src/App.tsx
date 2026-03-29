@@ -271,8 +271,7 @@ function isSingleStickerContent(content: string): boolean {
  * Внешние presigned URL и тот же origin, что у страницы, оставляем прямой ссылкой.
  */
 function useAuthenticatedBlobMediaUrl(downloadUrl: string | null | undefined, token: string | null): string {
-  const direct0 = normalizeDownloadUrl(downloadUrl);
-  const [src, setSrc] = useState(direct0);
+  const [src, setSrc] = useState(() => normalizeDownloadUrl(downloadUrl));
 
   useEffect(() => {
     const u = normalizeDownloadUrl(downloadUrl);
@@ -280,40 +279,42 @@ function useAuthenticatedBlobMediaUrl(downloadUrl: string | null | undefined, to
       setSrc("");
       return;
     }
-    const base = API_BASE.replace(/\/$/, "");
-    const isOurApi = Boolean(token && base) && (u === base || u.startsWith(`${base}/`));
-    if (!isOurApi) {
-      setSrc(u);
-      return;
-    }
-    const needBearerFetch =
-      typeof window !== "undefined" && !u.startsWith(window.location.origin);
-
-    if (!needBearerFetch) {
-      setSrc(u);
-      return;
-    }
 
     let cancelled = false;
     let objectUrl: string | null = null;
-
-    (async () => {
-      try {
-        const r = await fetch(u, { headers: { authorization: `Bearer ${token}` } });
-        if (!r.ok || cancelled) return;
-        const blob = await r.blob();
-        if (cancelled) return;
-        objectUrl = URL.createObjectURL(blob);
-        setSrc(objectUrl);
-      } catch {
-        if (!cancelled) setSrc(u);
-      }
-    })();
-
-    return () => {
+    const cleanup = () => {
       cancelled = true;
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
+
+    const base = API_BASE.replace(/\/$/, "");
+    const isOurApi = Boolean(token && base) && (u === base || u.startsWith(`${base}/`));
+    const pageOrigin = typeof window !== "undefined" ? window.location.origin : "";
+
+    async function toBlob(getRes: () => Promise<Response>): Promise<boolean> {
+      try {
+        const r = await getRes();
+        if (!r.ok || cancelled) return false;
+        const blob = await r.blob();
+        if (cancelled) return false;
+        objectUrl = URL.createObjectURL(blob);
+        setSrc(objectUrl);
+        return true;
+      } catch {
+        return false;
+      }
+    }
+
+    (async () => {
+      if (isOurApi && pageOrigin && !u.startsWith(pageOrigin)) {
+        if (await toBlob(() => fetch(u, { headers: { authorization: `Bearer ${token}` } }))) return;
+      } else if (!isOurApi && /^https?:\/\//i.test(u) && pageOrigin && !u.startsWith(pageOrigin)) {
+        if (await toBlob(() => fetch(u, { mode: "cors", credentials: "omit" }))) return;
+      }
+      if (!cancelled) setSrc(u);
+    })();
+
+    return cleanup;
   }, [downloadUrl, token]);
 
   return src;
@@ -425,7 +426,7 @@ export default function App() {
   const [wizardError, setWizardError] = useState("");
   const [showRightPanel, setShowRightPanel] = useState(false);
   const [infoPanelSection, setInfoPanelSection] = useState<
-    "about" | "photos" | "saved" | "files" | "voice" | "links" | "notify"
+    "about" | "photos" | "files" | "voice" | "links" | "notify"
   >("about");
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [viewportW, setViewportW] = useState(() => (typeof window !== "undefined" ? window.innerWidth : 1280));
@@ -524,6 +525,9 @@ export default function App() {
   const [chatFolder, setChatFolder] = useState<"all" | "unread" | "archived">("all");
   const [chatMenu, setChatMenu] = useState<null | { x: number; y: number; key: string; sub: "main" | "notify" }>(null);
   const [callMenuOpen, setCallMenuOpen] = useState(false);
+  /** В группе: сначала список участников, затем выбор аудио/видео */
+  const [groupCallMenuUserId, setGroupCallMenuUserId] = useState<string | null>(null);
+  const [chatMetaPopoverOpen, setChatMetaPopoverOpen] = useState(false);
   const callMenuWrapRef = useRef<HTMLDivElement | null>(null);
   const [msgMenu, setMsgMenu] = useState<null | { x: number; y: number; messageId: string }>(null);
   const [threadReadByKey, setThreadReadByKey] = useState<Record<string, Record<string, string>>>({});
@@ -627,6 +631,8 @@ export default function App() {
     if (!u) return "";
     return `url(${JSON.stringify(u)})`;
   }, [orgBrandLogoUrl]);
+
+  const orgBrandDisplay = orgBrandName.trim() === "Seed Org" ? "" : orgBrandName.trim();
 
   const displayOrganizationId = useMemo(() => {
     const code = organizationCode.trim().toUpperCase();
@@ -1023,10 +1029,6 @@ export default function App() {
     () => messages.filter((m) => m.type === "voice" && m.file?.downloadUrl && !m.isDeleted),
     [messages],
   );
-  const infoPanelSavedHere = useMemo(
-    () => messages.filter((m) => savedIds.has(m.id) && !m.isDeleted),
-    [messages, savedIds],
-  );
   const infoPanelLinks = useMemo(() => {
     const out: { id: string; url: string; preview: string }[] = [];
     const re = /https?:\/\/[^\s<>"{}|\\^`[\]]+/gi;
@@ -1170,7 +1172,10 @@ export default function App() {
     if (!callMenuOpen) return;
     const onDown = (e: globalThis.MouseEvent) => {
       const el = callMenuWrapRef.current;
-      if (el && !el.contains(e.target as Node)) setCallMenuOpen(false);
+      if (el && !el.contains(e.target as Node)) {
+        setCallMenuOpen(false);
+        setGroupCallMenuUserId(null);
+      }
     };
     document.addEventListener("mousedown", onDown, true);
     return () => document.removeEventListener("mousedown", onDown, true);
@@ -1178,7 +1183,12 @@ export default function App() {
 
   useEffect(() => {
     setCallMenuOpen(false);
+    setGroupCallMenuUserId(null);
   }, [mode, activeChannelId, activeGroupChatId, activeDirectChatId]);
+
+  useEffect(() => {
+    setChatMetaPopoverOpen(false);
+  }, [mode, activeChannelId, activeGroupChatId]);
 
   useEffect(() => {
     if (!msgMenu) return;
@@ -2190,22 +2200,17 @@ export default function App() {
     setIncomingCall(null);
   }
 
-  async function startAudioCall() {
+  async function startAudioCallToPeer(other: string) {
     if (!canStartCalls) {
       setChatError("Недостаточно прав для звонков");
       return;
     }
-    if (mode !== "dms" || !activeDirectChat) {
-      setChatError("Встроенный звонок доступен в личных сообщениях (DM)");
-      return;
-    }
-    if (activeDirectChat.userIds.length === 1 && activeDirectChat.userIds[0] === userId) {
-      setChatError("Звонок самому себе недоступен");
-      return;
-    }
-    const other = activeDirectChat.userIds.find((id) => id !== userId) ?? "";
     if (!other || !socket) {
       setChatError("Нет собеседника или сокет не подключён");
+      return;
+    }
+    if (other === userId) {
+      setChatError("Звонок самому себе недоступен");
       return;
     }
     if (webrtcBusyRef.current) return;
@@ -2253,22 +2258,30 @@ export default function App() {
     }
   }
 
-  async function startVideoMeeting() {
+  async function startAudioCall() {
+    if (mode !== "dms" || !activeDirectChat) {
+      setChatError("Откройте личный чат или выберите участника группы в меню звонка");
+      return;
+    }
+    if (activeDirectChat.userIds.length === 1 && activeDirectChat.userIds[0] === userId) {
+      setChatError("Звонок самому себе недоступен");
+      return;
+    }
+    const other = activeDirectChat.userIds.find((id) => id !== userId) ?? "";
+    await startAudioCallToPeer(other);
+  }
+
+  async function startVideoCallToPeer(other: string) {
     if (!canStartCalls) {
       setChatError("Недостаточно прав для видеовстреч");
       return;
     }
-    if (mode !== "dms" || !activeDirectChat) {
-      setChatError("Встроенный видеозвонок доступен в личных сообщениях (DM)");
-      return;
-    }
-    if (activeDirectChat.userIds.length === 1 && activeDirectChat.userIds[0] === userId) {
-      setChatError("Видеозвонок самому себе недоступен");
-      return;
-    }
-    const other = activeDirectChat.userIds.find((id) => id !== userId) ?? "";
     if (!other || !socket) {
       setChatError("Нет собеседника или сокет не подключён");
+      return;
+    }
+    if (other === userId) {
+      setChatError("Видеозвонок самому себе недоступен");
       return;
     }
     if (webrtcBusyRef.current) return;
@@ -2314,6 +2327,19 @@ export default function App() {
       webrtcBusyRef.current = false;
       setChatError(String(e?.message ?? e));
     }
+  }
+
+  async function startVideoMeeting() {
+    if (mode !== "dms" || !activeDirectChat) {
+      setChatError("Откройте личный чат или выберите участника группы в меню звонка");
+      return;
+    }
+    if (activeDirectChat.userIds.length === 1 && activeDirectChat.userIds[0] === userId) {
+      setChatError("Видеозвонок самому себе недоступен");
+      return;
+    }
+    const other = activeDirectChat.userIds.find((id) => id !== userId) ?? "";
+    await startVideoCallToPeer(other);
   }
 
   function copyCallInviteLink() {
@@ -2587,6 +2613,7 @@ export default function App() {
         );
         setGroupChats((prev) => prev.map((g) => (g.id === data.updateGroupChat.id ? data.updateGroupChat : g)));
         setChatMetaMsg("Сохранено");
+        setChatMetaPopoverOpen(false);
         return;
       }
       if (mode === "channels" && activeChannelId && canEditActiveChannelMeta) {
@@ -2604,6 +2631,7 @@ export default function App() {
           prev.map((c) => (c.id === data.updateChannel.id ? { ...c, ...data.updateChannel } : c)),
         );
         setChatMetaMsg("Сохранено");
+        setChatMetaPopoverOpen(false);
       }
     } catch (e: unknown) {
       setChatMetaMsg(String((e as Error)?.message ?? e ?? "Ошибка"));
@@ -4225,7 +4253,7 @@ export default function App() {
               <span className="tgBrandSales">Sales</span>{" "}
               <span className="tgBrandFactory">factory</span>
             </span>
-            {orgBrandName ? <span className="tgBrandOrg">{orgBrandName}</span> : null}
+            {orgBrandDisplay ? <span className="tgBrandOrg">{orgBrandDisplay}</span> : null}
           </div>
           <div className="tgTopBarActions">
             <div className="tgMenuAnchor">
@@ -5116,25 +5144,40 @@ export default function App() {
                   }
                 }}
               >
-                <div className="tgChatHeaderTitle">
-                  {mode === "channels"
-                    ? activeChannel
-                      ? `#${activeChannel.name}`
-                      : "Выберите канал"
-                    : mode === "groups"
-                      ? activeGroupChat
-                        ? activeGroupChat.name
-                        : "Выберите группу"
-                      : activeDirectChat
-                        ? isSelfNotesActiveDm
-                          ? "Избранное"
-                          : (() => {
-                              const otherId =
-                                activeDirectChat.userIds.find((id) => id !== userId) ?? activeDirectChat.userIds[0] ?? "";
-                              const u = users.find((x) => x.id === otherId);
-                              return displayUserNameForSidebar(u, otherId || activeDirectChat.id);
-                            })()
-                        : "Выберите личку"}
+                <div className="tgChatHeaderTitleRow">
+                  <div className="tgChatHeaderTitle">
+                    {mode === "channels"
+                      ? activeChannel
+                        ? `#${activeChannel.name}`
+                        : "Выберите канал"
+                      : mode === "groups"
+                        ? activeGroupChat
+                          ? activeGroupChat.name
+                          : "Выберите группу"
+                        : activeDirectChat
+                          ? isSelfNotesActiveDm
+                            ? "Избранное"
+                            : (() => {
+                                const otherId =
+                                  activeDirectChat.userIds.find((id) => id !== userId) ?? activeDirectChat.userIds[0] ?? "";
+                                const u = users.find((x) => x.id === otherId);
+                                return displayUserNameForSidebar(u, otherId || activeDirectChat.id);
+                              })()
+                          : "Выберите личку"}
+                  </div>
+                  {(mode === "groups" && canEditActiveGroupMeta) || (mode === "channels" && canEditActiveChannelMeta) ? (
+                    <button
+                      type="button"
+                      className="tgChatTitleEditBtn"
+                      title="Изменить название и аватар"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setChatMetaPopoverOpen((v) => !v);
+                      }}
+                    >
+                      ✎
+                    </button>
+                  ) : null}
                 </div>
                 <div className="tgChatHeaderSub">
                   {mode === "dms" && activeDirectChat
@@ -5175,34 +5218,107 @@ export default function App() {
                 <button
                   type="button"
                   className="tgCircleBtn tgCircleBtn--call"
-                  title="Звонок (только в личке с собеседником)"
-                  disabled={!canStartCalls || mode !== "dms" || !activeDirectChat || !socket || isSelfNotesActiveDm}
-                  onClick={() => setCallMenuOpen((v) => !v)}
+                  title="Звонок (личный чат или участник группы)"
+                  disabled={
+                    !canStartCalls ||
+                    !socket ||
+                    (mode === "dms" &&
+                      (!activeDirectChat || isSelfNotesActiveDm)) ||
+                    (mode === "groups" &&
+                      (!activeGroupChat ||
+                        !(activeGroupChat.memberIds ?? []).some((id) => id !== userId))) ||
+                    mode === "channels"
+                  }
+                  onClick={() => {
+                    setGroupCallMenuUserId(null);
+                    setCallMenuOpen((v) => !v);
+                  }}
                 >
                   📞
                 </button>
-                {callMenuOpen && canStartCalls && mode === "dms" && activeDirectChat && socket && !isSelfNotesActiveDm ? (
+                {callMenuOpen &&
+                canStartCalls &&
+                socket &&
+                ((mode === "dms" && activeDirectChat && !isSelfNotesActiveDm) ||
+                  (mode === "groups" &&
+                    activeGroupChat &&
+                    (activeGroupChat.memberIds ?? []).some((id) => id !== userId))) ? (
                   <div className="tgPopoverMenu" role="menu">
-                    <button
-                      type="button"
-                      className="tgPopoverItem"
-                      onClick={() => {
-                        setCallMenuOpen(false);
-                        void startAudioCall();
-                      }}
-                    >
-                      Аудиозвонок
-                    </button>
-                    <button
-                      type="button"
-                      className="tgPopoverItem"
-                      onClick={() => {
-                        setCallMenuOpen(false);
-                        void startVideoMeeting();
-                      }}
-                    >
-                      Видеозвонок
-                    </button>
+                    {mode === "groups" && activeGroupChat && !groupCallMenuUserId ? (
+                      <>
+                        <div className="tgPopoverHint">Кому позвонить (1:1)</div>
+                        {(activeGroupChat.memberIds ?? []).filter((id) => id !== userId).map((mid) => {
+                          const u = users.find((x) => x.id === mid);
+                          return (
+                            <button
+                              key={mid}
+                              type="button"
+                              className="tgPopoverItem"
+                              onClick={() => setGroupCallMenuUserId(mid)}
+                            >
+                              {displayUserNameForSidebar(u, mid)}
+                            </button>
+                          );
+                        })}
+                      </>
+                    ) : mode === "groups" && groupCallMenuUserId ? (
+                      <>
+                        <button
+                          type="button"
+                          className="tgPopoverItem tgPopoverItem--muted"
+                          onClick={() => setGroupCallMenuUserId(null)}
+                        >
+                          ← Участники
+                        </button>
+                        <button
+                          type="button"
+                          className="tgPopoverItem"
+                          onClick={() => {
+                            const uid = groupCallMenuUserId;
+                            setCallMenuOpen(false);
+                            setGroupCallMenuUserId(null);
+                            void startAudioCallToPeer(uid);
+                          }}
+                        >
+                          Аудиозвонок
+                        </button>
+                        <button
+                          type="button"
+                          className="tgPopoverItem"
+                          onClick={() => {
+                            const uid = groupCallMenuUserId;
+                            setCallMenuOpen(false);
+                            setGroupCallMenuUserId(null);
+                            void startVideoCallToPeer(uid);
+                          }}
+                        >
+                          Видеозвонок
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <button
+                          type="button"
+                          className="tgPopoverItem"
+                          onClick={() => {
+                            setCallMenuOpen(false);
+                            void startAudioCall();
+                          }}
+                        >
+                          Аудиозвонок
+                        </button>
+                        <button
+                          type="button"
+                          className="tgPopoverItem"
+                          onClick={() => {
+                            setCallMenuOpen(false);
+                            void startVideoMeeting();
+                          }}
+                        >
+                          Видеозвонок
+                        </button>
+                      </>
+                    )}
                   </div>
                 ) : null}
               </div>
@@ -5211,6 +5327,43 @@ export default function App() {
               </button>
             </div>
           </div>
+          {chatMetaPopoverOpen &&
+          ((mode === "groups" && canEditActiveGroupMeta) || (mode === "channels" && canEditActiveChannelMeta)) ? (
+            <div className="chatMetaQuickEdit" onMouseDown={(e) => e.stopPropagation()}>
+              {chatMetaMsg ? <div className="empty" style={{ fontSize: 12 }}>{chatMetaMsg}</div> : null}
+              <label className="infoPanelLabel">Название</label>
+              <input
+                className="infoPanelInput"
+                value={chatMetaNameDraft}
+                onChange={(e) => setChatMetaNameDraft(e.target.value)}
+                placeholder={mode === "channels" ? "Имя канала" : "Имя группы"}
+              />
+              <label className="infoPanelLabel">Аватар (URL, data:image или файл)</label>
+              <input
+                className="infoPanelInput"
+                value={chatMetaAvatarData}
+                onChange={(e) => setChatMetaAvatarData(e.target.value)}
+                placeholder="https://… или data:image/…"
+              />
+              <input
+                type="file"
+                accept="image/*"
+                onChange={(e) => {
+                  const f = e.currentTarget.files?.[0];
+                  if (f) applyChatAvatarFromFile(f);
+                  e.currentTarget.value = "";
+                }}
+              />
+              <div className="chatMetaQuickEditActions">
+                <button type="button" className="chip" onClick={() => void saveChatMeta()} disabled={!token}>
+                  Сохранить
+                </button>
+                <button type="button" className="chip" onClick={() => setChatMetaPopoverOpen(false)}>
+                  Закрыть
+                </button>
+              </div>
+            </div>
+          ) : null}
           {!threadRootId && !showPins ? (
             <div className="tgChatSearchRow" style={{ marginTop: 8, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
               <input
@@ -6334,7 +6487,8 @@ export default function App() {
                       : "Личка не выбрана"}
               </div>
               <p className="infoPanelHeroSub">
-                {organizationId ? `Организация: ${displayOrganizationId}` : "—"} · {myProfileEmail || loginIdentifier}
+                {organizationId ? `Организация: ${displayOrganizationId}` : "—"}
+                {orgBrandDisplay ? ` · ${orgBrandDisplay}` : ""} · {myProfileEmail || loginIdentifier}
                 {systemAccessLevel ? (
                   <>
                     {" "}
@@ -6348,7 +6502,6 @@ export default function App() {
                   [
                     ["about", "Об чате"],
                     ["photos", "Фото"],
-                    ["saved", "Избранное"],
                     ["files", "Файлы"],
                     ["voice", "Голосовые"],
                     ["links", "Ссылки"],
@@ -6494,77 +6647,9 @@ export default function App() {
                     </div>
                   ) : null}
 
-                  {(mode === "groups" && canEditActiveGroupMeta) || (mode === "channels" && canEditActiveChannelMeta) ? (
+                  {mode === "channels" && activeChannelId ? (
                     <div className="infoPanelSection">
-                      <div className="infoPanelSectionTitle">Название и аватар</div>
-                      {chatMetaMsg ? <div className="empty">{chatMetaMsg}</div> : null}
-                      <label className="infoPanelLabel">Название</label>
-                      <input
-                        className="infoPanelInput"
-                        value={chatMetaNameDraft}
-                        onChange={(e) => setChatMetaNameDraft(e.target.value)}
-                        placeholder={mode === "channels" ? "Имя канала" : "Имя группы"}
-                      />
-                      <label className="infoPanelLabel">Аватар (файл или data:image)</label>
-                      <input
-                        className="infoPanelInput"
-                        value={chatMetaAvatarData}
-                        onChange={(e) => setChatMetaAvatarData(e.target.value)}
-                        placeholder="https://… или data:image/…"
-                      />
-                      <input
-                        type="file"
-                        accept="image/*"
-                        onChange={(e) => {
-                          const f = e.currentTarget.files?.[0];
-                          if (f) applyChatAvatarFromFile(f);
-                          e.currentTarget.value = "";
-                        }}
-                      />
-                      <button type="button" className="moreMenuWideBtn" onClick={() => void saveChatMeta()} disabled={!token}>
-                        Сохранить
-                      </button>
-                    </div>
-                  ) : null}
-
-                  <div className="infoPanelSection">
-                    <div className="infoPanelSectionTitle">Действия</div>
-                    {isCompanyAdmin ? (
-                      <button
-                        type="button"
-                        className="moreMenuWideBtn"
-                        onClick={() => {
-                          setShowCompanyCabinet(true);
-                          void loadUsers();
-                        }}
-                        disabled={!token || !organizationId}
-                      >
-                        Кабинет компании
-                      </button>
-                    ) : null}
-                    {isCompanyAdmin ? (
-                      <button
-                        type="button"
-                        className="moreMenuWideBtn"
-                        onClick={() => void openAdminUsersPanel()}
-                        disabled={!token || !organizationId}
-                      >
-                        Админ: пользователи
-                      </button>
-                    ) : null}
-                    <button
-                      type="button"
-                      className="moreMenuWideBtn"
-                      onClick={() => {
-                        setShowUserCabinet(true);
-                        setProfileMsg("");
-                        void loadMyProfile();
-                      }}
-                      disabled={!token}
-                    >
-                      Мой профиль
-                    </button>
-                    {mode === "channels" && activeChannelId ? (
+                      <div className="infoPanelSectionTitle">Закрепы</div>
                       <button
                         type="button"
                         className="moreMenuWideBtn subtle"
@@ -6576,18 +6661,8 @@ export default function App() {
                       >
                         Открыть закреплённые сообщения
                       </button>
-                    ) : null}
-                    {userId ? (
-                      <button
-                        type="button"
-                        className="moreMenuWideBtn subtle"
-                        onClick={() => void openSavedVaultChat()}
-                        disabled={!token}
-                      >
-                        Открыть «Избранное» (заметки)
-                      </button>
-                    ) : null}
-                  </div>
+                    </div>
+                  ) : null}
                 </>
               ) : infoPanelSection === "photos" ? (
                 <div className="infoPanelSection">
@@ -6608,29 +6683,6 @@ export default function App() {
                         </a>
                       ))}
                     </div>
-                  )}
-                </div>
-              ) : infoPanelSection === "saved" ? (
-                <div className="infoPanelSection">
-                  <div className="infoPanelSectionTitle">Сохранённые в этом чате ({infoPanelSavedHere.length})</div>
-                  {infoPanelSavedHere.length === 0 ? (
-                    <p className="infoPanelHint">Помечайте сообщения как сохранённые — они появятся здесь.</p>
-                  ) : (
-                    <ul className="infoPanelMediaList">
-                      {infoPanelSavedHere.map((m) => (
-                        <li key={m.id} className="infoPanelMediaRow">
-                          <div className="infoPanelMediaRowMain">
-                            {m.type === "file"
-                              ? `📎 ${m.file?.originalName ?? "Файл"}`
-                              : m.type === "voice"
-                                ? "🎤 Голосовое"
-                                : String(m.content || "").slice(0, 220)}
-                            {m.type !== "file" && m.type !== "voice" && String(m.content || "").length > 220 ? "…" : ""}
-                          </div>
-                          <div className="infoPanelMediaRowMeta">{timeHHMM(m.createdAt)}</div>
-                        </li>
-                      ))}
-                    </ul>
                   )}
                 </div>
               ) : infoPanelSection === "files" ? (
