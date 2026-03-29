@@ -12,11 +12,23 @@ export class GroupChatsRepository {
     }
     async createGroupChat(params) {
         return prisma.$transaction(async (tx) => {
+            const baseName = String(params.name ?? "").trim() || "Группа";
+            let name = baseName;
+            let suffix = 1;
+            while (await tx.groupChat.findFirst({
+                where: { organizationId: params.organizationId, name },
+                select: { id: true },
+            })) {
+                suffix += 1;
+                if (suffix > 500)
+                    throw new Error("Не удалось подобрать уникальное имя группы");
+                name = `${baseName} (${suffix})`;
+            }
             const group = await tx.groupChat.create({
                 data: {
                     organizationId: params.organizationId,
                     createdByUserId: params.createdByUserId,
-                    name: params.name,
+                    name,
                 },
             });
             const uniqueMemberIds = Array.from(new Set([params.createdByUserId, ...params.memberIds])).slice(0, 200);
@@ -35,7 +47,7 @@ export class GroupChatsRepository {
                     action: "GROUPCHAT_CREATED",
                     entityType: "GroupChat",
                     entityId: group.id,
-                    metadata: { name: params.name, memberCount: uniqueMemberIds.length },
+                    metadata: { name: group.name, memberCount: uniqueMemberIds.length },
                 },
             });
             const full = await tx.groupChat.findUnique({ where: { id: group.id }, include: { members: true } });

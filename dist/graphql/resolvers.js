@@ -31,6 +31,8 @@ export const resolvers = {
         },
     },
     DirectChatMessage: {
+        editedAt: (parent) => parent?.editedAt ?? parent?.updatedAt ?? null,
+        updatedAt: (parent) => parent?.updatedAt ?? null,
         file: async (parent, _args, ctx) => {
             const viewer = ctx?.viewer;
             if (!viewer)

@@ -2958,7 +2958,7 @@ export default function App() {
                     onClick={() => void openNewThingWizard("dm")}
                     disabled={!token || !organizationId || !canReadChats}
                   >
-                    Новый личный чат
+                    ✉ Личный чат (1 на 1)
                   </button>
                   <button
                     type="button"
@@ -2966,7 +2966,7 @@ export default function App() {
                     onClick={() => void openNewThingWizard("group")}
                     disabled={!token || !organizationId || !canCreateChannelsAndGroups}
                   >
-                    Новая группа
+                    👥 Группа (несколько человек)
                   </button>
                   <button
                     type="button"
@@ -2974,7 +2974,7 @@ export default function App() {
                     onClick={() => void openNewThingWizard("channel")}
                     disabled={!token || !workspaceId || !organizationId || !canCreateChannelsAndGroups}
                   >
-                    Новый канал
+                    # Канал в workspace
                   </button>
                 </div>
               ) : null}
@@ -4733,7 +4733,7 @@ export default function App() {
                 </div>
                 <div style={{ fontSize: 12, opacity: 0.75, marginTop: 4 }}>
                   {newThingWizardKind === "dm"
-                    ? "Выберите одного собеседника"
+                    ? "Только два человека: вы и собеседник. Не путайте с «Группой» в меню +."
                     : newThingWizardKind === "group"
                       ? "Выберите от 1 до 100 участников (вы сами будете добавлены автоматически)"
                       : "Выберите участников — можно добавить всех сотрудников компании"}
