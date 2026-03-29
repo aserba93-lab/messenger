@@ -1,7 +1,7 @@
 import { emitToUser } from "./emitter.js";
 const REDIS_CHANNEL = "events:fileStatus";
 export function setupFileStatusBridge(redis) {
-    const sub = redis.duplicate();
+    const sub = redis.duplicate({ enableOfflineQueue: true });
     sub.on("error", (err) => {
         // eslint-disable-next-line no-console
         console.warn("[fileStatusBridge] redis error:", err?.message ?? err);

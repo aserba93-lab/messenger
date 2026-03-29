@@ -9,13 +9,13 @@ export const filesResolvers = {
         file: async (_p, args, ctx) => {
             const viewer = requireViewer(ctx);
             const id = z.string().min(1).parse(args.id);
-            const { file, downloadUrl } = await ctx.filesService.getDownloadUrl(viewer, id);
+            const { file, downloadUrl } = await ctx.filesService.getFileForViewer(viewer, id);
             return {
                 id: file.id,
                 mimeType: file.mimeType,
                 size: file.size,
                 originalName: file.originalName,
-                downloadUrl,
+                downloadUrl: downloadUrl ?? null,
                 avStatus: file.avStatus,
                 avCheckedAt: file.avCheckedAt,
                 blockedReason: file.blockedReason,

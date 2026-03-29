@@ -20,13 +20,16 @@ export const resolvers = {
             const fileId = parent?.fileId;
             if (!fileId)
                 return null;
-            const { file, downloadUrl } = await ctx.filesService.getDownloadUrl(viewer, fileId);
+            const { file, downloadUrl } = await ctx.filesService.getFileForViewer(viewer, fileId);
             return {
                 id: file.id,
                 mimeType: file.mimeType,
                 size: file.size,
                 originalName: file.originalName,
                 downloadUrl,
+                avStatus: file.avStatus,
+                avCheckedAt: file.avCheckedAt,
+                blockedReason: file.blockedReason,
             };
         },
     },
@@ -40,7 +43,7 @@ export const resolvers = {
             const fileId = parent?.fileId ?? parent?.file?.id ?? null;
             if (!fileId)
                 return null;
-            const { file, downloadUrl } = await ctx.filesService.getDownloadUrl(viewer, fileId);
+            const { file, downloadUrl } = await ctx.filesService.getFileForViewer(viewer, fileId);
             return {
                 id: file.id,
                 mimeType: file.mimeType,

@@ -341,6 +341,26 @@ export default function App() {
     return () => window.clearInterval(timer);
   }, [isRecordingVoice]);
 
+  /** Не вешаем pointerup на window — после клика «старт» сразу приходит отпускание и рвёт запись. Только Esc и сворачивание вкладки. */
+  useEffect(() => {
+    if (!isRecordingVoice) return;
+    const end = () => {
+      stopVoiceRecordRef.current();
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") end();
+    };
+    window.addEventListener("keydown", onKey, true);
+    const onVis = () => {
+      if (document.visibilityState === "hidden") end();
+    };
+    document.addEventListener("visibilitychange", onVis);
+    return () => {
+      window.removeEventListener("keydown", onKey, true);
+      document.removeEventListener("visibilitychange", onVis);
+    };
+  }, [isRecordingVoice]);
+
   const activeChannel = useMemo(() => channels.find((c) => c.id === activeChannelId), [channels, activeChannelId]);
   const activeGroupChat = useMemo(() => groupChats.find((g) => g.id === activeGroupChatId), [groupChats, activeGroupChatId]);
   const activeDirectChat = useMemo(() => directChats.find((d) => d.id === activeDirectChatId), [directChats, activeDirectChatId]);
@@ -595,14 +615,15 @@ export default function App() {
 
   const typingRef = useRef<{ started: boolean; stopTimerId: number | null }>({ started: false, stopTimerId: null });
   const localFileMessageIdByFileIdRef = useRef(new Map<string, string>());
-  const fileStatusWaitersRef = useRef(
-    new Map<string, { resolve: () => void; reject: (e: Error) => void; timeoutId: number }>(),
-  );
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const mediaChunksRef = useRef<BlobPart[]>([]);
   const voiceStartAtRef = useRef<number>(0);
-  const voiceTouchActiveRef = useRef(false);
+  /** Пользователь отпустил кнопку до окончания await getUserMedia / до rec.start */
+  const voiceRecordAbortRef = useRef(false);
+  const voiceStartingRef = useRef(false);
+  /** Чтобы глобальный pointerup (ниже) вызывал актуальный stopVoiceRecord */
+  const stopVoiceRecordRef = useRef<() => void>(() => {});
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const messagesWrapRef = useRef<HTMLDivElement | null>(null);
@@ -1209,19 +1230,6 @@ export default function App() {
             prev.map((m) => (m.id === localId ? { ...m, _localFileState: "failed", _localError: reason || status } : m)),
           );
         }
-      }
-
-      const waiter = fileId ? fileStatusWaitersRef.current.get(fileId) : undefined;
-      if (!waiter) return;
-      if (status === "clean") {
-        clearTimeout(waiter.timeoutId);
-        fileStatusWaitersRef.current.delete(fileId);
-        waiter.resolve();
-      } else if (status === "infected" || status === "blocked" || status === "error") {
-        const reason = evt?.blockedReason ? ` (${String(evt.blockedReason)})` : "";
-        clearTimeout(waiter.timeoutId);
-        fileStatusWaitersRef.current.delete(fileId);
-        waiter.reject(new Error(`Файл не прошел проверку: ${status}${reason}`));
       }
     });
     setSocket(s);
@@ -2447,38 +2455,16 @@ export default function App() {
     async function sleep(ms: number) {
       await new Promise((r) => setTimeout(r, ms));
     }
-    async function waitForFileClean(fileId: string, timeoutMs = 60_000) {
-      if (socket) {
-        await new Promise<void>((resolve, reject) => {
-          const existing = fileStatusWaitersRef.current.get(fileId);
-          if (existing) {
-            clearTimeout(existing.timeoutId);
-            fileStatusWaitersRef.current.delete(fileId);
-          }
-          const timeoutId = window.setTimeout(() => {
-            fileStatusWaitersRef.current.delete(fileId);
-            reject(new Error("Таймаут ожидания антивирусной проверки (socket)"));
-          }, timeoutMs);
-          fileStatusWaitersRef.current.set(fileId, { resolve, reject, timeoutId });
-        });
-        return;
-      }
-
-      const started = Date.now();
-      while (Date.now() - started < timeoutMs) {
-        const data = await gql<{ file: { id: string; avStatus: string; blockedReason?: string | null } }>(
-          `query($id: ID!) { file(id: $id) { id avStatus blockedReason } }`,
-          { id: fileId },
-          token,
-        );
-        const status = String(data.file.avStatus || "");
-        if (status === "clean") return;
-        if (status === "infected" || status === "blocked" || status === "error") {
-          throw new Error(`Файл не прошел проверку: ${status}${data.file.blockedReason ? ` (${data.file.blockedReason})` : ""}`);
-        }
-        await sleep(1000);
-      }
-      throw new Error("Таймаут ожидания антивирусной проверки (pending слишком долго)");
+    /** Пока файл не clean, send падает; не раздуваем матч под «service unavailable». */
+    function isFileNotReadyError(e: unknown) {
+      const msg = String((e as Error)?.message ?? e ?? "").toLowerCase();
+      return (
+        msg.includes("file not available") ||
+        msg.includes("not clean") ||
+        (msg.includes("pending") && (msg.includes("file") || msg.includes("scan") || msg.includes("av"))) ||
+        ((msg.includes("not available") || msg.includes("unavailable")) &&
+          (msg.includes("file") || msg.includes("download")))
+      );
     }
 
     const presign = await gql<{ createPresignedUpload: { fileId: string; uploadUrl: string } }>(
@@ -2581,52 +2567,101 @@ export default function App() {
       await gql<{ confirmFileUploaded: boolean }>(`mutation($fileId: ID!) { confirmFileUploaded(fileId: $fileId) }`, { fileId }, token);
 
       setMessages((prev) => prev.map((m) => (m.id === localId ? { ...m, _localFileState: "scanning" } : m)));
-      await waitForFileClean(fileId);
 
-      if (mode === "channels") {
-        const data = await gql<{ sendFileMessage: Message }>(
-          `mutation($input: SendFileMessageInput!) {
-            sendFileMessage(input: $input) { id content createdAt type author { email } reactions { emoji count viewerHasReacted } file { id originalName mimeType size downloadUrl } }
+      /* Не запрашиваем `file { ... }` в ответе мутации: резолвер File тянет presigned URL и на старых бэках
+         падает, пока запись ещё pending — мутация целиком ошибкой даже после успешного createMessage. */
+      const maxSendAttempts = 60;
+      for (let attempt = 0; attempt < maxSendAttempts; attempt++) {
+        try {
+          if (mode === "channels") {
+            const data = await gql<{ sendFileMessage: Message }>(
+              `mutation($input: SendFileMessageInput!) {
+            sendFileMessage(input: $input) { id content createdAt type author { email } reactions { emoji count viewerHasReacted } }
           }`,
-          { input: { channelId: activeChannelId, fileId, kind } },
-          token,
-        );
-        setMessages((prev) => prev.map((m) => (m.id === localId ? (data.sendFileMessage as any) : m)));
-      } else if (mode === "groups") {
-        const data = await gql<{ sendGroupChatFileMessage: Message }>(
-          `mutation($input: SendGroupChatFileMessageInput!) {
-            sendGroupChatFileMessage(input: $input) { id content createdAt type author { email } reactions { emoji count viewerHasReacted } file { id originalName mimeType size downloadUrl } }
+              { input: { channelId: activeChannelId, fileId, kind } },
+              token,
+            );
+            const sent = data.sendFileMessage as any;
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === localId
+                  ? {
+                      ...sent,
+                      file: {
+                        id: fileId,
+                        originalName: originalName || null,
+                        mimeType: effectiveMime,
+                        size: blob.size,
+                      },
+                    }
+                  : m,
+              ),
+            );
+            void hydrateDownloadUrl(localId, fileId);
+            return;
+          }
+          if (mode === "groups") {
+            const data = await gql<{ sendGroupChatFileMessage: Message }>(
+              `mutation($input: SendGroupChatFileMessageInput!) {
+            sendGroupChatFileMessage(input: $input) { id content createdAt type author { email } reactions { emoji count viewerHasReacted } }
           }`,
-          { input: { groupChatId: activeGroupChatId, fileId, kind } },
-          token,
-        );
-        setMessages((prev) => prev.map((m) => (m.id === localId ? (data.sendGroupChatFileMessage as any) : m)));
-      } else {
-        const data = await gql<{ sendDirectFileMessage: any }>(
-          `mutation($input: SendDirectFileMessageInput!) {
+              { input: { groupChatId: activeGroupChatId, fileId, kind } },
+              token,
+            );
+            const sent = data.sendGroupChatFileMessage as any;
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === localId
+                  ? {
+                      ...sent,
+                      file: {
+                        id: fileId,
+                        originalName: originalName || null,
+                        mimeType: effectiveMime,
+                        size: blob.size,
+                      },
+                    }
+                  : m,
+              ),
+            );
+            void hydrateDownloadUrl(localId, fileId);
+            return;
+          }
+          const data = await gql<{ sendDirectFileMessage: any }>(
+            `mutation($input: SendDirectFileMessageInput!) {
             sendDirectFileMessage(input: $input) {
               id directChatId content createdAt type author { email }
             }
           }`,
-          { input: { directChatId: activeDirectChatId, fileId, kind } },
-          token,
-        );
-        setMessages((prev) =>
-          prev.map((m) =>
-            m.id === localId
-              ? {
-                  id: data.sendDirectFileMessage.id,
-                  content: data.sendDirectFileMessage.content ?? "",
-                  createdAt: data.sendDirectFileMessage.createdAt,
-                  author: data.sendDirectFileMessage.author,
-                  type: data.sendDirectFileMessage.type,
-                  reactions: [],
-                  file: { id: fileId, originalName: originalName || null, mimeType: effectiveMime, size: blob.size },
-                }
-              : m,
-          ),
-        );
+            { input: { directChatId: activeDirectChatId, fileId, kind } },
+            token,
+          );
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === localId
+                ? {
+                    id: data.sendDirectFileMessage.id,
+                    content: data.sendDirectFileMessage.content ?? "",
+                    createdAt: data.sendDirectFileMessage.createdAt,
+                    author: data.sendDirectFileMessage.author,
+                    type: data.sendDirectFileMessage.type,
+                    reactions: [],
+                    file: { id: fileId, originalName: originalName || null, mimeType: effectiveMime, size: blob.size },
+                  }
+                : m,
+            ),
+          );
+          void hydrateDownloadUrl(localId, fileId);
+          return;
+        } catch (e: unknown) {
+          if (isFileNotReadyError(e) && attempt < maxSendAttempts - 1) {
+            await sleep(1000);
+            continue;
+          }
+          throw e;
+        }
       }
+      throw new Error("Таймаут: файл не стал доступен для отправки (антивирус/очередь)");
     } catch (e: any) {
       const msg = String(e?.message ?? e ?? "Upload failed");
       setMessages((prev) => prev.map((m) => (m.id === localId ? { ...m, _localFileState: "failed", _localError: msg } : m)));
@@ -2636,13 +2671,14 @@ export default function App() {
 
   async function hydrateDownloadUrl(messageId: string, fileId: string) {
     if (!token) return;
-    const data = await gql<{ file: { id: string; downloadUrl: string; originalName?: string | null; mimeType: string; size: number } }>(
+    const data = await gql<{ file: { id: string; downloadUrl?: string | null; originalName?: string | null; mimeType: string; size: number } }>(
       `query($id: ID!) {
         file(id: $id) { id originalName mimeType size downloadUrl }
       }`,
       { id: fileId },
       token,
     );
+    const url = data.file.downloadUrl ? String(data.file.downloadUrl) : undefined;
     setMessages((prev) =>
       prev.map((m) =>
         m.id === messageId
@@ -2653,7 +2689,7 @@ export default function App() {
                 originalName: data.file.originalName ?? m.file?.originalName ?? null,
                 mimeType: data.file.mimeType,
                 size: data.file.size,
-                downloadUrl: data.file.downloadUrl,
+                ...(url ? { downloadUrl: url } : {}),
               },
             }
           : m,
@@ -2673,86 +2709,125 @@ export default function App() {
   }
 
   async function startVoiceRecord() {
-    if (isRecordingVoice || mediaRecorderRef.current) return;
+    if (isRecordingVoice || mediaRecorderRef.current || voiceStartingRef.current) return;
     if (!navigator.mediaDevices?.getUserMedia) throw new Error("getUserMedia not supported");
     if (typeof MediaRecorder === "undefined") throw new Error("MediaRecorder not supported in browser");
     setChatError("");
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    mediaStreamRef.current = stream;
-    const preferredTypes = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"];
-    const supported = preferredTypes.find((t) => (MediaRecorder as any).isTypeSupported?.(t));
-    const rec = supported ? new MediaRecorder(stream, { mimeType: supported }) : new MediaRecorder(stream);
-    mediaRecorderRef.current = rec;
-    voiceStartAtRef.current = Date.now();
-    mediaChunksRef.current = [];
-    rec.ondataavailable = (e) => {
-      if (e.data?.size) mediaChunksRef.current.push(e.data);
-    };
-    rec.onstop = async () => {
+    voiceRecordAbortRef.current = false;
+    voiceStartingRef.current = true;
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      if (voiceRecordAbortRef.current) {
+        stream.getTracks().forEach((t) => t.stop());
+        return;
+      }
+      mediaStreamRef.current = stream;
+      const preferredTypes = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"];
+      const supported = preferredTypes.find((t) => (MediaRecorder as any).isTypeSupported?.(t));
+      const rec = supported ? new MediaRecorder(stream, { mimeType: supported }) : new MediaRecorder(stream);
+      mediaRecorderRef.current = rec;
+      voiceStartAtRef.current = Date.now();
+      mediaChunksRef.current = [];
+      rec.ondataavailable = (e) => {
+        if (e.data?.size) mediaChunksRef.current.push(e.data);
+      };
+      rec.onstop = async () => {
+        try {
+          const blob = new Blob(mediaChunksRef.current, { type: rec.mimeType || "audio/webm" });
+          mediaChunksRef.current = [];
+          const durationMs = Date.now() - voiceStartAtRef.current;
+          if (durationMs < 250) {
+            setChatError("Слишком короткая запись. Запишите дольше.");
+            return;
+          }
+          if (blob.size > 0) {
+            await uploadAndSend("voice", blob, `voice-${Date.now()}.webm`);
+          } else {
+            setChatError("Голосовое не записалось. Разрешите доступ к микрофону и попробуйте снова.");
+          }
+        } catch (e: any) {
+          const msg = String(e?.message ?? e ?? "Не удалось отправить голосовое");
+          setChatError(msg);
+          pushLog(`voice error: ${msg}`);
+        } finally {
+          mediaStreamRef.current?.getTracks().forEach((t) => t.stop());
+          mediaStreamRef.current = null;
+          mediaRecorderRef.current = null;
+          setIsRecordingVoice(false);
+        }
+      };
+      if (voiceRecordAbortRef.current) {
+        stream.getTracks().forEach((t) => t.stop());
+        mediaStreamRef.current = null;
+        mediaRecorderRef.current = null;
+        return;
+      }
+      rec.start();
+      setIsRecordingVoice(true);
+      setVoiceHoldMs(0);
+      pushLog("Запись голосового... нажмите 🎤 или «Готово» для отправки");
+    } catch (e: any) {
+      const msg = String(e?.message ?? e ?? "Не удалось начать запись");
+      setChatError(msg);
+      pushLog(`voice start error: ${msg}`);
+      mediaStreamRef.current?.getTracks().forEach((t) => t.stop());
+      mediaStreamRef.current = null;
+      mediaRecorderRef.current = null;
+      setIsRecordingVoice(false);
+    } finally {
+      voiceStartingRef.current = false;
+    }
+  }
+
+  function stopVoiceRecord() {
+    voiceRecordAbortRef.current = true;
+    setIsRecordingVoice(false);
+    const rec = mediaRecorderRef.current;
+    if (!rec) {
+      mediaStreamRef.current?.getTracks().forEach((t) => t.stop());
+      mediaStreamRef.current = null;
+      return;
+    }
+    if (rec.state === "inactive") {
+      mediaStreamRef.current?.getTracks().forEach((t) => t.stop());
+      mediaStreamRef.current = null;
+      mediaRecorderRef.current = null;
+      return;
+    }
+    if (rec.state === "recording" || rec.state === "paused") {
       try {
-        const blob = new Blob(mediaChunksRef.current, { type: rec.mimeType || "audio/webm" });
-        mediaChunksRef.current = [];
-        const durationMs = Date.now() - voiceStartAtRef.current;
-        if (durationMs < 250) {
-          setChatError("Слишком короткая запись. Удерживайте кнопку дольше.");
-          return;
-        }
-        if (blob.size > 0) {
-          await uploadAndSend("voice", blob, `voice-${Date.now()}.webm`);
-        } else {
-          setChatError("Голосовое не записалось. Разрешите доступ к микрофону и попробуйте снова.");
-        }
-      } catch (e: any) {
-        const msg = String(e?.message ?? e ?? "Не удалось отправить голосовое");
-        setChatError(msg);
-        pushLog(`voice error: ${msg}`);
-      } finally {
+        rec.stop();
+      } catch {
         mediaStreamRef.current?.getTracks().forEach((t) => t.stop());
         mediaStreamRef.current = null;
         mediaRecorderRef.current = null;
         setIsRecordingVoice(false);
       }
-    };
-    rec.start();
-    setIsRecordingVoice(true);
-    setVoiceHoldMs(0);
-    pushLog("Запись голосового... удерживайте кнопку");
-  }
-
-  function stopVoiceRecord() {
-    const rec = mediaRecorderRef.current;
-    if (!rec || rec.state === "inactive") return;
-    try {
-      rec.stop();
-    } catch {
+    } else {
       mediaStreamRef.current?.getTracks().forEach((t) => t.stop());
       mediaStreamRef.current = null;
       mediaRecorderRef.current = null;
-      setIsRecordingVoice(false);
     }
   }
 
-  function onVoiceMouseDown(e: React.MouseEvent<HTMLButtonElement>) {
-    if (voiceTouchActiveRef.current) return;
-    e.preventDefault();
-    void startVoiceRecord();
-  }
-  function onVoiceTouchStart(e: React.TouchEvent<HTMLButtonElement>) {
-    voiceTouchActiveRef.current = true;
-    e.preventDefault();
-    void startVoiceRecord();
-  }
-  function onVoiceTouchEnd(e: React.TouchEvent<HTMLButtonElement>) {
-    e.preventDefault();
-    stopVoiceRecord();
-    window.setTimeout(() => {
-      voiceTouchActiveRef.current = false;
-    }, 200);
-  }
+  stopVoiceRecordRef.current = stopVoiceRecord;
 
   const composerDisabled = (mode === "channels" ? !activeChannelId : mode === "groups" ? !activeGroupChatId : !activeDirectChatId) || !canWriteChats;
   const uploadDisabled = composerDisabled;
   const canSendText = !!newMessage.trim() && canWriteChats;
+
+  /** Дважды нажать 🎤: старт / стоп (без удержания — надёжнее на мобильных). */
+  function onVoiceMicClick(e: React.MouseEvent<HTMLButtonElement>) {
+    e.preventDefault();
+    if (uploadDisabled) return;
+    const rec = mediaRecorderRef.current;
+    const active = Boolean(rec && (rec.state === "recording" || rec.state === "paused")) || isRecordingVoice;
+    if (active) {
+      stopVoiceRecord();
+    } else {
+      void startVoiceRecord();
+    }
+  }
 
   const isAuthed = !!token;
 
@@ -4513,15 +4588,21 @@ export default function App() {
 
         <form onSubmit={(e) => void sendMessage(e)} className="composer">
           {isRecordingVoice ? (
-            <div className="voiceHoldBar" style={{ gridColumn: "1 / -1" }}>
+            <div className="voiceHoldBar" style={{ gridColumn: "1 / -1", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
               <span className="dot" />
-              Идет запись: {Math.floor(voiceHoldMs / 60000)
-                .toString()
-                .padStart(2, "0")}
-              :
-              {Math.floor((voiceHoldMs % 60000) / 1000)
-                .toString()
-                .padStart(2, "0")} (отпустите кнопку для отправки)
+              <span>
+                Идет запись: {Math.floor(voiceHoldMs / 60000)
+                  .toString()
+                  .padStart(2, "0")}
+                :
+                {Math.floor((voiceHoldMs % 60000) / 1000)
+                  .toString()
+                  .padStart(2, "0")}{" "}
+                (нажмите 🎤 снова, «Готово» или Esc)
+              </span>
+              <button type="button" className="chip" onClick={() => stopVoiceRecord()}>
+                Готово
+              </button>
             </div>
           ) : null}
           {chatError ? (
@@ -4542,14 +4623,10 @@ export default function App() {
           </button>
           <button
             type="button"
-            onMouseDown={onVoiceMouseDown}
-            onMouseUp={stopVoiceRecord}
-            onMouseLeave={stopVoiceRecord}
-            onTouchStart={onVoiceTouchStart}
-            onTouchEnd={onVoiceTouchEnd}
-            onTouchCancel={onVoiceTouchEnd}
+            style={{ touchAction: "manipulation" }}
+            onClick={onVoiceMicClick}
             disabled={uploadDisabled}
-            title={isRecordingVoice ? "Отпустите, чтобы отправить" : "Удерживайте для записи"}
+            title={isRecordingVoice ? "Нажмите ещё раз, чтобы отправить" : "Нажмите для записи голосового"}
           >
             🎤
           </button>
@@ -4611,6 +4688,12 @@ export default function App() {
             </div>
           ) : null}
         </form>
+        <div
+          style={{ fontSize: 10, opacity: 0.42, padding: "2px 10px 6px", gridColumn: "1 / -1" }}
+          title="Если после деплоя дата/время не меняются — браузер или CDN отдают старую сборку. Должен быть текст «нажмите 🎤 снова», не «отпустите кнопку»."
+        >
+          UI-сборка: {__BUILD_TIME__}
+        </div>
       </main>
 
       {showRightPanel ? (

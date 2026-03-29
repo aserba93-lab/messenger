@@ -19,6 +19,8 @@ jobs:
           port: 22
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.DEPLOY_SSH_KEY }}
+          # Обязателен, если приватный ключ создан с passphrase (иначе: ssh.ParsePrivateKey: passphrase protected)
+          passphrase: ${{ secrets.DEPLOY_SSH_PASSPHRASE }}
           timeout: 60s
           command_timeout: 20m
           script_stop: true

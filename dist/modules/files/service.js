@@ -3,6 +3,7 @@ import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { env } from "../../config/env.js";
 import { prisma } from "../../db/prisma.js";
 import { enqueueFileScan } from "../../queues/fileScanQueue.js";
+import { emitToUser } from "../../socket/emitter.js";
 import crypto from "crypto";
 import path from "path";
 import fs from "node:fs/promises";
@@ -31,15 +32,42 @@ function inferMimeFromName(name) {
         return "audio/webm";
     return "application/octet-stream";
 }
+function s3Credentials() {
+    return {
+        accessKeyId: env.MINIO_ACCESS_KEY,
+        secretAccessKey: env.MINIO_SECRET_KEY,
+    };
+}
+/** Прямое подключение к MinIO (upload с бэкенда, worker). */
 function s3() {
     return new S3Client({
         region: env.MINIO_REGION,
         endpoint: env.MINIO_ENDPOINT,
         forcePathStyle: env.MINIO_FORCE_PATH_STYLE,
-        credentials: {
-            accessKeyId: env.MINIO_ACCESS_KEY,
-            secretAccessKey: env.MINIO_SECRET_KEY,
-        },
+        credentials: s3Credentials(),
+    });
+}
+/** Подпись URL для браузера: host должен совпадать с TLS-сертификатом (часто основной домен за nginx → MinIO). */
+function s3ForPresignedUrls() {
+    const endpoint = env.MINIO_PRESIGN_ENDPOINT ?? env.MINIO_ENDPOINT;
+    return new S3Client({
+        region: env.MINIO_REGION,
+        endpoint,
+        forcePathStyle: env.MINIO_FORCE_PATH_STYLE,
+        credentials: s3Credentials(),
+    });
+}
+/** Событие как у fileScanWorker → клиент с socket ждёт file:status в waitForFileClean */
+function notifyFileAvStatus(file) {
+    if (!file?.uploadedByUserId)
+        return;
+    emitToUser(file.uploadedByUserId, "file:status", {
+        fileId: file.id,
+        organizationId: file.organizationId,
+        uploadedByUserId: file.uploadedByUserId,
+        avStatus: file.avStatus,
+        avCheckedAt: file.avCheckedAt ? file.avCheckedAt.toISOString() : null,
+        blockedReason: file.blockedReason,
     });
 }
 export class FilesService {
@@ -68,27 +96,33 @@ export class FilesService {
                 avStatus: "pending",
             },
         });
-        const url = await getSignedUrl(s3(), new PutObjectCommand({
+        const url = await getSignedUrl(s3ForPresignedUrls(), new PutObjectCommand({
             Bucket: env.MINIO_BUCKET,
             Key: key,
             ContentType: mimeResolved,
         }), { expiresIn: 60 * 5 });
         return { fileId: file.id, key, uploadUrl: url };
     }
-    async getDownloadUrl(viewer, fileId) {
+    /** Метаданные + presigned URL только если clean (для опроса avStatus при pending — без ошибки). */
+    async getFileForViewer(viewer, fileId) {
         const file = await prisma.file.findUnique({ where: { id: fileId } });
         if (!file || file.organizationId !== viewer.organizationId)
             throw new Error("Not found");
         if (file.avStatus !== "clean")
-            throw new Error("File not available");
-        if (file.url && file.url.startsWith("/files/local/")) {
+            return { file, downloadUrl: null };
+        if (file.url && file.url.startsWith("/files/local/"))
             return { file, downloadUrl: file.url };
-        }
-        const url = await getSignedUrl(s3(), new GetObjectCommand({
+        const url = await getSignedUrl(s3ForPresignedUrls(), new GetObjectCommand({
             Bucket: file.bucket,
             Key: file.key,
         }), { expiresIn: 60 * 10 });
         return { file, downloadUrl: url };
+    }
+    async getDownloadUrl(viewer, fileId) {
+        const { file, downloadUrl } = await this.getFileForViewer(viewer, fileId);
+        if (file.avStatus !== "clean" || !downloadUrl)
+            throw new Error("File not available");
+        return { file, downloadUrl };
     }
     async confirmFileUploaded(viewer, fileId) {
         const file = await prisma.file.findUnique({ where: { id: fileId } });
@@ -97,13 +131,22 @@ export class FilesService {
         if (file.uploadedByUserId !== viewer.userId)
             throw new Error("Forbidden");
         if (env.FILES_AUTO_MARK_CLEAN || env.NODE_ENV !== "production") {
-            await prisma.file.update({
+            const updated = await prisma.file.update({
                 where: { id: fileId },
                 data: { avStatus: "clean", avCheckedAt: new Date(), blockedReason: null },
             });
+            notifyFileAvStatus(updated);
             return true;
         }
-        // Queue background scan (clamd). The file remains pending until scanned.
+        // enqueueFileScan при FILES_SCAN_PROVIDER !== "clamd" ничего не делает — без этого файл вечно pending.
+        if (env.FILES_SCAN_PROVIDER !== "clamd") {
+            const updated = await prisma.file.update({
+                where: { id: fileId },
+                data: { avStatus: "clean", avCheckedAt: new Date(), blockedReason: null },
+            });
+            notifyFileAvStatus(updated);
+            return true;
+        }
         try {
             await enqueueFileScan(fileId);
         }
@@ -111,10 +154,11 @@ export class FilesService {
             // Dev fallback: when Redis/queue is unavailable, don't block uploads.
             // In production, configure Redis + scanner and keep strict flow.
             if (env.NODE_ENV !== "production") {
-                await prisma.file.update({
+                const updated = await prisma.file.update({
                     where: { id: fileId },
                     data: { avStatus: "clean", avCheckedAt: new Date(), blockedReason: "scan-bypass:redis-unavailable" },
                 });
+                notifyFileAvStatus(updated);
                 return true;
             }
             throw e;

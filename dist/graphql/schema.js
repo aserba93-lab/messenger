@@ -342,7 +342,7 @@ export const typeDefs = /* GraphQL */ `
     mimeType: String!
     size: Int!
     originalName: String
-    downloadUrl: String!
+    downloadUrl: String
     avStatus: String!
     avCheckedAt: DateTime
     blockedReason: String

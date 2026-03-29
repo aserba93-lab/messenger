@@ -42,6 +42,9 @@ const EnvSchema = z.object({
     MINIO_ACCESS_KEY: z.string().min(1),
     MINIO_SECRET_KEY: z.string().min(1),
     MINIO_FORCE_PATH_STYLE: envBool(true),
+    /** Если задан, presigned URL (upload/download) для браузера подписываются с этим host (напр. https://sf-communication.ru),
+     * а MINIO_ENDPOINT остаётся внутренним (http://127.0.0.1:9000). Нужен nginx proxy с основного домена на MinIO. */
+    MINIO_PRESIGN_ENDPOINT: z.preprocess((v) => (v === "" || v === undefined || v === null ? undefined : v), z.string().url().optional()),
     // Files
     FILES_AUTO_MARK_CLEAN: envBool(false),
     FILES_SCAN_PROVIDER: z.enum(["none", "clamd"]).default("none"),
