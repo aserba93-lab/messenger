@@ -68,7 +68,7 @@ type Message = {
   id: string;
   content: string;
   createdAt: string;
-  author: { email: string; firstName?: string | null; lastName?: string | null };
+  author: { email: string; firstName?: string | null; middleName?: string | null; lastName?: string | null };
   type?: string;
   file?: FileInfo | null;
   reactions?: Reaction[];
@@ -87,7 +87,7 @@ type DirectChatMessage = {
   content: string;
   createdAt: string;
   updatedAt?: string;
-  author: { email: string; firstName?: string | null; lastName?: string | null };
+  author: { email: string; firstName?: string | null; middleName?: string | null; lastName?: string | null };
   type?: string;
   parentMessageId?: string | null;
   reactions?: Reaction[];
@@ -166,7 +166,7 @@ function fileFormatLabel(originalName: string | null | undefined, mimeType: stri
   return part ? part.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 12) : "FILE";
 }
 
-/** Имя для списка чатов и заголовков — без email, только ФИО или нейтральная подпись */
+/** Имя для списка чатов и заголовков — фамилия, имя, отчество (если есть); без email */
 function displayUserNameForSidebar(
   u: { email: string; firstName?: string | null; middleName?: string | null; lastName?: string | null } | undefined,
   fallback: string,
@@ -175,14 +175,35 @@ function displayUserNameForSidebar(
     if (fallback && !fallback.includes("@")) return `Контакт ${fallback.slice(0, 8)}`;
     return "Участник";
   }
-  const name = [u.firstName, u.middleName, u.lastName]
-    .map((x) => (x != null ? String(x).trim() : ""))
-    .filter(Boolean)
-    .join(" ")
-    .trim();
+  const last = u.lastName != null ? String(u.lastName).trim() : "";
+  const first = u.firstName != null ? String(u.firstName).trim() : "";
+  const middle = u.middleName != null ? String(u.middleName).trim() : "";
+  const name = [last, first, middle].filter(Boolean).join(" ").trim();
   if (name) return name;
   if (fallback && !fallback.includes("@")) return `Контакт ${fallback.slice(0, 8)}`;
   return "Участник";
+}
+
+function isAppleMobileDevice(): boolean {
+  if (typeof navigator === "undefined") return false;
+  return /iPhone|iPad|iPod/i.test(navigator.userAgent);
+}
+
+function orgRoleLabelRu(role: string | null | undefined): string {
+  switch (role) {
+    case "owner":
+      return "Владелец";
+    case "admin":
+      return "Администратор";
+    case "manager":
+      return "Менеджер";
+    case "employee":
+      return "Сотрудник";
+    case "guest":
+      return "Гость";
+    default:
+      return "Сотрудник";
+  }
 }
 
 /** Одна «стикерная» графема (эмодзи) — для увеличенного отображения в чате */
@@ -359,7 +380,7 @@ export default function App() {
   }, [chatMuteMap]);
   const [archivedChatByKey, setArchivedChatByKey] = useState<Record<string, boolean>>({});
   const [chatFolder, setChatFolder] = useState<"all" | "unread" | "archived">("all");
-  const [chatMenu, setChatMenu] = useState<null | { x: number; y: number; key: string }>(null);
+  const [chatMenu, setChatMenu] = useState<null | { x: number; y: number; key: string; sub: "main" | "notify" }>(null);
   const [callMenuOpen, setCallMenuOpen] = useState(false);
   const callMenuWrapRef = useRef<HTMLDivElement | null>(null);
   const [msgMenu, setMsgMenu] = useState<null | { x: number; y: number; messageId: string }>(null);
@@ -1542,6 +1563,7 @@ export default function App() {
         author: {
           email: String(m.author?.email ?? "user"),
           firstName: m.author?.firstName ?? null,
+          middleName: m.author?.middleName ?? null,
           lastName: m.author?.lastName ?? null,
         },
         type: m.type,
@@ -1604,10 +1626,13 @@ export default function App() {
         return next;
       });
       setMessages((prev) => [...prev, msg]);
+      if (msg.file?.id && !msg.file.downloadUrl) void hydrateDownloadUrl(String(msg.file.id));
     });
     s.on("message:update", (m: any) => {
       const id = String(m?.id ?? "");
       if (!id) return;
+      const nextFile = m.file ?? null;
+      if (nextFile?.id && !nextFile.downloadUrl) void hydrateDownloadUrl(String(nextFile.id));
       setMessages((prev) =>
         prev.map((x) =>
           x.id === id
@@ -1921,7 +1946,7 @@ export default function App() {
       const data = await gql<{ searchMessages: Message[] }>(
         `query($query: String!, $limit: Int!, $channelId: ID, $groupChatId: ID, $directChatId: ID) {
           searchMessages(query: $query, limit: $limit, channelId: $channelId, groupChatId: $groupChatId, directChatId: $directChatId) {
-            id content createdAt author { email firstName lastName }
+            id content createdAt author { email firstName middleName lastName }
           }
         }`,
         vars,
@@ -2824,7 +2849,7 @@ export default function App() {
     let y = r.top;
     if (y + menuH > window.innerHeight - pad) y = window.innerHeight - menuH - pad;
     y = Math.max(pad, y);
-    setChatMenu({ x, y, key });
+    setChatMenu({ x, y, key, sub: "main" });
   }
 
   function openChatMenuAtEditButton(e: MouseEvent, key: string) {
@@ -2840,7 +2865,7 @@ export default function App() {
     if (x + menuW > window.innerWidth - pad) x = window.innerWidth - menuW - pad;
     let y = r.bottom + 4;
     if (y + menuH > window.innerHeight - pad) y = Math.max(pad, r.top - menuH - 4);
-    setChatMenu({ x, y, key });
+    setChatMenu({ x, y, key, sub: "main" });
   }
 
   async function loadMessages(channelId: string) {
@@ -2848,7 +2873,7 @@ export default function App() {
     const data = await gql<{ messages: { items: Message[] } }>(
       `query($channelId: ID!, $limit: Int!) {
         messages(channelId: $channelId, limit: $limit) {
-          items { id content createdAt editedAt isDeleted type parentMessageId author { email firstName lastName } reactions { emoji count viewerHasReacted } file { id originalName mimeType size downloadUrl } }
+          items { id content createdAt editedAt isDeleted type parentMessageId author { email firstName middleName lastName } reactions { emoji count viewerHasReacted } file { id originalName mimeType size downloadUrl } }
         }
       }`,
       { channelId, limit: 50 },
@@ -2866,7 +2891,7 @@ export default function App() {
     const data = await gql<{ groupChatMessages: Message[] }>(
       `query($groupChatId: ID!, $limit: Int!) {
         groupChatMessages(groupChatId: $groupChatId, limit: $limit) {
-          id content createdAt editedAt isDeleted type parentMessageId author { email firstName lastName } reactions { emoji count viewerHasReacted } file { id originalName mimeType size downloadUrl }
+          id content createdAt editedAt isDeleted type parentMessageId author { email firstName middleName lastName } reactions { emoji count viewerHasReacted } file { id originalName mimeType size downloadUrl }
         }
       }`,
       { groupChatId, limit: 200 },
@@ -2891,7 +2916,7 @@ export default function App() {
           updatedAt
           type
           parentMessageId
-          author { email firstName lastName }
+          author { email firstName middleName lastName }
           reactions { emoji count viewerHasReacted }
           file { id originalName mimeType size downloadUrl }
         }
@@ -2907,6 +2932,7 @@ export default function App() {
         author: {
           email: m.author.email,
           firstName: m.author.firstName ?? null,
+          middleName: m.author.middleName ?? null,
           lastName: m.author.lastName ?? null,
         },
         type: m.type,
@@ -2926,7 +2952,7 @@ export default function App() {
     const data = await gql<{ thread: Message[] }>(
       `query($parentMessageId: ID!, $limit: Int!) {
         thread(parentMessageId: $parentMessageId, limit: $limit) {
-          id content createdAt editedAt updatedAt isDeleted type parentMessageId author { email } reactions { emoji count viewerHasReacted } file { id originalName mimeType size downloadUrl }
+          id content createdAt editedAt updatedAt isDeleted type parentMessageId author { email firstName middleName lastName } reactions { emoji count viewerHasReacted } file { id originalName mimeType size downloadUrl }
         }
       }`,
       { parentMessageId, limit: 200 },
@@ -3003,6 +3029,7 @@ export default function App() {
       author: {
         email: selfAuthorEmail || "user",
         firstName: profileFirstName || null,
+        middleName: profileMiddleName || null,
         lastName: profileLastName || null,
       },
       _sendState: "sending",
@@ -3019,7 +3046,7 @@ export default function App() {
         const data = await gql<{ sendMessage: Message }>(
           `mutation($channelId: ID!, $content: String!, $parentMessageId: ID) {
             sendMessage(input: { channelId: $channelId, content: $content, parentMessageId: $parentMessageId }) {
-              id content createdAt editedAt isDeleted type parentMessageId author { email firstName lastName } reactions { emoji count viewerHasReacted }
+              id content createdAt editedAt isDeleted type parentMessageId author { email firstName middleName lastName } reactions { emoji count viewerHasReacted }
             }
           }`,
           { channelId: activeChannelId, content, ...(parentMessageId ? { parentMessageId } : {}) },
@@ -3034,7 +3061,7 @@ export default function App() {
         const data = await gql<{ sendGroupChatMessage: Message }>(
           `mutation($groupChatId: ID!, $content: String!, $parentMessageId: ID) {
             sendGroupChatMessage(input: { groupChatId: $groupChatId, content: $content, parentMessageId: $parentMessageId }) {
-              id content createdAt editedAt isDeleted type parentMessageId author { email firstName lastName } reactions { emoji count viewerHasReacted }
+              id content createdAt editedAt isDeleted type parentMessageId author { email firstName middleName lastName } reactions { emoji count viewerHasReacted }
             }
           }`,
           { groupChatId: activeGroupChatId, content, ...(parentMessageId ? { parentMessageId } : {}) },
@@ -3058,7 +3085,7 @@ export default function App() {
         const data = await gql<{ sendDirectMessage: DirectChatMessage }>(
           `mutation($userId: ID!, $content: String!, $parentMessageId: ID) {
             sendDirectMessage(input: { userId: $userId, content: $content, parentMessageId: $parentMessageId }) {
-              id directChatId content createdAt updatedAt type parentMessageId author { email firstName lastName } reactions { emoji count viewerHasReacted } file { id originalName mimeType size downloadUrl }
+              id directChatId content createdAt updatedAt type parentMessageId author { email firstName middleName lastName } reactions { emoji count viewerHasReacted } file { id originalName mimeType size downloadUrl }
             }
           }`,
           { userId: peerUserId, content, ...(parentMessageId ? { parentMessageId } : {}) },
@@ -3222,7 +3249,12 @@ export default function App() {
       {
         id: localId,
         createdAt: new Date().toISOString(),
-        author: { email: selfAuthorEmail || "user" },
+        author: {
+          email: selfAuthorEmail || "user",
+          firstName: profileFirstName || null,
+          middleName: profileMiddleName || null,
+          lastName: profileLastName || null,
+        },
         type: kind,
         content: "",
         file: { id: fileId, originalName: originalName || null, mimeType: effectiveMime, size: blob.size },
@@ -3499,7 +3531,10 @@ export default function App() {
         return;
       }
       mediaStreamRef.current = stream;
-      const preferredTypes = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"];
+      const isApple = isAppleMobileDevice();
+      const preferredTypes = isApple
+        ? ["audio/mp4", "audio/mp4;codecs=mp4a.40.2", "audio/aac", "audio/webm", "audio/webm;codecs=opus"]
+        : ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/mp4;codecs=mp4a.40.2"];
       const supported = preferredTypes.find((t) => (MediaRecorder as any).isTypeSupported?.(t));
       const rec = supported ? new MediaRecorder(stream, { mimeType: supported }) : new MediaRecorder(stream);
       mediaRecorderRef.current = rec;
@@ -3510,7 +3545,7 @@ export default function App() {
       };
       rec.onstop = async () => {
         try {
-          await new Promise((r) => setTimeout(r, 80));
+          await new Promise((r) => setTimeout(r, isApple ? 240 : 80));
           const mime = (rec.mimeType && rec.mimeType !== "" ? rec.mimeType : "audio/webm").toLowerCase();
           const ext = mime.includes("mp4") || mime.includes("aac") || mime.includes("m4a") ? "m4a" : mime.includes("ogg") ? "ogg" : "webm";
           const blob = new Blob(mediaChunksRef.current, { type: mime });
@@ -4449,9 +4484,15 @@ export default function App() {
                     </div>
                     <div className="moreMenuProfileText">
                       <div className="moreMenuProfileName">
-                        {[profileFirstName, profileMiddleName, profileLastName].filter(Boolean).join(" ").trim() ||
-                          myProfileEmail ||
-                          loginIdentifier}
+                        {displayUserNameForSidebar(
+                          {
+                            email: myProfileEmail || loginIdentifier,
+                            lastName: profileLastName || null,
+                            firstName: profileFirstName || null,
+                            middleName: profileMiddleName || null,
+                          },
+                          myProfileEmail || loginIdentifier,
+                        )}
                       </div>
                       {profilePhone.trim() ? <div className="moreMenuProfilePhone">{profilePhone.trim()}</div> : null}
                     </div>
@@ -4641,40 +4682,62 @@ export default function App() {
 
         {chatMenu ? (
           <div className="chatMenu chatMenu--wide" style={{ top: chatMenu.y, left: chatMenu.x }} role="menu">
-            <button type="button" className="msgMenuItem" onClick={() => { togglePin(chatMenu.key); setChatMenu(null); }}>
-              {isPinned(chatMenu.key) ? "Открепить чат" : "Закрепить чат"}
-            </button>
-            <div className="msgMenuSep" />
-            <div className="msgMenuSub">🔕 Без уведомлений</div>
-            <button type="button" className="msgMenuItem" onClick={() => { setChatMute(chatMenu.key, 1); setChatMenu(null); }}>
-              1 ч
-            </button>
-            <button type="button" className="msgMenuItem" onClick={() => { setChatMute(chatMenu.key, 2); setChatMenu(null); }}>
-              2 ч
-            </button>
-            <button type="button" className="msgMenuItem" onClick={() => { setChatMute(chatMenu.key, 4); setChatMenu(null); }}>
-              4 ч
-            </button>
-            <button type="button" className="msgMenuItem" onClick={() => { setChatMute(chatMenu.key, 8); setChatMenu(null); }}>
-              8 ч
-            </button>
-            <button type="button" className="msgMenuItem" onClick={() => { setChatMute(chatMenu.key, 24); setChatMenu(null); }}>
-              24 ч
-            </button>
-            <button type="button" className="msgMenuItem" onClick={() => { setChatMute(chatMenu.key, "forever"); setChatMenu(null); }}>
-              Навсегда
-            </button>
-            <button type="button" className="msgMenuItem" onClick={() => { setChatMute(chatMenu.key, "off"); setChatMenu(null); }}>
-              Включить уведомления
-            </button>
-            <button type="button" className="msgMenuItem" onClick={() => { toggleArchive(chatMenu.key); setChatMenu(null); }}>
-              {isArchived(chatMenu.key) ? "Вернуть из архива" : "В архив"}
-            </button>
-            {!isArchived(chatMenu.key) ? (
-              <button type="button" className="msgMenuItem danger" onClick={() => removeChatFromList(chatMenu.key)}>
-                Удалить из списка
-              </button>
-            ) : null}
+            {chatMenu.sub === "main" ? (
+              <>
+                <button type="button" className="msgMenuItem" onClick={() => { togglePin(chatMenu.key); setChatMenu(null); }}>
+                  {isPinned(chatMenu.key) ? "Открепить чат" : "Закрепить чат"}
+                </button>
+                <div className="msgMenuSep" />
+                <button
+                  type="button"
+                  className="msgMenuItem msgMenuItem--emph"
+                  onClick={() => setChatMenu((m) => (m ? { ...m, sub: "notify" } : m))}
+                >
+                  🔔 Уведомления…
+                </button>
+                <button type="button" className="msgMenuItem" onClick={() => { toggleArchive(chatMenu.key); setChatMenu(null); }}>
+                  {isArchived(chatMenu.key) ? "Вернуть из архива" : "В архив"}
+                </button>
+                {!isArchived(chatMenu.key) ? (
+                  <button type="button" className="msgMenuItem danger" onClick={() => removeChatFromList(chatMenu.key)}>
+                    Удалить из списка
+                  </button>
+                ) : null}
+              </>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  className="msgMenuItem"
+                  onClick={() => setChatMenu((m) => (m ? { ...m, sub: "main" } : m))}
+                >
+                  ← Назад
+                </button>
+                <div className="msgMenuSep" />
+                <div className="msgMenuSub">Отключить уведомления на срок</div>
+                <button type="button" className="msgMenuItem" onClick={() => { setChatMute(chatMenu.key, 1); setChatMenu(null); }}>
+                  1 ч
+                </button>
+                <button type="button" className="msgMenuItem" onClick={() => { setChatMute(chatMenu.key, 2); setChatMenu(null); }}>
+                  2 ч
+                </button>
+                <button type="button" className="msgMenuItem" onClick={() => { setChatMute(chatMenu.key, 4); setChatMenu(null); }}>
+                  4 ч
+                </button>
+                <button type="button" className="msgMenuItem" onClick={() => { setChatMute(chatMenu.key, 8); setChatMenu(null); }}>
+                  8 ч
+                </button>
+                <button type="button" className="msgMenuItem" onClick={() => { setChatMute(chatMenu.key, 24); setChatMenu(null); }}>
+                  24 ч
+                </button>
+                <button type="button" className="msgMenuItem" onClick={() => { setChatMute(chatMenu.key, "forever"); setChatMenu(null); }}>
+                  Навсегда
+                </button>
+                <button type="button" className="msgMenuItem" onClick={() => { setChatMute(chatMenu.key, "off"); setChatMenu(null); }}>
+                  Включить уведомления
+                </button>
+              </>
+            )}
           </div>
         ) : null}
       </aside>
@@ -5063,70 +5126,74 @@ export default function App() {
                   <select
                     value={companyRoleFilter}
                     onChange={(e) => setCompanyRoleFilter(e.target.value as "all" | "owner" | "admin" | "manager" | "employee" | "guest")}
-                    style={{
-                      boxSizing: "border-box",
-                      padding: "8px 10px",
-                      borderRadius: 10,
-                      border: "1px solid rgba(255,255,255,0.12)",
-                      background: "rgba(0,0,0,0.25)",
-                      color: "inherit",
-                    }}
+                    className="companyFilterSelect"
                   >
-                    <option value="all">all roles</option>
-                    <option value="owner">owner</option>
-                    <option value="admin">admin</option>
-                    <option value="manager">manager</option>
-                    <option value="employee">employee</option>
-                    <option value="guest">guest</option>
+                    <option value="all">Все роли</option>
+                    <option value="owner">Владелец</option>
+                    <option value="admin">Администратор</option>
+                    <option value="manager">Менеджер</option>
+                    <option value="employee">Сотрудник</option>
+                    <option value="guest">Гость</option>
                   </select>
                   <button onClick={() => void loadUsers()} disabled={!token || !organizationId}>
                     Обновить
                   </button>
                 </div>
-                <div className="list companyList">
-                  {companyUsersFiltered.map((u) => (
-                    <div key={`cab-modal-${u.id}`} className="companyRow">
-                      <div style={{ minWidth: 0 }}>
-                        <div style={{ fontSize: 13, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{u.email}</div>
-                        {u.phone?.trim() ? (
-                          <div style={{ fontSize: 11, opacity: 0.75 }}>тел.: {u.phone.trim()}</div>
-                        ) : null}
-                        <div style={{ fontSize: 11, opacity: 0.7 }}>
-                          role: {u.role ?? "employee"} · dept: {u.department || "—"} · status: {u.status ?? "unknown"}
-                        </div>
-                      </div>
-                      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                        <select
-                          value={u.role ?? "employee"}
-                          onChange={(e) => void setCompanyUserRole(u.id, e.target.value as "owner" | "admin" | "manager" | "employee" | "guest")}
-                          disabled={!token || !organizationId || u.id === userId}
-                          style={{
-                            boxSizing: "border-box",
-                            padding: "6px 8px",
-                            borderRadius: 10,
-                            border: "1px solid rgba(255,255,255,0.12)",
-                            background: "rgba(0,0,0,0.25)",
-                            color: "inherit",
-                          }}
-                          title={u.id === userId ? "Свою роль менять нельзя" : "Сменить роль"}
-                        >
-                          <option value="owner">owner</option>
-                          <option value="admin">admin</option>
-                          <option value="manager">manager</option>
-                          <option value="employee">employee</option>
-                          <option value="guest">guest</option>
-                        </select>
-                        <button
-                          className="chip"
-                          onClick={() => void deactivateCompanyUser(u.id)}
-                          disabled={!token || u.id === userId}
-                          title={u.id === userId ? "Себя деактивировать нельзя" : "Деактивировать"}
-                        >
-                          Удалить
-                        </button>
-                      </div>
-                    </div>
-                  ))}
+                <div className="companyTableWrap">
+                  <table className="companyTable">
+                    <thead>
+                      <tr>
+                        <th>Фамилия</th>
+                        <th>Имя</th>
+                        <th>Отчество</th>
+                        <th>Email</th>
+                        <th>Телефон</th>
+                        <th>Роль</th>
+                        <th>Отдел</th>
+                        <th>Статус</th>
+                        <th>Действия</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {companyUsersFiltered.map((u) => (
+                        <tr key={`cab-modal-${u.id}`}>
+                          <td>{(u.lastName || "").trim() || "—"}</td>
+                          <td>{(u.firstName || "").trim() || "—"}</td>
+                          <td>{(u.middleName || "").trim() || "—"}</td>
+                          <td className="companyTableCellMono">{u.email}</td>
+                          <td>{u.phone?.trim() || "—"}</td>
+                          <td>{orgRoleLabelRu(u.role)}</td>
+                          <td>{u.department?.trim() || "—"}</td>
+                          <td>{u.status ?? "—"}</td>
+                          <td>
+                            <div className="companyTableActions">
+                              <select
+                                value={u.role ?? "employee"}
+                                onChange={(e) => void setCompanyUserRole(u.id, e.target.value as "owner" | "admin" | "manager" | "employee" | "guest")}
+                                disabled={!token || !organizationId || u.id === userId}
+                                className="companyTableSelect"
+                                title={u.id === userId ? "Свою роль менять нельзя" : "Сменить роль"}
+                              >
+                                <option value="owner">Владелец</option>
+                                <option value="admin">Администратор</option>
+                                <option value="manager">Менеджер</option>
+                                <option value="employee">Сотрудник</option>
+                                <option value="guest">Гость</option>
+                              </select>
+                              <button
+                                className="chip"
+                                onClick={() => void deactivateCompanyUser(u.id)}
+                                disabled={!token || u.id === userId}
+                                title={u.id === userId ? "Себя деактивировать нельзя" : "Деактивировать"}
+                              >
+                                Удалить
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
                 </div>
 
                 {isCompanyAdmin ? (
@@ -5137,8 +5204,8 @@ export default function App() {
                     <div className="title" style={{ marginTop: 4, fontSize: 13 }}>
                       Добавить сотрудника (по одному)
                     </div>
-                    <input value={adminCreateEmail} onChange={(e) => setAdminCreateEmail(e.target.value)} placeholder="email сотрудника" />
-                    <input value={adminCreateFullName} onChange={(e) => setAdminCreateFullName(e.target.value)} placeholder="ФИО" />
+                    <input value={adminCreateEmail} onChange={(e) => setAdminCreateEmail(e.target.value)} placeholder="Email сотрудника" />
+                    <input value={adminCreateFullName} onChange={(e) => setAdminCreateFullName(e.target.value)} placeholder="ФИО (фамилия имя отчество)" />
                     <div className="row">
                       <input
                         value={adminCreatePassword}
@@ -5149,20 +5216,13 @@ export default function App() {
                       <select
                         value={adminCreateRole}
                         onChange={(e) => setAdminCreateRole(e.target.value as "owner" | "admin" | "manager" | "employee" | "guest")}
-                        style={{
-                          boxSizing: "border-box",
-                          padding: "8px 10px",
-                          borderRadius: 10,
-                          border: "1px solid rgba(255,255,255,0.12)",
-                          background: "rgba(0,0,0,0.25)",
-                          color: "inherit",
-                        }}
+                        className="companyFilterSelect"
                       >
-                        <option value="owner">owner</option>
-                        <option value="admin">admin</option>
-                        <option value="manager">manager</option>
-                        <option value="employee">employee</option>
-                        <option value="guest">guest</option>
+                        <option value="owner">Владелец</option>
+                        <option value="admin">Администратор</option>
+                        <option value="manager">Менеджер</option>
+                        <option value="employee">Сотрудник</option>
+                        <option value="guest">Гость</option>
                       </select>
                       <button onClick={() => void createCompanyUserSingle()} disabled={!token || !organizationId}>
                         Создать
@@ -5205,7 +5265,15 @@ export default function App() {
                   </div>
                   <div style={{ minWidth: 0 }}>
                     <div style={{ fontWeight: 700 }}>
-                      {[profileFirstName, profileMiddleName, profileLastName].filter(Boolean).join(" ").trim() || myProfileEmail || loginIdentifier}
+                      {displayUserNameForSidebar(
+                        {
+                          email: myProfileEmail || loginIdentifier,
+                          lastName: profileLastName || null,
+                          firstName: profileFirstName || null,
+                          middleName: profileMiddleName || null,
+                        },
+                        myProfileEmail || loginIdentifier,
+                      )}
                     </div>
                     <div className="empty" style={{ fontSize: 12, opacity: 0.85 }}>
                       {myProfileEmail || loginIdentifier}
@@ -5224,6 +5292,12 @@ export default function App() {
                   </div>
                 </div>
 
+                <label>Фамилия</label>
+                <input value={profileLastName} onChange={(e) => setProfileLastName(e.target.value)} placeholder="Фамилия" />
+                <label>Имя</label>
+                <input value={profileFirstName} onChange={(e) => setProfileFirstName(e.target.value)} placeholder="Имя" />
+                <label>Отчество</label>
+                <input value={profileMiddleName} onChange={(e) => setProfileMiddleName(e.target.value)} placeholder="Отчество (необязательно)" />
                 <label>Телефон</label>
                 <input
                   value={profilePhone}
@@ -5232,12 +5306,6 @@ export default function App() {
                   inputMode="tel"
                   autoComplete="tel"
                 />
-                <label>Имя</label>
-                <input value={profileFirstName} onChange={(e) => setProfileFirstName(e.target.value)} placeholder="Имя" />
-                <label>Отчество</label>
-                <input value={profileMiddleName} onChange={(e) => setProfileMiddleName(e.target.value)} placeholder="Отчество" />
-                <label>Фамилия</label>
-                <input value={profileLastName} onChange={(e) => setProfileLastName(e.target.value)} placeholder="Фамилия" />
                 <label>Дата рождения</label>
                 <input type="date" value={profileBirthDate} onChange={(e) => setProfileBirthDate(e.target.value)} />
                 <label>Статус</label>
@@ -5524,6 +5592,9 @@ export default function App() {
                               alt={m.file.originalName ?? "image"}
                               className="chatImage"
                               loading="lazy"
+                              onError={() => {
+                                if (m.file?.id) void hydrateDownloadUrl(m.file.id);
+                              }}
                             />
                           </a>
                         </div>
@@ -5783,16 +5854,8 @@ export default function App() {
 
         {webrtcUi ? (
           <div className="webrtcOverlay" role="dialog" aria-label="Звонок">
-            <div className="webrtcPanel">
-              <div className="webrtcHint">
-                Звонок 1:1 между двумя участниками. Для больших групп нужен отдельный сервер конференций.
-              </div>
-              {webrtcPeerHandRaised ? (
-                <div className="webrtcHandBanner" role="status">
-                  Собеседник поднял руку ✋
-                </div>
-              ) : null}
-              <div className="webrtcVideos">
+            <div className="webrtcPanel webrtcPanel--fullscreen">
+              <div className="webrtcStage">
                 <video
                   ref={(el) => {
                     if (el) el.srcObject = webrtcUi.remoteStream;
@@ -5801,16 +5864,29 @@ export default function App() {
                   playsInline
                   className={`webrtcRemote ${webrtcUi.audioOnly ? "webrtcRemote--audioOnly" : ""}`}
                 />
-                <video
-                  ref={(el) => {
-                    if (el) el.srcObject = webrtcUi.localStream;
-                  }}
-                  autoPlay
-                  playsInline
-                  muted
-                  className="webrtcLocal"
-                />
+                {!webrtcUi.audioOnly ? (
+                  <div className="webrtcLocalPip">
+                    <video
+                      ref={(el) => {
+                        if (el) el.srcObject = webrtcUi.localStream;
+                      }}
+                      autoPlay
+                      playsInline
+                      muted
+                      className="webrtcLocal"
+                    />
+                  </div>
+                ) : null}
               </div>
+              <div className="webrtcChrome">
+                <div className="webrtcHint webrtcHint--compact">
+                  Собеседник видит ваше видео (или слышит только звук в аудиозвонке). Экран — демонстрация, как в Телемосте: выберите окно или весь экран в запросе браузера.
+                </div>
+                {webrtcPeerHandRaised ? (
+                  <div className="webrtcHandBanner webrtcHandBanner--compact" role="status">
+                    Собеседник поднял руку ✋
+                  </div>
+                ) : null}
               <div className="webrtcToolbar">
                 <button type="button" className={`webrtcToolBtn ${webrtcMicOn ? "webrtcToolBtn--on" : "webrtcToolBtn--off"}`} onClick={toggleWebrtcMic} title="Микрофон">
                   {webrtcMicOn ? "🎤 Мик" : "🎤 Выкл"}
@@ -5850,16 +5926,17 @@ export default function App() {
                   Завершить
                 </button>
               </div>
+              </div>
             </div>
           </div>
         ) : null}
         {incomingCall ? (
-          <div className="webrtcOverlay" role="dialog" aria-label="Входящий звонок">
-            <div className="webrtcPanel">
+          <div className="webrtcOverlay webrtcOverlay--incoming" role="dialog" aria-label="Входящий звонок">
+            <div className="webrtcPanel webrtcIncomingCard">
               <div style={{ marginBottom: 8 }}>
                 Входящий {incomingCall.audioOnly ? "звонок" : "видеозвонок"}
               </div>
-              <div style={{ display: "flex", gap: 8 }}>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                 <button type="button" className="chip" onClick={() => void acceptIncomingCall()}>
                   Принять
                 </button>
