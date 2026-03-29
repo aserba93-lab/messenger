@@ -5465,22 +5465,22 @@ export default function App() {
         ) : null}
 
         {showUserCabinet ? (
-          <div className="companyModalBackdrop" onClick={() => setShowUserCabinet(false)}>
-            <section className="companyModal" onClick={(e) => e.stopPropagation()}>
-              <div className="companyModalHeader">
-                <div style={{ fontWeight: 700 }}>Личный кабинет</div>
-                <button className="chip" onClick={() => setShowUserCabinet(false)}>
+          <div className="companyModalBackdrop userCabinetBackdrop" onClick={() => setShowUserCabinet(false)}>
+            <section className="companyModal userCabinetModal" onClick={(e) => e.stopPropagation()}>
+              <div className="companyModalHeader userCabinetModalHeader">
+                <div className="userCabinetTitle">Личный кабинет</div>
+                <button type="button" className="chip userCabinetCloseBtn" onClick={() => setShowUserCabinet(false)}>
                   Закрыть
                 </button>
               </div>
-              {profileMsg ? <div className="empty">{profileMsg}</div> : null}
-              <div className="companyBody">
-                <div className="profileHeaderRow">
-                  <div className="profileAvatarPreview">
+              {profileMsg ? <div className="empty userCabinetMsg">{profileMsg}</div> : null}
+              <div className="companyBody userCabinetBody">
+                <div className="profileHeaderRow userCabinetProfileHeader">
+                  <div className="profileAvatarPreview userCabinetAvatar">
                     {profileAvatarUrl ? <img src={profileAvatarUrl} alt="avatar" /> : <span>{initials(myProfileEmail || loginIdentifier)}</span>}
                   </div>
-                  <div style={{ minWidth: 0 }}>
-                    <div style={{ fontWeight: 700 }}>
+                  <div className="userCabinetIdentity">
+                    <div className="userCabinetDisplayName">
                       {displayUserNameForSidebar(
                         {
                           email: myProfileEmail || loginIdentifier,
@@ -5491,44 +5491,46 @@ export default function App() {
                         myProfileEmail || loginIdentifier,
                       )}
                     </div>
-                    <div className="empty" style={{ fontSize: 12, opacity: 0.85 }}>
+                    <div className="empty userCabinetSubline">
                       {myProfileEmail || loginIdentifier}
                     </div>
                     {profilePhone.trim() ? (
-                      <div className="empty" style={{ fontSize: 12, opacity: 0.85 }}>
+                      <div className="empty userCabinetSubline">
                         Тел.: {profilePhone.trim()}
                       </div>
                     ) : null}
-                    <div className="empty">
+                    <div className="empty userCabinetAccessLine">
                       Уровень доступа: <b>{viewerRole || "unknown"}</b>
                     </div>
-                    <div className="empty">
+                    <div className="empty userCabinetAccessHint">
                       {(accessByRole[viewerRole] ?? []).join(" · ")}
                     </div>
                   </div>
                 </div>
 
-                <label>Фамилия</label>
-                <input value={profileLastName} onChange={(e) => setProfileLastName(e.target.value)} placeholder="Фамилия" />
-                <label>Имя</label>
-                <input value={profileFirstName} onChange={(e) => setProfileFirstName(e.target.value)} placeholder="Имя" />
-                <label>Отчество</label>
-                <input value={profileMiddleName} onChange={(e) => setProfileMiddleName(e.target.value)} placeholder="Отчество (необязательно)" />
-                <label>Телефон</label>
+                <label className="userCabinetLabel">Фамилия</label>
+                <input className="userCabinetInput" value={profileLastName} onChange={(e) => setProfileLastName(e.target.value)} placeholder="Фамилия" />
+                <label className="userCabinetLabel">Имя</label>
+                <input className="userCabinetInput" value={profileFirstName} onChange={(e) => setProfileFirstName(e.target.value)} placeholder="Имя" />
+                <label className="userCabinetLabel">Отчество</label>
+                <input className="userCabinetInput" value={profileMiddleName} onChange={(e) => setProfileMiddleName(e.target.value)} placeholder="Отчество (необязательно)" />
+                <label className="userCabinetLabel">Телефон</label>
                 <input
+                  className="userCabinetInput"
                   value={profilePhone}
                   onChange={(e) => setProfilePhone(e.target.value)}
                   placeholder="+7…"
                   inputMode="tel"
                   autoComplete="tel"
                 />
-                <label>Дата рождения</label>
-                <input type="date" value={profileBirthDate} onChange={(e) => setProfileBirthDate(e.target.value)} />
-                <label>Статус</label>
-                <input value={profileStatusText} onChange={(e) => setProfileStatusText(e.target.value)} placeholder="О чем вы думаете?" />
-                <label>Avatar URL или data:image</label>
-                <input value={profileAvatarUrl} onChange={(e) => setProfileAvatarUrl(e.target.value)} placeholder="https://... или data:image/..." />
+                <label className="userCabinetLabel">Дата рождения</label>
+                <input className="userCabinetInput" type="date" value={profileBirthDate} onChange={(e) => setProfileBirthDate(e.target.value)} />
+                <label className="userCabinetLabel">Статус</label>
+                <input className="userCabinetInput" value={profileStatusText} onChange={(e) => setProfileStatusText(e.target.value)} placeholder="О чем вы думаете?" />
+                <label className="userCabinetLabel">Avatar URL или data:image</label>
+                <input className="userCabinetInput" value={profileAvatarUrl} onChange={(e) => setProfileAvatarUrl(e.target.value)} placeholder="https://... или data:image/..." />
                 <input
+                  className="userCabinetFileInput"
                   type="file"
                   accept="image/*"
                   onChange={(e) => {
@@ -5538,47 +5540,47 @@ export default function App() {
                   }}
                 />
                 {(profileTitle.trim() || profileDepartment.trim()) ? (
-                  <div className="empty" style={{ textAlign: "left", marginBottom: 8 }}>
+                  <div className="empty userCabinetOrgReadonly">
                     <div>
                       <strong>Должность:</strong> {profileTitle.trim() || "—"}
                     </div>
                     <div>
                       <strong>Отдел:</strong> {profileDepartment.trim() || "—"}
                     </div>
-                    <div style={{ fontSize: 11, opacity: 0.75, marginTop: 4 }}>
+                    <div className="userCabinetOrgReadonlyHint">
                       Назначаются администратором организации (в кабинете компании).
                     </div>
                   </div>
                 ) : (
-                  <div className="empty" style={{ fontSize: 12, opacity: 0.8 }}>
+                  <div className="empty userCabinetOrgReadonlyHint">
                     Должность и отдел назначает администратор компании.
                   </div>
                 )}
-                <div className="row">
-                  <button onClick={() => void saveMyProfile()} disabled={!token || !myProfileId}>
+                <div className="row userCabinetSaveRow">
+                  <button type="button" className="userCabinetSaveBtn" onClick={() => void saveMyProfile()} disabled={!token || !myProfileId}>
                     Сохранить профиль
                   </button>
                 </div>
 
-                <div className="title" style={{ marginTop: 8 }}>Стикеры</div>
-                <div className="empty">Скачайте JSON-пак или установите/отключите набор для отправки в чате.</div>
-                <div className="list companyList">
+                <div className="title userCabinetStickersTitle">Стикеры</div>
+                <div className="empty userCabinetStickersIntro">Скачайте JSON-пак или установите/отключите набор для отправки в чате.</div>
+                <div className="list companyList userCabinetStickerList">
                   {stickerCatalog.map((pack) => {
                     const installed = installedStickerPackIds.includes(pack.id);
                     return (
-                      <div key={pack.id} className="companyRow">
-                        <div style={{ minWidth: 0 }}>
-                          <div style={{ fontSize: 13 }}>{pack.title}</div>
-                          <div style={{ fontSize: 11, opacity: 0.7 }}>
+                      <div key={pack.id} className="companyRow userCabinetStickerRow">
+                        <div className="userCabinetStickerRowText">
+                          <div className="userCabinetStickerTitle">{pack.title}</div>
+                          <div className="userCabinetStickerPreview">
                             {pack.stickers.slice(0, 6).join(" ")}
                             {pack.stickers.length > 6 ? " ..." : ""}
                           </div>
                         </div>
-                        <div style={{ display: "flex", gap: 8 }}>
-                          <button className="chip" onClick={() => downloadStickerPack(pack)}>
+                        <div className="userCabinetStickerActions">
+                          <button type="button" className="chip" onClick={() => downloadStickerPack(pack)}>
                             Скачать
                           </button>
-                          <button className="chip" onClick={() => toggleInstallStickerPack(pack.id)}>
+                          <button type="button" className="chip" onClick={() => toggleInstallStickerPack(pack.id)}>
                             {installed ? "Отключить" : "Установить"}
                           </button>
                         </div>
@@ -5587,6 +5589,7 @@ export default function App() {
                   })}
                 </div>
                 <input
+                  className="userCabinetFileInput"
                   type="file"
                   accept=".json,application/json"
                   onChange={(e) => {
