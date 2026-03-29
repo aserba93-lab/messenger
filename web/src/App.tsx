@@ -159,17 +159,23 @@ function fileFormatLabel(originalName: string | null | undefined, mimeType: stri
   return part ? part.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 12) : "FILE";
 }
 
-function displayUserName(
+/** Имя для списка чатов и заголовков — без email, только ФИО или нейтральная подпись */
+function displayUserNameForSidebar(
   u: { email: string; firstName?: string | null; lastName?: string | null } | undefined,
-  fallback = "",
+  fallback: string,
 ): string {
-  if (!u) return fallback;
+  if (!u) {
+    if (fallback && !fallback.includes("@")) return `Контакт ${fallback.slice(0, 8)}`;
+    return "Участник";
+  }
   const name = [u.firstName, u.lastName]
     .map((x) => (x != null ? String(x).trim() : ""))
     .filter(Boolean)
     .join(" ")
     .trim();
-  return name || u.email || fallback;
+  if (name) return name;
+  if (fallback && !fallback.includes("@")) return `Контакт ${fallback.slice(0, 8)}`;
+  return "Участник";
 }
 
 export default function App() {
@@ -187,6 +193,10 @@ export default function App() {
   );
 
   const [mode, setMode] = useState<"channels" | "groups" | "dms">("channels");
+  /** Список слева: все чаты сразу или только один тип */
+  const [chatListScope, setChatListScope] = useState<"all" | "dms" | "groups" | "channels">("all");
+  /** Звонок Jitsi внутри интерфейса */
+  const [embeddedCall, setEmbeddedCall] = useState<null | { room: string; video: boolean }>(null);
 
   const [channels, setChannels] = useState<Channel[]>([]);
   const [activeChannelId, setActiveChannelId] = useState("");
@@ -297,6 +307,8 @@ export default function App() {
   const [chatFolder, setChatFolder] = useState<"all" | "unread" | "archived">("all");
   const [chatMenu, setChatMenu] = useState<null | { x: number; y: number; key: string }>(null);
   const [msgMenu, setMsgMenu] = useState<null | { x: number; y: number; messageId: string }>(null);
+  const [reactionPopover, setReactionPopover] = useState<null | { messageId: string; top: number; left: number }>(null);
+  const reactionPopoverRef = useRef<HTMLDivElement | null>(null);
   const [isRecordingVoice, setIsRecordingVoice] = useState(false);
   const [voiceHoldMs, setVoiceHoldMs] = useState(0);
   const [chatFileDragActive, setChatFileDragActive] = useState(false);
@@ -429,24 +441,32 @@ export default function App() {
   }
 
   const chatSearchQ = chatSearch.trim().toLowerCase();
-  const filteredChannels = useMemo(
-    () => (chatSearchQ ? channels.filter((c) => (`#${c.name}`).toLowerCase().includes(chatSearchQ)) : channels),
-    [channels, chatSearchQ],
-  );
-  const filteredGroups = useMemo(
-    () => (chatSearchQ ? groupChats.filter((g) => g.name.toLowerCase().includes(chatSearchQ)) : groupChats),
-    [groupChats, chatSearchQ],
-  );
+  const filteredChannels = useMemo(() => {
+    if (!chatSearchQ) return channels;
+    const needle = chatSearchQ.replace(/^#/, "").trim();
+    if (!needle) return channels;
+    return channels.filter((c) => {
+      const name = c.name.toLowerCase();
+      const typeStr = String(c.type ?? "").toLowerCase();
+      return name.includes(needle) || typeStr.includes(needle);
+    });
+  }, [channels, chatSearchQ]);
+  const filteredGroups = useMemo(() => {
+    if (!chatSearchQ) return groupChats;
+    return groupChats.filter((g) => g.name.toLowerCase().includes(chatSearchQ));
+  }, [groupChats, chatSearchQ]);
   const filteredDMs = useMemo(() => {
     if (!chatSearchQ) return directChats;
     return directChats.filter((d) => {
+      const key = `d:${d.id}`;
       const otherId = d.userIds.find((id) => id !== userId) ?? d.userIds[0] ?? "";
       const u = users.find((x) => x.id === otherId);
-      const label = displayUserName(u, otherId || d.id);
-      const hay = `${label} ${u?.email ?? ""} ${otherId}`.toLowerCase();
+      const label = displayUserNameForSidebar(u, otherId || d.id);
+      const preview = (chatPreviewByKey[key]?.text ?? "").toLowerCase();
+      const hay = `${label} ${u?.email ?? ""} ${otherId} ${preview}`.toLowerCase();
       return hay.includes(chatSearchQ);
     });
-  }, [directChats, users, userId, chatSearchQ]);
+  }, [directChats, users, userId, chatSearchQ, chatPreviewByKey]);
 
   function chatKeyFor(kind: "c" | "g" | "d", id: string) {
     return `${kind}:${id}`;
@@ -482,22 +502,22 @@ export default function App() {
   function toggleArchive(key: string) {
     setArchivedChatByKey((prev) => ({ ...prev, [key]: !prev[key] }));
   }
-  function movePinned(key: string, dir: -1 | 1) {
-    const pinnedKeys = Object.keys(pinnedChatByKey).filter((k) => pinnedChatByKey[k]);
-    const list = pinnedKeys
-      .map((k) => ({ k, o: pinnedOrderByKey[k] ?? 999999 }))
-      .sort((a, b) => a.o - b.o)
-      .map((x) => x.k);
-    const i = list.indexOf(key);
-    if (i < 0) return;
-    const j = i + dir;
-    if (j < 0 || j >= list.length) return;
-    [list[i], list[j]] = [list[j], list[i]];
-    const next: Record<string, number> = {};
-    list.forEach((k, idx) => {
-      next[k] = idx + 1;
-    });
-    setPinnedOrderByKey((prev) => ({ ...prev, ...next }));
+
+  function removeChatFromList(key: string) {
+    if (!window.confirm("Убрать чат из списка? Его можно снова открыть через вкладку «Архив».")) return;
+    setArchivedChatByKey((prev) => ({ ...prev, [key]: true }));
+    const [kind, id] = key.split(":");
+    if (kind === "c" && id === activeChannelId) {
+      setActiveChannelId("");
+      setMessages([]);
+    } else if (kind === "g" && id === activeGroupChatId) {
+      setActiveGroupChatId("");
+      setMessages([]);
+    } else if (kind === "d" && id === activeDirectChatId) {
+      setActiveDirectChatId("");
+      setMessages([]);
+    }
+    setChatMenu(null);
   }
   function reorderPinned(dragKey: string, targetKey: string) {
     if (!dragKey || !targetKey || dragKey === targetKey) return;
@@ -590,7 +610,13 @@ export default function App() {
 
   function displayUser(userId: string) {
     const u = users.find((x) => x.id === userId);
-    return u?.email ?? userId;
+    return displayUserNameForSidebar(u, userId);
+  }
+
+  function messageAuthorLabel(m: { author?: { email?: string } }) {
+    const em = m.author?.email ?? "";
+    const u = users.find((x) => x.email === em);
+    return displayUserNameForSidebar(u, em);
   }
 
   useEffect(() => {
@@ -1039,18 +1065,21 @@ export default function App() {
 
   async function goToSearchMessage(m: GlobalSearchResult["messages"][number]) {
     if (m.channelId) {
+      setChatListScope("channels");
       setMode("channels");
       setActiveChannelId(m.channelId);
       await loadMessages(m.channelId);
       return;
     }
     if (m.groupChatId) {
+      setChatListScope("groups");
       setMode("groups");
       setActiveGroupChatId(m.groupChatId);
       await loadGroupMessages(m.groupChatId);
       return;
     }
     if (m.directChatId) {
+      setChatListScope("dms");
       setMode("dms");
       setActiveDirectChatId(m.directChatId);
       await loadDirectMessages(m.directChatId);
@@ -1384,6 +1413,7 @@ export default function App() {
     const [kind, id] = value.split(":");
     if (!id) return;
     if (kind === "c") {
+      setChatListScope("channels");
       setMode("channels");
       setActiveChannelId(id);
       setUnreadByKey((prev) => ({ ...prev, [chatKeyFor("c", id)]: 0 }));
@@ -1391,6 +1421,7 @@ export default function App() {
       return;
     }
     if (kind === "g") {
+      setChatListScope("groups");
       setMode("groups");
       setActiveGroupChatId(id);
       setUnreadByKey((prev) => ({ ...prev, [chatKeyFor("g", id)]: 0 }));
@@ -1398,6 +1429,7 @@ export default function App() {
       return;
     }
     if (kind === "d") {
+      setChatListScope("dms");
       setMode("dms");
       setActiveDirectChatId(id);
       setUnreadByKey((prev) => ({ ...prev, [chatKeyFor("d", id)]: 0 }));
@@ -1455,16 +1487,18 @@ export default function App() {
     }
   }
 
-  async function startAudioCall() {
+  async function startEmbeddedCall(video: boolean) {
     if (!canStartCalls) {
       setChatError("Недостаточно прав для звонков");
       return;
     }
-    const room = `sf-call-${Date.now()}`;
+    const room = `sf-${video ? "v" : "a"}-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
     const link = `https://meet.jit.si/${room}`;
-    await sendServiceMessageToCurrentChat(`📞 Созвон: ${link}`);
-    window.open(link, "_blank", "noopener,noreferrer");
-    pushLog(`Созвон создан: ${room}`);
+    await sendServiceMessageToCurrentChat(
+      video ? `🎥 Видеозвонок (в окне мессенджера): ${link}` : `📞 Аудиозвонок (в окне мессенджера): ${link}`,
+    );
+    setEmbeddedCall({ room, video });
+    pushLog(`${video ? "Видео" : "Аудио"} звонок: ${room}`);
   }
 
   async function loadUsers(tokenOverride?: string, orgIdOverride?: string) {
@@ -2188,13 +2222,20 @@ export default function App() {
     }
   }
 
-  function openChatMenu(e: MouseEvent, key: string) {
+  function openChatMenuAtTime(e: MouseEvent, key: string) {
     e.preventDefault();
-    const menuW = 240;
-    const menuH = 210;
+    e.stopPropagation();
+    const el = e.currentTarget as HTMLElement;
+    const r = el.getBoundingClientRect();
+    const menuW = 260;
+    const menuH = 168;
     const pad = 8;
-    const x = Math.max(pad, Math.min(e.clientX, window.innerWidth - menuW - pad));
-    const y = Math.max(pad, Math.min(e.clientY, window.innerHeight - menuH - pad));
+    let x = r.left - menuW - 8;
+    if (x < pad) x = r.right + 8;
+    if (x + menuW > window.innerWidth - pad) x = window.innerWidth - menuW - pad;
+    let y = r.top;
+    if (y + menuH > window.innerHeight - pad) y = window.innerHeight - menuH - pad;
+    y = Math.max(pad, y);
     setChatMenu({ x, y, key });
   }
 
@@ -2764,6 +2805,26 @@ export default function App() {
     return () => window.clearInterval(id);
   }, [token, pendingFileHydrateCount]);
 
+  useEffect(() => {
+    if (!reactionPopover) return;
+    const onDown = (e: globalThis.MouseEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (t?.closest?.("[data-reaction-trigger]")) return;
+      const el = reactionPopoverRef.current;
+      if (el && e.target instanceof Node && el.contains(e.target)) return;
+      setReactionPopover(null);
+    };
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      if (e.key === "Escape") setReactionPopover(null);
+    };
+    document.addEventListener("mousedown", onDown, true);
+    document.addEventListener("keydown", onKey, true);
+    return () => {
+      document.removeEventListener("mousedown", onDown, true);
+      document.removeEventListener("keydown", onKey, true);
+    };
+  }, [reactionPopover]);
+
   async function pickFile() {
     const el = document.createElement("input");
     el.type = "file";
@@ -3223,7 +3284,7 @@ export default function App() {
           </span>
           <input
             className="tgSearch tgSearch--inWrap"
-            placeholder="Поиск"
+            placeholder="Поиск по названию чата…"
             value={chatSearch}
             onChange={(e) => setChatSearch(e.target.value)}
             ref={chatSearchRef}
@@ -3244,18 +3305,212 @@ export default function App() {
             </button>
           </div>
           <div className="row tgModeTabs">
-            <button className={mode === "channels" ? "active" : ""} onClick={() => setMode("channels")} disabled={!canReadChats}>
-              Каналы
+            <button className={chatListScope === "all" ? "active" : ""} onClick={() => setChatListScope("all")} disabled={!canReadChats}>
+              Все чаты
             </button>
-            <button className={mode === "groups" ? "active" : ""} onClick={() => setMode("groups")} disabled={!canReadChats}>
+            <button
+              className={chatListScope === "dms" ? "active" : ""}
+              onClick={() => {
+                setChatListScope("dms");
+                setMode("dms");
+              }}
+              disabled={!canReadChats}
+            >
+              Личка
+            </button>
+            <button
+              className={chatListScope === "groups" ? "active" : ""}
+              onClick={() => {
+                setChatListScope("groups");
+                setMode("groups");
+              }}
+              disabled={!canReadChats}
+            >
               Группы
             </button>
-            <button className={mode === "dms" ? "active" : ""} onClick={() => setMode("dms")} disabled={!canReadChats}>
-              Личка
+            <button
+              className={chatListScope === "channels" ? "active" : ""}
+              onClick={() => {
+                setChatListScope("channels");
+                setMode("channels");
+              }}
+              disabled={!canReadChats}
+            >
+              Каналы
             </button>
           </div>
           <div className="tgChatList">
-            {mode === "channels"
+            {chatListScope === "all" ? (
+              <>
+                {orderedDMs.length > 0 ? (
+                  <div className="tgChatSectionTitle" role="presentation">
+                    Личка
+                  </div>
+                ) : null}
+                {orderedDMs.map((d) => {
+                  const otherId = d.userIds.find((id) => id !== userId) ?? d.userIds[0] ?? "";
+                  const u = users.find((x) => x.id === otherId);
+                  const p = otherId ? presenceByUserId[otherId] : undefined;
+                  const st = p?.status ?? u?.status ?? "unknown";
+                  const dot = st === "online" ? "●" : st === "away" ? "◐" : st === "dnd" ? "◍" : "○";
+                  const title = displayUserNameForSidebar(u, otherId || d.id);
+                  return (
+                    <button
+                      key={`all-d-${d.id}`}
+                      className={`tgChatRow ${activeDirectChatId === d.id ? "active" : ""} ${dragPinnedKey === chatKeyFor("d", d.id) ? "dragging" : ""} ${dragOverPinnedKey === chatKeyFor("d", d.id) ? "dragover" : ""}`}
+                      draggable={isPinned(chatKeyFor("d", d.id))}
+                      onDragStart={() => setDragPinnedKey(chatKeyFor("d", d.id))}
+                      onDragEnd={() => {
+                        setDragPinnedKey("");
+                        setDragOverPinnedKey("");
+                      }}
+                      onDragOver={(e) => {
+                        if (!dragPinnedKey || !isPinned(chatKeyFor("d", d.id))) return;
+                        e.preventDefault();
+                        setDragOverPinnedKey(chatKeyFor("d", d.id));
+                      }}
+                      onDrop={(e) => {
+                        e.preventDefault();
+                        reorderPinned(dragPinnedKey, chatKeyFor("d", d.id));
+                        setDragPinnedKey("");
+                        setDragOverPinnedKey("");
+                      }}
+                      onClick={() => {
+                        setMode("dms");
+                        setActiveDirectChatId(d.id);
+                        setUnreadByKey((prev) => ({ ...prev, [chatKeyFor("d", d.id)]: 0 }));
+                        void loadDirectMessages(d.id);
+                      }}
+                    >
+                      <div className="tgAvatar">{initials(title)}</div>
+                      <div className="tgChatMain">
+                        <div className="tgChatTop">
+                          <div className="tgChatTitle">
+                            {isPinned(chatKeyFor("d", d.id)) ? "📌 " : ""}
+                            <span className="tgPresence">{dot}</span> {title}
+                          </div>
+                          <div
+                            className="tgChatTime"
+                            onContextMenu={(e) => openChatMenuAtTime(e, chatKeyFor("d", d.id))}
+                          >
+                            {timeHHMM(chatPreviewByKey[chatKeyFor("d", d.id)]?.at)}
+                          </div>
+                        </div>
+                        <div className="tgChatSub">
+                          {isMuted(chatKeyFor("d", d.id)) ? "🔕 " : ""}
+                          {chatPreviewByKey[chatKeyFor("d", d.id)]?.text || "Личка"}
+                        </div>
+                      </div>
+                      {unreadFor(chatKeyFor("d", d.id)) ? <div className="tgUnread">{unreadFor(chatKeyFor("d", d.id))}</div> : null}
+                    </button>
+                  );
+                })}
+                {orderedGroups.length > 0 ? (
+                  <div className="tgChatSectionTitle" role="presentation">
+                    Группы
+                  </div>
+                ) : null}
+                {orderedGroups.map((g) => (
+                  <button
+                    key={`all-g-${g.id}`}
+                    className={`tgChatRow ${activeGroupChatId === g.id ? "active" : ""} ${dragPinnedKey === chatKeyFor("g", g.id) ? "dragging" : ""} ${dragOverPinnedKey === chatKeyFor("g", g.id) ? "dragover" : ""}`}
+                    draggable={isPinned(chatKeyFor("g", g.id))}
+                    onDragStart={() => setDragPinnedKey(chatKeyFor("g", g.id))}
+                    onDragEnd={() => {
+                      setDragPinnedKey("");
+                      setDragOverPinnedKey("");
+                    }}
+                    onDragOver={(e) => {
+                      if (!dragPinnedKey || !isPinned(chatKeyFor("g", g.id))) return;
+                      e.preventDefault();
+                      setDragOverPinnedKey(chatKeyFor("g", g.id));
+                    }}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      reorderPinned(dragPinnedKey, chatKeyFor("g", g.id));
+                      setDragPinnedKey("");
+                      setDragOverPinnedKey("");
+                    }}
+                    onClick={() => {
+                      setMode("groups");
+                      setActiveGroupChatId(g.id);
+                      setUnreadByKey((prev) => ({ ...prev, [chatKeyFor("g", g.id)]: 0 }));
+                      void loadGroupMessages(g.id);
+                    }}
+                  >
+                    <div className="tgAvatar">{initials(g.name)}</div>
+                    <div className="tgChatMain">
+                      <div className="tgChatTop">
+                        <div className="tgChatTitle">{isPinned(chatKeyFor("g", g.id)) ? "📌 " : ""}{g.name}</div>
+                        <div
+                          className="tgChatTime"
+                          onContextMenu={(e) => openChatMenuAtTime(e, chatKeyFor("g", g.id))}
+                        >
+                          {timeHHMM(chatPreviewByKey[chatKeyFor("g", g.id)]?.at)}
+                        </div>
+                      </div>
+                      <div className="tgChatSub">
+                        {isMuted(chatKeyFor("g", g.id)) ? "🔕 " : ""}
+                        {chatPreviewByKey[chatKeyFor("g", g.id)]?.text || `Группа · участников: ${g.memberIds?.length ?? 0}`}
+                      </div>
+                    </div>
+                    {unreadFor(chatKeyFor("g", g.id)) ? <div className="tgUnread">{unreadFor(chatKeyFor("g", g.id))}</div> : null}
+                  </button>
+                ))}
+                {orderedChannels.length > 0 ? (
+                  <div className="tgChatSectionTitle" role="presentation">
+                    Каналы
+                  </div>
+                ) : null}
+                {orderedChannels.map((c) => (
+                  <button
+                    key={`all-c-${c.id}`}
+                    className={`tgChatRow ${activeChannelId === c.id ? "active" : ""} ${dragPinnedKey === chatKeyFor("c", c.id) ? "dragging" : ""} ${dragOverPinnedKey === chatKeyFor("c", c.id) ? "dragover" : ""}`}
+                    draggable={isPinned(chatKeyFor("c", c.id))}
+                    onDragStart={() => setDragPinnedKey(chatKeyFor("c", c.id))}
+                    onDragEnd={() => {
+                      setDragPinnedKey("");
+                      setDragOverPinnedKey("");
+                    }}
+                    onDragOver={(e) => {
+                      if (!dragPinnedKey || !isPinned(chatKeyFor("c", c.id))) return;
+                      e.preventDefault();
+                      setDragOverPinnedKey(chatKeyFor("c", c.id));
+                    }}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      reorderPinned(dragPinnedKey, chatKeyFor("c", c.id));
+                      setDragPinnedKey("");
+                      setDragOverPinnedKey("");
+                    }}
+                    onClick={() => {
+                      setMode("channels");
+                      setActiveChannelId(c.id);
+                      setUnreadByKey((prev) => ({ ...prev, [chatKeyFor("c", c.id)]: 0 }));
+                      void loadMessages(c.id);
+                    }}
+                  >
+                    <div className="tgAvatar">#</div>
+                    <div className="tgChatMain">
+                      <div className="tgChatTop">
+                        <div className="tgChatTitle">{isPinned(chatKeyFor("c", c.id)) ? "📌 " : ""}#{c.name}</div>
+                        <div
+                          className="tgChatTime"
+                          onContextMenu={(e) => openChatMenuAtTime(e, chatKeyFor("c", c.id))}
+                        >
+                          {timeHHMM(chatPreviewByKey[chatKeyFor("c", c.id)]?.at)}
+                        </div>
+                      </div>
+                      <div className="tgChatSub">
+                        {isMuted(chatKeyFor("c", c.id)) ? "🔕 " : ""}
+                        {chatPreviewByKey[chatKeyFor("c", c.id)]?.text || `Канал · ${c.type}`}
+                      </div>
+                    </div>
+                    {unreadFor(chatKeyFor("c", c.id)) ? <div className="tgUnread">{unreadFor(chatKeyFor("c", c.id))}</div> : null}
+                  </button>
+                ))}
+              </>
+            ) : chatListScope === "channels"
               ? orderedChannels.map((c) => (
                   <button
                     key={c.id}
@@ -3277,8 +3532,8 @@ export default function App() {
                       setDragPinnedKey("");
                       setDragOverPinnedKey("");
                     }}
-                    onContextMenu={(e) => openChatMenu(e, chatKeyFor("c", c.id))}
                     onClick={() => {
+                      setMode("channels");
                       setActiveChannelId(c.id);
                       setUnreadByKey((prev) => ({ ...prev, [chatKeyFor("c", c.id)]: 0 }));
                       void loadMessages(c.id);
@@ -3288,38 +3543,22 @@ export default function App() {
                     <div className="tgChatMain">
                       <div className="tgChatTop">
                         <div className="tgChatTitle">{isPinned(chatKeyFor("c", c.id)) ? "📌 " : ""}#{c.name}</div>
-                        <div className="tgChatTime">{timeHHMM(chatPreviewByKey[chatKeyFor("c", c.id)]?.at)}</div>
+                        <div
+                          className="tgChatTime"
+                          onContextMenu={(e) => openChatMenuAtTime(e, chatKeyFor("c", c.id))}
+                        >
+                          {timeHHMM(chatPreviewByKey[chatKeyFor("c", c.id)]?.at)}
+                        </div>
                       </div>
                       <div className="tgChatSub">
                         {isMuted(chatKeyFor("c", c.id)) ? "🔕 " : ""}
                         {chatPreviewByKey[chatKeyFor("c", c.id)]?.text || `Канал · ${c.type}`}
                       </div>
                     </div>
-                    <div className="tgRowActions">
-                      {isPinned(chatKeyFor("c", c.id)) ? (
-                        <>
-                          <span className="tgRowAction" onClick={(e) => { e.stopPropagation(); movePinned(chatKeyFor("c", c.id), -1); }} title="Выше">
-                            ↑
-                          </span>
-                          <span className="tgRowAction" onClick={(e) => { e.stopPropagation(); movePinned(chatKeyFor("c", c.id), 1); }} title="Ниже">
-                            ↓
-                          </span>
-                        </>
-                      ) : null}
-                      <span className="tgRowAction" onClick={(e) => { e.stopPropagation(); togglePin(chatKeyFor("c", c.id)); }} title="Закрепить чат">
-                        📌
-                      </span>
-                      <span className="tgRowAction" onClick={(e) => { e.stopPropagation(); toggleMute(chatKeyFor("c", c.id)); }} title="Mute чат">
-                        🔕
-                      </span>
-                      <span className="tgRowAction" onClick={(e) => { e.stopPropagation(); toggleArchive(chatKeyFor("c", c.id)); }} title="Архивировать чат">
-                        🗂
-                      </span>
-                    </div>
                     {unreadFor(chatKeyFor("c", c.id)) ? <div className="tgUnread">{unreadFor(chatKeyFor("c", c.id))}</div> : null}
                   </button>
                 ))
-              : mode === "groups"
+              : chatListScope === "groups"
                 ? orderedGroups.map((g) => (
                     <button
                       key={g.id}
@@ -3341,10 +3580,10 @@ export default function App() {
                         setDragPinnedKey("");
                         setDragOverPinnedKey("");
                       }}
-                      onContextMenu={(e) => openChatMenu(e, chatKeyFor("g", g.id))}
                       onClick={() => {
+                        setMode("groups");
                         setActiveGroupChatId(g.id);
-                      setUnreadByKey((prev) => ({ ...prev, [chatKeyFor("g", g.id)]: 0 }));
+                        setUnreadByKey((prev) => ({ ...prev, [chatKeyFor("g", g.id)]: 0 }));
                         void loadGroupMessages(g.id);
                       }}
                     >
@@ -3352,34 +3591,18 @@ export default function App() {
                       <div className="tgChatMain">
                         <div className="tgChatTop">
                           <div className="tgChatTitle">{isPinned(chatKeyFor("g", g.id)) ? "📌 " : ""}{g.name}</div>
-                          <div className="tgChatTime">{timeHHMM(chatPreviewByKey[chatKeyFor("g", g.id)]?.at)}</div>
+                          <div
+                            className="tgChatTime"
+                            onContextMenu={(e) => openChatMenuAtTime(e, chatKeyFor("g", g.id))}
+                          >
+                            {timeHHMM(chatPreviewByKey[chatKeyFor("g", g.id)]?.at)}
+                          </div>
                         </div>
                         <div className="tgChatSub">
                           {isMuted(chatKeyFor("g", g.id)) ? "🔕 " : ""}
                           {chatPreviewByKey[chatKeyFor("g", g.id)]?.text || `Группа · участников: ${g.memberIds?.length ?? 0}`}
                         </div>
                       </div>
-                    <div className="tgRowActions">
-                      {isPinned(chatKeyFor("g", g.id)) ? (
-                        <>
-                          <span className="tgRowAction" onClick={(e) => { e.stopPropagation(); movePinned(chatKeyFor("g", g.id), -1); }} title="Выше">
-                            ↑
-                          </span>
-                          <span className="tgRowAction" onClick={(e) => { e.stopPropagation(); movePinned(chatKeyFor("g", g.id), 1); }} title="Ниже">
-                            ↓
-                          </span>
-                        </>
-                      ) : null}
-                      <span className="tgRowAction" onClick={(e) => { e.stopPropagation(); togglePin(chatKeyFor("g", g.id)); }} title="Закрепить чат">
-                        📌
-                      </span>
-                      <span className="tgRowAction" onClick={(e) => { e.stopPropagation(); toggleMute(chatKeyFor("g", g.id)); }} title="Mute чат">
-                        🔕
-                      </span>
-                      <span className="tgRowAction" onClick={(e) => { e.stopPropagation(); toggleArchive(chatKeyFor("g", g.id)); }} title="Архивировать чат">
-                        🗂
-                      </span>
-                    </div>
                     {unreadFor(chatKeyFor("g", g.id)) ? <div className="tgUnread">{unreadFor(chatKeyFor("g", g.id))}</div> : null}
                     </button>
                   ))
@@ -3389,7 +3612,7 @@ export default function App() {
                     const p = otherId ? presenceByUserId[otherId] : undefined;
                     const st = p?.status ?? u?.status ?? "unknown";
                     const dot = st === "online" ? "●" : st === "away" ? "◐" : st === "dnd" ? "◍" : "○";
-                    const title = displayUserName(u, otherId || d.id);
+                    const title = displayUserNameForSidebar(u, otherId || d.id);
                     return (
                       <button
                         key={d.id}
@@ -3411,8 +3634,8 @@ export default function App() {
                           setDragPinnedKey("");
                           setDragOverPinnedKey("");
                         }}
-                        onContextMenu={(e) => openChatMenu(e, chatKeyFor("d", d.id))}
                         onClick={() => {
+                          setMode("dms");
                           setActiveDirectChatId(d.id);
                           setUnreadByKey((prev) => ({ ...prev, [chatKeyFor("d", d.id)]: 0 }));
                           void loadDirectMessages(d.id);
@@ -3425,33 +3648,17 @@ export default function App() {
                               {isPinned(chatKeyFor("d", d.id)) ? "📌 " : ""}
                               <span className="tgPresence">{dot}</span> {title}
                             </div>
-                            <div className="tgChatTime">{timeHHMM(chatPreviewByKey[chatKeyFor("d", d.id)]?.at)}</div>
+                            <div
+                              className="tgChatTime"
+                              onContextMenu={(e) => openChatMenuAtTime(e, chatKeyFor("d", d.id))}
+                            >
+                              {timeHHMM(chatPreviewByKey[chatKeyFor("d", d.id)]?.at)}
+                            </div>
                           </div>
                           <div className="tgChatSub">
                             {isMuted(chatKeyFor("d", d.id)) ? "🔕 " : ""}
                             {chatPreviewByKey[chatKeyFor("d", d.id)]?.text || "Личка"}
                           </div>
-                        </div>
-                        <div className="tgRowActions">
-                          {isPinned(chatKeyFor("d", d.id)) ? (
-                            <>
-                              <span className="tgRowAction" onClick={(e) => { e.stopPropagation(); movePinned(chatKeyFor("d", d.id), -1); }} title="Выше">
-                                ↑
-                              </span>
-                              <span className="tgRowAction" onClick={(e) => { e.stopPropagation(); movePinned(chatKeyFor("d", d.id), 1); }} title="Ниже">
-                                ↓
-                              </span>
-                            </>
-                          ) : null}
-                          <span className="tgRowAction" onClick={(e) => { e.stopPropagation(); togglePin(chatKeyFor("d", d.id)); }} title="Закрепить чат">
-                            📌
-                          </span>
-                          <span className="tgRowAction" onClick={(e) => { e.stopPropagation(); toggleMute(chatKeyFor("d", d.id)); }} title="Mute чат">
-                            🔕
-                          </span>
-                          <span className="tgRowAction" onClick={(e) => { e.stopPropagation(); toggleArchive(chatKeyFor("d", d.id)); }} title="Архивировать чат">
-                            🗂
-                          </span>
                         </div>
                         {unreadFor(chatKeyFor("d", d.id)) ? <div className="tgUnread">{unreadFor(chatKeyFor("d", d.id))}</div> : null}
                       </button>
@@ -3516,7 +3723,7 @@ export default function App() {
                       {orderedDMs.map((d) => {
                         const otherId = d.userIds.find((id) => id !== userId) ?? d.userIds[0] ?? "";
                         const u = users.find((x) => x.id === otherId);
-                        const title = displayUserName(u, otherId ?? d.id);
+                        const title = displayUserNameForSidebar(u, otherId ?? d.id);
                         return (
                           <option key={`pick-d-${d.id}`} value={`d:${d.id}`}>
                             {title}
@@ -3634,7 +3841,7 @@ export default function App() {
                               {st === "online" ? "●" : st === "away" ? "◐" : st === "dnd" ? "◍" : "○"}
                             </span>
                             <span className="moreMenuUserLabel">
-                              <span className="moreMenuUserName">{displayUserName(u, u.email)}</span>
+                              <span className="moreMenuUserName">{displayUserNameForSidebar(u, u.id)}</span>
                               <span className="moreMenuUserEmail">{u.email}</span>
                             </span>
                           </button>
@@ -3678,19 +3885,21 @@ export default function App() {
 
         {chatMenu ? (
           <div className="chatMenu" style={{ top: chatMenu.y, left: chatMenu.x }} role="menu">
-            <button className="msgMenuItem" onClick={() => { togglePin(chatMenu.key); setChatMenu(null); }}>
+            <button type="button" className="msgMenuItem" onClick={() => { togglePin(chatMenu.key); setChatMenu(null); }}>
               {isPinned(chatMenu.key) ? "Открепить чат" : "Закрепить чат"}
             </button>
-            <button className="msgMenuItem" onClick={() => { toggleMute(chatMenu.key); setChatMenu(null); }}>
+            <button type="button" className="msgMenuItem" onClick={() => { toggleMute(chatMenu.key); setChatMenu(null); }}>
               {isMuted(chatMenu.key) ? "Включить уведомления" : "Выключить уведомления"}
             </button>
-            <button className="msgMenuItem" onClick={() => { toggleArchive(chatMenu.key); setChatMenu(null); }}>
-              {isArchived(chatMenu.key) ? "Вернуть из архива" : "Архивировать чат"}
-            </button>
-            <div className="msgMenuSep" />
-            <button className="msgMenuItem" onClick={() => { setUnreadByKey((p) => ({ ...p, [chatMenu.key]: 0 })); setChatMenu(null); }}>
-              Отметить как прочитанное
-            </button>
+            {isArchived(chatMenu.key) ? (
+              <button type="button" className="msgMenuItem" onClick={() => { toggleArchive(chatMenu.key); setChatMenu(null); }}>
+                Вернуть в список
+              </button>
+            ) : (
+              <button type="button" className="msgMenuItem danger" onClick={() => removeChatFromList(chatMenu.key)}>
+                Удалить из списка
+              </button>
+            )}
           </div>
         ) : null}
       </aside>
@@ -3752,7 +3961,7 @@ export default function App() {
                     : (() => {
                         const otherId = activeDirectChat?.userIds.find((id) => id !== userId) ?? activeDirectChat?.userIds[0] ?? "";
                         const u = users.find((x) => x.id === otherId);
-                        return initials(displayUserName(u, otherId || "Л"));
+                        return initials(displayUserNameForSidebar(u, otherId || "Л"));
                       })()}
               </div>
               <div
@@ -3781,7 +3990,7 @@ export default function App() {
                             const otherId =
                               activeDirectChat.userIds.find((id) => id !== userId) ?? activeDirectChat.userIds[0] ?? "";
                             const u = users.find((x) => x.id === otherId);
-                            return displayUserName(u, otherId || activeDirectChat.id);
+                            return displayUserNameForSidebar(u, otherId || activeDirectChat.id);
                           })()
                         : "Выберите личку"}
                 </div>
@@ -3795,8 +4004,7 @@ export default function App() {
                         const st = p?.status ?? u?.status ?? "unknown";
                         const presence =
                           st === "online" ? "в сети" : st === "away" ? "не активен" : st === "dnd" ? "не беспокоить" : "не в сети";
-                        const mail = u?.email ?? "";
-                        return mail && displayUserName(u, otherId) !== mail ? `${presence} · ${mail}` : presence;
+                        return presence;
                       })()
                     : mode === "groups" && activeGroupChat
                       ? `Участников: ${activeGroupChat.memberIds?.length ?? 0}`
@@ -3822,11 +4030,20 @@ export default function App() {
               <button
                 type="button"
                 className="tgCircleBtn"
-                onClick={() => void startAudioCall()}
-                title="Созвон (Jitsi)"
+                onClick={() => void startEmbeddedCall(false)}
+                title="Аудиозвонок (Jitsi в окне мессенджера)"
                 disabled={!canStartCalls}
               >
                 📞
+              </button>
+              <button
+                type="button"
+                className="tgCircleBtn"
+                onClick={() => void startEmbeddedCall(true)}
+                title="Видеозвонок (Jitsi в окне мессенджера)"
+                disabled={!canStartCalls}
+              >
+                🎥
               </button>
               <button type="button" className="tgCircleBtn" onClick={() => setShowRightPanel((v) => !v)} title="Сведения о чате">
                 ℹ️
@@ -3881,7 +4098,12 @@ export default function App() {
                       style={{ display: "block", width: "100%", textAlign: "left", marginBottom: 6 }}
                     >
                       <div style={{ fontSize: 12, opacity: 0.8 }}>
-                        {new Date(m.createdAt).toLocaleString()} · {m.author.email} · {m.channelId ? "channel" : m.groupChatId ? "group" : "dm"}
+                        {new Date(m.createdAt).toLocaleString()}
+                        {m.directChatId ? null : (
+                          <> · {messageAuthorLabel(m)}</>
+                        )}
+                        {" · "}
+                        {m.channelId ? "Канал" : m.groupChatId ? "Группа" : "Личка"}
                       </div>
                       <div style={{ fontSize: 13 }}>{(m.content || "").slice(0, 200) || "(без текста)"}</div>
                     </button>
@@ -3985,7 +4207,7 @@ export default function App() {
                       const p = otherId ? presenceByUserId[otherId] : undefined;
                       const st = p?.status ?? u?.status ?? "unknown";
                       const dot = st === "online" ? "●" : st === "away" ? "◐" : st === "dnd" ? "◍" : "○";
-                      const title = `Личка ${dot} ${displayUserName(u, otherId || d.id)}`;
+                      const title = `Личка ${dot} ${displayUserNameForSidebar(u, otherId || d.id)}`;
                       return (
                         <button key={d.id} onClick={() => void forwardSelectedTo({ directChatId: d.id })} disabled={!token}>
                           {title}
@@ -4592,9 +4814,9 @@ export default function App() {
                   <span>{dt.toLocaleDateString()}</span>
                 </div>
               ) : null}
-              {showMeta ? (
+              {showMeta && mode !== "dms" ? (
                 <div className="meta">
-                  {m.author?.email ?? "user"}
+                  {messageAuthorLabel(m)}
                 </div>
               ) : null}
               <div className="actions">
@@ -4649,6 +4871,26 @@ export default function App() {
                 >
                   ⭐
                 </button>
+                <button
+                  type="button"
+                  className="chip"
+                  data-reaction-trigger
+                  title="Реакция"
+                  disabled={!token}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    const r = e.currentTarget.getBoundingClientRect();
+                    const popH = 56;
+                    const popW = 300;
+                    let top = r.bottom + 6;
+                    if (top + popH > window.innerHeight - 8) top = Math.max(8, r.top - popH - 6);
+                    let left = Math.min(r.left, window.innerWidth - popW - 8);
+                    left = Math.max(8, left);
+                    setReactionPopover((p) => (p?.messageId === m.id ? null : { messageId: m.id, top, left }));
+                  }}
+                >
+                  😊
+                </button>
               </div>
               <div
                 className="bubble"
@@ -4683,11 +4925,26 @@ export default function App() {
                       </div>
                     ) : m.file.downloadUrl ? (
                       m.type === "voice" ? (
-                        <div>
+                        <div className="voiceMsgBlock">
                           <div style={{ fontSize: 12, opacity: 0.85, marginBottom: 6 }}>
                             Голосовое: {m.file.originalName ?? m.file.id}
                           </div>
-                          <audio controls preload="none" src={normalizeDownloadUrl(m.file.downloadUrl)} style={{ maxWidth: 320 }} />
+                          <audio
+                            controls
+                            preload="metadata"
+                            playsInline
+                            style={{ maxWidth: 320, width: "100%" }}
+                          >
+                            <source src={normalizeDownloadUrl(m.file.downloadUrl)} type={m.file.mimeType || "audio/webm"} />
+                          </audio>
+                          <a
+                            className="voiceMsgOpenLink"
+                            href={normalizeDownloadUrl(m.file.downloadUrl)}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            Открыть / скачать файл
+                          </a>
                         </div>
                       ) : (m.file.mimeType || "").startsWith("image/") ? (
                         <div>
@@ -4770,11 +5027,6 @@ export default function App() {
                 </div>
               ) : null}
               <div className="reactions">
-                {quickEmojis.map((e) => (
-                  <button key={`q-${m.id}-${e}`} onClick={() => void toggleReaction(m.id, e)} className="chip">
-                    {e}
-                  </button>
-                ))}
                 {(m.reactions ?? []).map((r) => (
                   <button
                     key={`${m.id}-${r.emoji}`}
@@ -4801,6 +5053,30 @@ export default function App() {
           >
             ↓
           </button>
+        ) : null}
+
+        {reactionPopover ? (
+          <div
+            ref={reactionPopoverRef}
+            className="msgReactionPopover"
+            style={{ top: reactionPopover.top, left: reactionPopover.left }}
+            role="dialog"
+            aria-label="Реакции"
+          >
+            {quickEmojis.map((em) => (
+              <button
+                key={em}
+                type="button"
+                className="msgReactionEmojiBtn"
+                onClick={() => {
+                  void toggleReaction(reactionPopover.messageId, em);
+                  setReactionPopover(null);
+                }}
+              >
+                {em}
+              </button>
+            ))}
+          </div>
         ) : null}
 
         <form onSubmit={(e) => void sendMessage(e)} className="composer">
@@ -4907,9 +5183,9 @@ export default function App() {
         </form>
         <div
           style={{ fontSize: 10, opacity: 0.42, padding: "2px 10px 6px", gridColumn: "1 / -1" }}
-          title="Сброс кэша: Ctrl+F5 или Ctrl+Shift+R. Если видите «получить ссылку» — открыта старая сборка."
+          title="Время и git обновляются только после «npm run build» в каталоге web на сервере. Ctrl+Shift+R сбрасывает кеш браузера, но не пересобирает файлы."
         >
-          UI-сборка: {__BUILD_TIME__} · кэш: Ctrl+Shift+R
+          Сборка: {__BUILD_TIME__} · git {__GIT_SHA__} · кэш: Ctrl+Shift+R
         </div>
       </main>
 
@@ -4934,7 +5210,7 @@ export default function App() {
                     : (() => {
                         const otherId = activeDirectChat?.userIds.find((id) => id !== userId) ?? activeDirectChat?.userIds[0] ?? "";
                         const u = users.find((x) => x.id === otherId);
-                        return initials(displayUserName(u, otherId || "Л"));
+                        return initials(displayUserNameForSidebar(u, otherId || "Л"));
                       })()}
               </div>
               <div className="infoPanelHeroTitle">
@@ -4951,7 +5227,7 @@ export default function App() {
                           const otherId =
                             activeDirectChat.userIds.find((id) => id !== userId) ?? activeDirectChat.userIds[0] ?? "";
                           const u = users.find((x) => x.id === otherId);
-                          return displayUserName(u, otherId || activeDirectChat.id);
+                          return displayUserNameForSidebar(u, otherId || activeDirectChat.id);
                         })()
                       : "Личка не выбрана"}
               </div>
@@ -5154,6 +5430,23 @@ export default function App() {
               </div>
             </div>
           </section>
+        </div>
+      ) : null}
+
+      {embeddedCall ? (
+        <div className="callOverlay" role="dialog" aria-label="Звонок">
+          <div className="callOverlayToolbar">
+            <span className="callOverlayTitle">{embeddedCall.video ? "Видеозвонок" : "Аудиозвонок"}</span>
+            <button type="button" className="chip" onClick={() => setEmbeddedCall(null)}>
+              Закрыть
+            </button>
+          </div>
+          <iframe
+            className="callOverlayFrame"
+            title="Jitsi Meet"
+            src={`https://meet.jit.si/${encodeURIComponent(embeddedCall.room)}#config.startWithVideoMuted=${!embeddedCall.video}`}
+            allow="camera; microphone; fullscreen; display-capture; autoplay; clipboard-write"
+          />
         </div>
       ) : null}
 
