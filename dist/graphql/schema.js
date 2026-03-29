@@ -263,6 +263,7 @@ export const typeDefs = /* GraphQL */ `
     file: File
     createdAt: DateTime!
     updatedAt: DateTime!
+    editedAt: DateTime
   }
 
   type GroupChat {

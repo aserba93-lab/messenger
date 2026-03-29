@@ -47,6 +47,7 @@ function mapMessage(row, viewerId) {
             : null,
         createdAt: row.createdAt,
         updatedAt: row.updatedAt,
+        editedAt: row.editedAt ?? null,
     };
 }
 export class DirectChatsService {

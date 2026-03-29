@@ -4,6 +4,41 @@ import { io, Socket } from "socket.io-client";
 import * as XLSX from "xlsx";
 import "./App.css";
 
+const TG_SESSION_KEY = "tg:session";
+const TG_LAST_OPEN_CHAT_KEY = "tg:lastOpenChat";
+
+type StoredSession = {
+  token: string;
+  userId?: string;
+  viewerRole?: string;
+  organizationId?: string;
+  workspaceId?: string;
+};
+
+function readStoredSession(): StoredSession | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = localStorage.getItem(TG_SESSION_KEY);
+    if (!raw) return null;
+    const s = JSON.parse(raw) as Record<string, unknown>;
+    const token = s.token;
+    if (typeof token === "string" && token.length > 0) {
+      return {
+        token,
+        userId: typeof s.userId === "string" ? s.userId : undefined,
+        viewerRole: typeof s.viewerRole === "string" ? s.viewerRole : undefined,
+        organizationId: typeof s.organizationId === "string" ? s.organizationId : undefined,
+        workspaceId: typeof s.workspaceId === "string" ? s.workspaceId : undefined,
+      };
+    }
+  } catch {
+    /* ignore */
+  }
+  return null;
+}
+
+const initialSession = readStoredSession();
+
 type LoginResult = {
   accessToken: string;
   viewer: { userId: string; organizationId: string; role: string };
@@ -26,6 +61,7 @@ type Message = {
   reactions?: Reaction[];
   parentMessageId?: string | null;
   editedAt?: string | null;
+  updatedAt?: string;
   isDeleted?: boolean;
   _localFileState?: "uploading" | "scanning" | "failed";
   _localError?: string;
@@ -36,6 +72,7 @@ type DirectChatMessage = {
   directChatId: string;
   content: string;
   createdAt: string;
+  updatedAt?: string;
   author: { email: string };
   type?: string;
   parentMessageId?: string | null;
@@ -111,15 +148,17 @@ function normalizeDownloadUrl(url?: string | null) {
 
 export default function App() {
   const [authMode, setAuthMode] = useState<"admin" | "user">("user");
-  const [organizationId, setOrganizationId] = useState("");
+  const [organizationId, setOrganizationId] = useState(() => initialSession?.organizationId ?? "");
   const [organizationCode, setOrganizationCode] = useState("");
   const [email, setEmail] = useState("admin@seed.local");
   const [password, setPassword] = useState("SeedPass123!");
-  const [workspaceId, setWorkspaceId] = useState("");
+  const [workspaceId, setWorkspaceId] = useState(() => initialSession?.workspaceId ?? "");
 
-  const [token, setToken] = useState("");
-  const [userId, setUserId] = useState("");
-  const [viewerRole, setViewerRole] = useState<"owner" | "admin" | "manager" | "employee" | "guest" | "">("");
+  const [token, setToken] = useState(() => initialSession?.token ?? "");
+  const [userId, setUserId] = useState(() => initialSession?.userId ?? "");
+  const [viewerRole, setViewerRole] = useState<"owner" | "admin" | "manager" | "employee" | "guest" | "">(
+    () => (initialSession?.viewerRole as any) ?? "",
+  );
 
   const [mode, setMode] = useState<"channels" | "groups" | "dms">("channels");
 
@@ -757,6 +796,38 @@ export default function App() {
   }, [token]);
 
   useEffect(() => {
+    if (!token) return;
+    try {
+      localStorage.setItem(
+        TG_SESSION_KEY,
+        JSON.stringify({
+          token,
+          userId,
+          viewerRole,
+          organizationId,
+          workspaceId,
+        }),
+      );
+    } catch {
+      /* ignore */
+    }
+  }, [token, userId, viewerRole, organizationId, workspaceId]);
+
+  useEffect(() => {
+    if (!token) return;
+    let key = "";
+    if (mode === "channels" && activeChannelId) key = `c:${activeChannelId}`;
+    else if (mode === "groups" && activeGroupChatId) key = `g:${activeGroupChatId}`;
+    else if (mode === "dms" && activeDirectChatId) key = `d:${activeDirectChatId}`;
+    if (!key) return;
+    try {
+      localStorage.setItem(TG_LAST_OPEN_CHAT_KEY, JSON.stringify({ key }));
+    } catch {
+      /* ignore */
+    }
+  }, [token, mode, activeChannelId, activeGroupChatId, activeDirectChatId]);
+
+  useEffect(() => {
     try {
       const p = localStorage.getItem("tg:pinnedChats");
       const po = localStorage.getItem("tg:pinnedOrder");
@@ -953,16 +1024,11 @@ export default function App() {
       });
       const data = (await res.json()) as LoginResult | { error: string };
       if (!res.ok || "error" in data) throw new Error((data as any).error || "Login failed");
+      setOrganizationId(orgId);
       setToken(data.accessToken);
       setUserId(data.viewer.userId);
       setViewerRole((data.viewer.role as any) ?? "");
       pushLog("Успешный вход.");
-      // Auto-load users for presence mapping
-      try {
-        await loadUsers(data.accessToken, orgId);
-      } catch {
-        // ignore
-      }
     } catch (e: any) {
       let msg = String(e?.message ?? e ?? "Login failed");
       if (msg === "Failed to fetch") {
@@ -988,6 +1054,12 @@ export default function App() {
     setToken("");
     setUserId("");
     setViewerRole("");
+    try {
+      localStorage.removeItem(TG_SESSION_KEY);
+      localStorage.removeItem(TG_LAST_OPEN_CHAT_KEY);
+    } catch {
+      /* ignore */
+    }
     setMessages([]);
     setChannels([]);
     setGroupChats([]);
@@ -1211,7 +1283,11 @@ export default function App() {
       token,
     );
     setChannels(data.channels);
-    if (data.channels[0]) setActiveChannelId(data.channels[0].id);
+    setActiveChannelId((prev) => {
+      const ids = new Set(data.channels.map((c) => c.id));
+      if (prev && ids.has(prev)) return prev;
+      return data.channels[0]?.id ?? "";
+    });
     pushLog(`Каналов: ${data.channels.length}`);
   }
 
@@ -1219,7 +1295,11 @@ export default function App() {
     if (!token) return;
     const data = await gql<{ groupChats: GroupChat[] }>(`query { groupChats { id name memberIds } }`, {}, token);
     setGroupChats(data.groupChats);
-    if (data.groupChats[0]) setActiveGroupChatId(data.groupChats[0].id);
+    setActiveGroupChatId((prev) => {
+      const ids = new Set(data.groupChats.map((g) => g.id));
+      if (prev && ids.has(prev)) return prev;
+      return data.groupChats[0]?.id ?? "";
+    });
     pushLog(`Групп: ${data.groupChats.length}`);
   }
 
@@ -1227,7 +1307,11 @@ export default function App() {
     if (!token) return;
     const data = await gql<{ dms: DirectChat[] }>(`query { dms { id userIds } }`, {}, token);
     setDirectChats(data.dms);
-    if (data.dms[0]) setActiveDirectChatId(data.dms[0].id);
+    setActiveDirectChatId((prev) => {
+      const ids = new Set(data.dms.map((d) => d.id));
+      if (prev && ids.has(prev)) return prev;
+      return data.dms[0]?.id ?? "";
+    });
     pushLog(`DM: ${data.dms.length}`);
   }
 
@@ -1353,6 +1437,44 @@ export default function App() {
     setUsers(data.users);
     pushLog(`Пользователей: ${data.users.length}`);
   }
+
+  useEffect(() => {
+    if (!token) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        if (organizationId) {
+          await loadUsers();
+          if (cancelled) return;
+        }
+        await loadGroupChats();
+        if (cancelled) return;
+        await loadDirectChats();
+        if (cancelled) return;
+        if (workspaceId) await loadChannels();
+        if (cancelled) return;
+        connectSocket();
+        try {
+          const raw = localStorage.getItem(TG_LAST_OPEN_CHAT_KEY);
+          if (raw) {
+            const parsed = JSON.parse(raw) as { key?: string } | string;
+            const key = typeof parsed === "string" ? parsed : parsed?.key;
+            if (key && typeof key === "string" && /^[cgd]:/.test(key)) {
+              await openChatFromList(key);
+            }
+          }
+        } catch {
+          /* ignore */
+        }
+      } catch (e) {
+        console.error(e);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- bootstrap runs when session/workspace is ready; chat loaders are stable enough for this app
+  }, [token, organizationId, workspaceId]);
 
   async function loadMyProfile() {
     if (!token) return;
@@ -2066,7 +2188,7 @@ export default function App() {
           directChatId
           content
           createdAt
-          editedAt
+          updatedAt
           type
           parentMessageId
           author { email }
@@ -2081,7 +2203,7 @@ export default function App() {
         id: m.id,
         content: m.content,
         createdAt: m.createdAt,
-      editedAt: (m as any).editedAt ?? null,
+        editedAt: m.updatedAt ?? null,
         author: { email: m.author.email },
         type: m.type,
         reactions: m.reactions ?? [],
@@ -2099,14 +2221,19 @@ export default function App() {
     const data = await gql<{ thread: Message[] }>(
       `query($parentMessageId: ID!, $limit: Int!) {
         thread(parentMessageId: $parentMessageId, limit: $limit) {
-          id content createdAt editedAt isDeleted type parentMessageId author { email } reactions { emoji count viewerHasReacted } file { id originalName mimeType size downloadUrl }
+          id content createdAt editedAt updatedAt isDeleted type parentMessageId author { email } reactions { emoji count viewerHasReacted } file { id originalName mimeType size downloadUrl }
         }
       }`,
       { parentMessageId, limit: 200 },
       token,
     );
     setThreadRootId(parentMessageId);
-    setMessages(data.thread);
+    setMessages(
+      data.thread.map((row) => ({
+        ...row,
+        editedAt: row.editedAt ?? row.updatedAt ?? null,
+      })),
+    );
   }
 
   async function backFromThread() {
@@ -2196,7 +2323,7 @@ export default function App() {
         const data = await gql<{ sendDirectMessage: DirectChatMessage }>(
           `mutation($userId: ID!, $content: String!, $parentMessageId: ID) {
             sendDirectMessage(input: { userId: $userId, content: $content, parentMessageId: $parentMessageId }) {
-              id directChatId content createdAt editedAt type parentMessageId author { email } reactions { emoji count viewerHasReacted } file { id originalName mimeType size downloadUrl }
+              id directChatId content createdAt updatedAt type parentMessageId author { email } reactions { emoji count viewerHasReacted } file { id originalName mimeType size downloadUrl }
             }
           }`,
           { userId: otherUserId, content, ...(parentMessageId ? { parentMessageId } : {}) },
@@ -2208,7 +2335,7 @@ export default function App() {
             id: data.sendDirectMessage.id,
             content: data.sendDirectMessage.content,
             createdAt: data.sendDirectMessage.createdAt,
-            editedAt: (data.sendDirectMessage as any).editedAt ?? null,
+            editedAt: data.sendDirectMessage.updatedAt ?? null,
             author: data.sendDirectMessage.author,
             type: data.sendDirectMessage.type,
             reactions: data.sendDirectMessage.reactions ?? [],
@@ -2256,7 +2383,7 @@ export default function App() {
       const data = await gql<{ editDirectMessage: any }>(
         `mutation($directChatId: ID!, $messageId: ID!, $content: String!) {
           editDirectMessage(directChatId: $directChatId, messageId: $messageId, content: $content) {
-            id directChatId content createdAt type author { email } reactions { emoji count viewerHasReacted } file { id originalName mimeType size downloadUrl }
+            id directChatId content createdAt updatedAt type author { email } reactions { emoji count viewerHasReacted } file { id originalName mimeType size downloadUrl }
           }
         }`,
         { directChatId: activeDirectChatId, messageId, content: next },
@@ -2269,6 +2396,7 @@ export default function App() {
                 id: data.editDirectMessage.id,
                 content: data.editDirectMessage.content,
                 createdAt: data.editDirectMessage.createdAt,
+                editedAt: data.editDirectMessage.updatedAt ?? null,
                 author: data.editDirectMessage.author,
                 type: data.editDirectMessage.type,
                 reactions: data.editDirectMessage.reactions ?? [],
