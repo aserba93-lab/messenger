@@ -1111,6 +1111,87 @@ pre {
   background: #000;
 }
 
+.webrtcOverlay {
+  position: absolute;
+  inset: 0;
+  z-index: 46;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 12px;
+  background: rgba(6, 8, 14, 0.78);
+  backdrop-filter: blur(4px);
+  pointer-events: auto;
+}
+.webrtcPanel {
+  max-width: min(920px, 100%);
+  padding: 16px;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(10, 12, 20, 0.96);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.55);
+}
+.webrtcVideos {
+  display: grid;
+  grid-template-columns: 1fr 160px;
+  gap: 10px;
+  align-items: stretch;
+  margin-bottom: 12px;
+  min-height: 200px;
+}
+.webrtcRemote {
+  width: 100%;
+  min-height: 200px;
+  border-radius: 10px;
+  background: #000;
+  object-fit: cover;
+}
+.webrtcRemote--audioOnly {
+  opacity: 0.35;
+}
+.webrtcLocal {
+  width: 100%;
+  min-height: 120px;
+  border-radius: 10px;
+  background: #111;
+  object-fit: cover;
+}
+.msgTick {
+  opacity: 0.85;
+  font-size: 11px;
+  margin-right: 2px;
+}
+.msgTick--read {
+  color: #7ecbff;
+}
+.msgTick--pending {
+  opacity: 0.65;
+  letter-spacing: 0.02em;
+}
+.msgSendFail {
+  color: #ff6b7a;
+  font-weight: 800;
+  cursor: default;
+}
+.modalBackdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+}
+.modalPanel {
+  max-width: 420px;
+  width: 100%;
+  padding: 16px;
+  border-radius: 12px;
+  background: rgba(16, 18, 28, 0.98);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+
 .tgChatTopRight {
   display: flex;
   align-items: flex-start;
@@ -1149,22 +1230,6 @@ pre {
 }
 .msg.mine .bubbleAuthor {
   color: rgba(220, 235, 255, 0.95);
-}
-
-.bubbleGroupAuthor {
-  font-size: 12px;
-  font-weight: 600;
-  opacity: 0.88;
-  margin: 0 0 6px;
-  color: rgba(200, 220, 255, 0.95);
-}
-.bubbleGroupAuthor--compact {
-  font-size: 11px;
-  margin-bottom: 4px;
-  opacity: 0.8;
-}
-.msg.mine .bubbleGroupAuthor {
-  color: rgba(210, 230, 255, 0.9);
 }
 
 .voiceMsgRow {
@@ -1937,67 +2002,4 @@ pre {
   .sidebar--mobile:not(.sidebar--openMobile) {
     pointer-events: none;
   }
-}
-
-.msgTick {
-  opacity: 0.85;
-  font-size: 0.85em;
-  margin-right: 2px;
-}
-.msgTick--read {
-  color: #7dd3fc;
-}
-.msgTick--pending {
-  opacity: 0.6;
-}
-.msgSendFail {
-  color: #ff6b6b;
-  font-weight: 800;
-  margin-right: 2px;
-}
-
-.webrtcOverlay {
-  position: fixed;
-  inset: 0;
-  z-index: 2000;
-  background: rgba(0, 0, 0, 0.65);
-  display: grid;
-  place-items: center;
-  padding: 16px;
-}
-.webrtcPanel {
-  background: var(--tg-bg-elevated);
-  border: 1px solid var(--tg-border-subtle);
-  border-radius: 14px;
-  padding: 16px;
-  max-width: min(960px, 100%);
-}
-.webrtcVideos {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 10px;
-  margin-bottom: 12px;
-}
-.webrtcRemote,
-.webrtcLocal {
-  width: 100%;
-  max-height: 280px;
-  background: #000;
-  border-radius: 10px;
-}
-.modalBackdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 1900;
-  background: rgba(0, 0, 0, 0.55);
-  display: grid;
-  place-items: center;
-  padding: 16px;
-}
-.modalPanel {
-  background: var(--tg-bg-elevated);
-  border: 1px solid var(--tg-border-subtle);
-  border-radius: 14px;
-  padding: 16px;
-  max-width: min(420px, 100%);
 }
