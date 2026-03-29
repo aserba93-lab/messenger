@@ -1151,6 +1151,22 @@ pre {
   color: rgba(220, 235, 255, 0.95);
 }
 
+.bubbleGroupAuthor {
+  font-size: 12px;
+  font-weight: 600;
+  opacity: 0.88;
+  margin: 0 0 6px;
+  color: rgba(200, 220, 255, 0.95);
+}
+.bubbleGroupAuthor--compact {
+  font-size: 11px;
+  margin-bottom: 4px;
+  opacity: 0.8;
+}
+.msg.mine .bubbleGroupAuthor {
+  color: rgba(210, 230, 255, 0.9);
+}
+
 .voiceMsgRow {
   display: flex;
   align-items: center;
@@ -1921,4 +1937,67 @@ pre {
   .sidebar--mobile:not(.sidebar--openMobile) {
     pointer-events: none;
   }
+}
+
+.msgTick {
+  opacity: 0.85;
+  font-size: 0.85em;
+  margin-right: 2px;
+}
+.msgTick--read {
+  color: #7dd3fc;
+}
+.msgTick--pending {
+  opacity: 0.6;
+}
+.msgSendFail {
+  color: #ff6b6b;
+  font-weight: 800;
+  margin-right: 2px;
+}
+
+.webrtcOverlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  background: rgba(0, 0, 0, 0.65);
+  display: grid;
+  place-items: center;
+  padding: 16px;
+}
+.webrtcPanel {
+  background: var(--tg-bg-elevated);
+  border: 1px solid var(--tg-border-subtle);
+  border-radius: 14px;
+  padding: 16px;
+  max-width: min(960px, 100%);
+}
+.webrtcVideos {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.webrtcRemote,
+.webrtcLocal {
+  width: 100%;
+  max-height: 280px;
+  background: #000;
+  border-radius: 10px;
+}
+.modalBackdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1900;
+  background: rgba(0, 0, 0, 0.55);
+  display: grid;
+  place-items: center;
+  padding: 16px;
+}
+.modalPanel {
+  background: var(--tg-bg-elevated);
+  border: 1px solid var(--tg-border-subtle);
+  border-radius: 14px;
+  padding: 16px;
+  max-width: min(420px, 100%);
 }

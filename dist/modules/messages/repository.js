@@ -162,6 +162,81 @@ export class MessagesRepository {
     }
     async searchAllMessages(params) {
         const limit = Math.max(1, Math.min(200, params.limit));
+        const scopeChannelId = params.scopeChannelId ?? null;
+        const scopeGroupChatId = params.scopeGroupChatId ?? null;
+        const scopeDirectChatId = params.scopeDirectChatId ?? null;
+        const scopes = [scopeChannelId, scopeGroupChatId, scopeDirectChatId].filter(Boolean);
+        if (scopes.length > 1)
+            throw new Error("Invalid search scope");
+        if (scopeChannelId) {
+            const rows = await prisma.$queryRaw `
+        SELECT m.*
+        FROM "Message" m
+        JOIN "Channel" c ON c.id = m."channelId"
+        JOIN "WorkspaceMember" wsm
+          ON wsm."workspaceId" = c."workspaceId"
+         AND wsm."userId" = ${params.viewerUserId}
+        LEFT JOIN "ChannelMember" cm
+          ON cm."channelId" = c.id
+         AND cm."userId" = ${params.viewerUserId}
+        JOIN "User" au ON au.id = m."authorId"
+        WHERE
+          m."organizationId" = ${params.organizationId}
+          AND m."channelId" = ${scopeChannelId}
+          AND m."isDeleted" = false
+          AND (c."type" <> 'private' OR cm."userId" IS NOT NULL)
+          AND (${params.hasFile ? true : false} = false OR m."fileId" IS NOT NULL)
+          AND (${params.before ?? null}::timestamp IS NULL OR m."createdAt" < ${params.before ?? null}::timestamp)
+          AND (${params.fromEmail ?? null}::text IS NULL OR lower(au.email) = lower(${params.fromEmail ?? null}::text))
+          AND (${params.inChannelName ?? null}::text IS NULL OR lower(c.name) = lower(${params.inChannelName ?? null}::text))
+          AND to_tsvector('simple', coalesce(m.content, '')) @@ websearch_to_tsquery('simple', ${params.queryText})
+        ORDER BY m."createdAt" DESC, m.id DESC
+        LIMIT ${limit};
+      `;
+            return rows;
+        }
+        if (scopeGroupChatId) {
+            const rows = await prisma.$queryRaw `
+        SELECT m.*
+        FROM "Message" m
+        JOIN "GroupChatMember" gcm
+          ON gcm."groupChatId" = m."groupChatId"
+         AND gcm."userId" = ${params.viewerUserId}
+        JOIN "User" au ON au.id = m."authorId"
+        WHERE
+          m."organizationId" = ${params.organizationId}
+          AND m."groupChatId" = ${scopeGroupChatId}
+          AND m."isDeleted" = false
+          AND (${params.hasFile ? true : false} = false OR m."fileId" IS NOT NULL)
+          AND (${params.before ?? null}::timestamp IS NULL OR m."createdAt" < ${params.before ?? null}::timestamp)
+          AND (${params.fromEmail ?? null}::text IS NULL OR lower(au.email) = lower(${params.fromEmail ?? null}::text))
+          AND to_tsvector('simple', coalesce(m.content, '')) @@ websearch_to_tsquery('simple', ${params.queryText})
+        ORDER BY m."createdAt" DESC, m.id DESC
+        LIMIT ${limit};
+      `;
+            return rows;
+        }
+        if (scopeDirectChatId) {
+            const rows = await prisma.$queryRaw `
+        SELECT m.*
+        FROM "Message" m
+        JOIN "DirectChatMember" dcm
+          ON dcm."directChatId" = m."directChatId"
+         AND dcm."userId" = ${params.viewerUserId}
+        JOIN "User" au ON au.id = m."authorId"
+        WHERE
+          m."organizationId" = ${params.organizationId}
+          AND m."directChatId" = ${scopeDirectChatId}
+          AND m."isDeleted" = false
+          AND (${params.hasFile ? true : false} = false OR m."fileId" IS NOT NULL)
+          AND (${params.before ?? null}::timestamp IS NULL OR m."createdAt" < ${params.before ?? null}::timestamp)
+          AND (${params.fromEmail ?? null}::text IS NULL OR lower(au.email) = lower(${params.fromEmail ?? null}::text))
+          AND to_tsvector('simple', coalesce(m.content, '')) @@ websearch_to_tsquery('simple', ${params.queryText})
+        ORDER BY m."createdAt" DESC, m.id DESC
+        LIMIT ${limit};
+      `;
+            return rows;
+        }
         const rows = await prisma.$queryRaw `
       (
         SELECT m.*
@@ -223,5 +298,62 @@ export class MessagesRepository {
       LIMIT ${limit};
     `;
         return rows;
+    }
+    async upsertThreadRead(params) {
+        const lastReadAt = params.lastReadAt ?? new Date();
+        return prisma.threadReadState.upsert({
+            where: { userId_threadKey: { userId: params.userId, threadKey: params.threadKey } },
+            create: {
+                organizationId: params.organizationId,
+                userId: params.userId,
+                threadKey: params.threadKey,
+                lastReadAt,
+            },
+            update: { lastReadAt },
+        });
+    }
+    async listThreadReadStatesByThreadKey(threadKey) {
+        return prisma.threadReadState.findMany({
+            where: { threadKey },
+            select: { userId: true, lastReadAt: true },
+        });
+    }
+    async listUsersWhoReadMessage(messageId) {
+        const msg = await prisma.message.findUnique({ where: { id: messageId } });
+        if (!msg)
+            return [];
+        const threadKey = msg.channelId
+            ? `c:${msg.channelId}`
+            : msg.groupChatId
+                ? `g:${msg.groupChatId}`
+                : msg.directChatId
+                    ? `d:${msg.directChatId}`
+                    : null;
+        if (!threadKey)
+            return [];
+        const rows = await prisma.threadReadState.findMany({
+            where: {
+                threadKey,
+                userId: { not: msg.authorId },
+                lastReadAt: { gte: msg.createdAt },
+            },
+            include: {
+                user: {
+                    select: {
+                        id: true,
+                        email: true,
+                        firstName: true,
+                        lastName: true,
+                        middleName: true,
+                        birthDate: true,
+                        avatarUrl: true,
+                        status: true,
+                        lastSeen: true,
+                    },
+                },
+            },
+            orderBy: { lastReadAt: "desc" },
+        });
+        return rows.map((r) => r.user);
     }
 }
