@@ -146,6 +146,19 @@ function normalizeDownloadUrl(url?: string | null) {
   return url;
 }
 
+function fileExtensionUpper(name: string): string {
+  const i = name.lastIndexOf(".");
+  return i >= 0 ? name.slice(i + 1).toUpperCase() : "";
+}
+
+/** Подпись формата: расширение из имени или хвост MIME. */
+function fileFormatLabel(originalName: string | null | undefined, mimeType: string): string {
+  const ext = fileExtensionUpper(originalName ?? "");
+  if (ext) return ext;
+  const part = mimeType.split("/")[1];
+  return part ? part.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 12) : "FILE";
+}
+
 export default function App() {
   const [authMode, setAuthMode] = useState<"admin" | "user">("user");
   const [organizationId, setOrganizationId] = useState(() => initialSession?.organizationId ?? "");
@@ -273,6 +286,11 @@ export default function App() {
   const [msgMenu, setMsgMenu] = useState<null | { x: number; y: number; messageId: string }>(null);
   const [isRecordingVoice, setIsRecordingVoice] = useState(false);
   const [voiceHoldMs, setVoiceHoldMs] = useState(0);
+  const [chatFileDragActive, setChatFileDragActive] = useState(false);
+  const [chatDragPreview, setChatDragPreview] = useState<
+    null | { kind: "image"; url: string; name: string } | { kind: "file"; name: string; ext: string; mime: string }
+  >(null);
+  const chatDragPreviewKeyRef = useRef<string>("");
   const [users, setUsers] = useState<
     {
       id: string;
@@ -328,6 +346,21 @@ export default function App() {
   const canWriteChats = ["owner", "admin", "manager", "employee"].includes(viewerRole);
   const canCreateChannelsAndGroups = ["owner", "admin", "manager", "employee"].includes(viewerRole);
   const canStartCalls = ["owner", "admin", "manager", "employee"].includes(viewerRole);
+
+  const messagesRef = useRef<Message[]>([]);
+  messagesRef.current = messages;
+
+  const pendingFileHydrateCount = useMemo(
+    () =>
+      messages.filter(
+        (m) =>
+          (m.type === "voice" || m.type === "file") &&
+          Boolean(m.file?.id) &&
+          !m.file?.downloadUrl &&
+          !m._localFileState,
+      ).length,
+    [messages],
+  );
 
   useEffect(() => {
     if (!isRecordingVoice) {
@@ -2697,6 +2730,27 @@ export default function App() {
     );
   }
 
+  /** Пока нет presigned URL у вложения — запрашиваем сразу и повторяем, пока файл не готов (скан и т.п.). */
+  useEffect(() => {
+    if (!token || pendingFileHydrateCount === 0) return;
+    const tick = () => {
+      const list = messagesRef.current;
+      for (const m of list) {
+        if (
+          (m.type === "voice" || m.type === "file") &&
+          m.file?.id &&
+          !m.file.downloadUrl &&
+          !m._localFileState
+        ) {
+          void hydrateDownloadUrl(m.id, m.file.id);
+        }
+      }
+    };
+    tick();
+    const id = window.setInterval(tick, 2500);
+    return () => window.clearInterval(id);
+  }, [token, pendingFileHydrateCount]);
+
   async function pickFile() {
     const el = document.createElement("input");
     el.type = "file";
@@ -2815,6 +2869,77 @@ export default function App() {
   const composerDisabled = (mode === "channels" ? !activeChannelId : mode === "groups" ? !activeGroupChatId : !activeDirectChatId) || !canWriteChats;
   const uploadDisabled = composerDisabled;
   const canSendText = !!newMessage.trim() && canWriteChats;
+
+  function clearChatDragPreview() {
+    setChatDragPreview((prev) => {
+      if (prev?.kind === "image") URL.revokeObjectURL(prev.url);
+      return null;
+    });
+    chatDragPreviewKeyRef.current = "";
+  }
+
+  function syncChatDragPreview(dt: DataTransfer) {
+    const item = dt.items?.[0];
+    if (!item || item.kind !== "file") return;
+    const file = item.getAsFile();
+    if (!file) return;
+    const key = `${file.name}:${file.size}:${file.lastModified}`;
+    if (key === chatDragPreviewKeyRef.current) return;
+    chatDragPreviewKeyRef.current = key;
+    setChatDragPreview((prev) => {
+      if (prev?.kind === "image") URL.revokeObjectURL(prev.url);
+      if (file.type.startsWith("image/")) {
+        return { kind: "image", url: URL.createObjectURL(file), name: file.name };
+      }
+      return {
+        kind: "file",
+        name: file.name,
+        ext: fileFormatLabel(file.name, file.type || "application/octet-stream"),
+        mime: file.type || "application/octet-stream",
+      };
+    });
+  }
+
+  function onChatDragEnter(e: React.DragEvent<HTMLElement>) {
+    e.preventDefault();
+    if (!e.dataTransfer.types.includes("Files")) return;
+    setChatFileDragActive(true);
+    syncChatDragPreview(e.dataTransfer);
+  }
+
+  function onChatDragOver(e: React.DragEvent<HTMLElement>) {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = uploadDisabled ? "none" : "copy";
+    if (!uploadDisabled && e.dataTransfer.types.includes("Files")) {
+      setChatFileDragActive(true);
+      syncChatDragPreview(e.dataTransfer);
+    }
+  }
+
+  function onChatDragLeave(e: React.DragEvent<HTMLElement>) {
+    e.preventDefault();
+    const next = e.relatedTarget as Node | null;
+    if (next && e.currentTarget.contains(next)) return;
+    setChatFileDragActive(false);
+    clearChatDragPreview();
+  }
+
+  async function onChatDrop(e: React.DragEvent<HTMLElement>) {
+    e.preventDefault();
+    setChatFileDragActive(false);
+    clearChatDragPreview();
+    if (uploadDisabled || !token) return;
+    const { files } = e.dataTransfer;
+    if (!files?.length) return;
+    for (let i = 0; i < files.length; i++) {
+      const f = files[i];
+      try {
+        await uploadAndSend("file", f, f.name);
+      } catch {
+        /* ошибка уже в пузыре сообщения */
+      }
+    }
+  }
 
   /** Дважды нажать 🎤: старт / стоп (без удержания — надёжнее на мобильных). */
   function onVoiceMicClick(e: React.MouseEvent<HTMLButtonElement>) {
@@ -3532,7 +3657,33 @@ export default function App() {
         ) : null}
       </aside>
 
-      <main className="chat">
+      <main
+        className={`chat${chatFileDragActive ? " chat--dropTarget" : ""}`}
+        onDragEnter={onChatDragEnter}
+        onDragOver={onChatDragOver}
+        onDragLeave={onChatDragLeave}
+        onDrop={(e) => void onChatDrop(e)}
+      >
+        {chatFileDragActive ? (
+          <div className="chatDropOverlay" aria-hidden>
+            <div className="chatDropOverlayInner">
+              {chatDragPreview?.kind === "image" ? (
+                <>
+                  <img src={chatDragPreview.url} alt="" className="chatDropPreviewImg" />
+                  <div className="chatDropHint">{chatDragPreview.name}</div>
+                </>
+              ) : chatDragPreview?.kind === "file" ? (
+                <>
+                  <div className="chatDropFileBadge">{chatDragPreview.ext}</div>
+                  <div className="chatDropHint">{chatDragPreview.name}</div>
+                  <div className="chatDropSub">{chatDragPreview.mime}</div>
+                </>
+              ) : (
+                <div className="chatDropHint">Отпустите файл, чтобы отправить в чат</div>
+              )}
+            </div>
+          </div>
+        ) : null}
         <header className="chatHeader">
           <div className="tgChatHeaderRow">
             <div className="tgChatHeaderLeft">
@@ -4507,18 +4658,53 @@ export default function App() {
                           </div>
                           <audio controls preload="none" src={normalizeDownloadUrl(m.file.downloadUrl)} style={{ maxWidth: 320 }} />
                         </div>
+                      ) : (m.file.mimeType || "").startsWith("image/") ? (
+                        <div>
+                          <div className="fileLineWithBadge">
+                            <span className="fileFormatBadge">{fileFormatLabel(m.file.originalName, m.file.mimeType)}</span>
+                            <span style={{ fontSize: 12, opacity: 0.9 }}>Изображение</span>
+                          </div>
+                          <a
+                            href={normalizeDownloadUrl(m.file.downloadUrl)}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="chatImageLink"
+                          >
+                            <img
+                              src={normalizeDownloadUrl(m.file.downloadUrl)}
+                              alt={m.file.originalName ?? "image"}
+                              className="chatImage"
+                              loading="lazy"
+                            />
+                          </a>
+                        </div>
                       ) : (
-                        <a href={normalizeDownloadUrl(m.file.downloadUrl)} target="_blank" rel="noreferrer">
-                          Файл: {m.file.originalName ?? m.file.id}
-                        </a>
+                        <div className="fileAttachmentRow">
+                          <span className="fileFormatBadge" title={m.file.mimeType}>
+                            {fileFormatLabel(m.file.originalName, m.file.mimeType)}
+                          </span>
+                          <a href={normalizeDownloadUrl(m.file.downloadUrl)} target="_blank" rel="noreferrer">
+                            {m.file.originalName ?? m.file.id}
+                          </a>
+                        </div>
                       )
                     ) : (
-                      <span>
-                        {m.type === "voice" ? "Голосовое" : "Файл"}: {m.file.originalName ?? m.file.id}{" "}
-                        <button className="chip" onClick={() => void hydrateDownloadUrl(m.id, m.file!.id)}>
-                          получить ссылку
-                        </button>
-                      </span>
+                      m.type === "voice" ? (
+                        <div>
+                          <div style={{ fontSize: 12, opacity: 0.85, marginBottom: 6 }}>
+                            Голосовое: {m.file.originalName ?? m.file.id}
+                          </div>
+                          <div className="fileState">Подготовка воспроизведения…</div>
+                        </div>
+                      ) : (
+                        <div>
+                          <div className="fileLineWithBadge">
+                            <span className="fileFormatBadge">{fileFormatLabel(m.file.originalName, m.file.mimeType)}</span>
+                            <span>{(m.file.mimeType || "").startsWith("image/") ? "Изображение" : "Файл"}: {m.file.originalName ?? m.file.id}</span>
+                          </div>
+                          <div className="fileState">Получение ссылки…</div>
+                        </div>
+                      )
                     )
                   ) : (
                     "(файл)"
@@ -4690,9 +4876,9 @@ export default function App() {
         </form>
         <div
           style={{ fontSize: 10, opacity: 0.42, padding: "2px 10px 6px", gridColumn: "1 / -1" }}
-          title="Если после деплоя дата/время не меняются — браузер или CDN отдают старую сборку. Должен быть текст «нажмите 🎤 снова», не «отпустите кнопку»."
+          title="Сброс кэша: Ctrl+F5 или Ctrl+Shift+R. Если видите «получить ссылку» — открыта старая сборка."
         >
-          UI-сборка: {__BUILD_TIME__}
+          UI-сборка: {__BUILD_TIME__} · кэш: Ctrl+Shift+R
         </div>
       </main>
 

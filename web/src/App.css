@@ -517,6 +517,112 @@ button.active {
   min-width: 0;
   background: var(--tg-bg-chat);
   overflow: hidden;
+  position: relative;
+}
+
+.chat--dropTarget {
+  outline: 2px dashed rgba(38, 165, 228, 0.65);
+  outline-offset: -4px;
+}
+
+.chatDropOverlay {
+  position: absolute;
+  inset: 0;
+  z-index: 40;
+  background: rgba(6, 10, 18, 0.72);
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+  backdrop-filter: blur(2px);
+}
+
+.chatDropOverlayInner {
+  text-align: center;
+  max-width: min(92%, 420px);
+  padding: 16px;
+}
+
+.chatDropPreviewImg {
+  max-width: min(100%, 360px);
+  max-height: min(50vh, 280px);
+  border-radius: 12px;
+  object-fit: contain;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.chatDropFileBadge {
+  font-size: clamp(22px, 5vw, 34px);
+  font-weight: 800;
+  color: var(--tg-accent);
+  letter-spacing: 0.06em;
+}
+
+.chatDropHint {
+  margin-top: 10px;
+  font-size: 14px;
+  word-break: break-word;
+}
+
+.chatDropSub {
+  margin-top: 6px;
+  font-size: 11px;
+  opacity: 0.7;
+}
+
+.fileLineWithBadge {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  opacity: 0.9;
+  margin-bottom: 6px;
+}
+
+.fileFormatBadge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 2.25em;
+  padding: 2px 8px;
+  border-radius: 8px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  background: rgba(38, 165, 228, 0.2);
+  border: 1px solid rgba(38, 165, 228, 0.35);
+  color: #b8e6ff;
+}
+
+.fileAttachmentRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.fileAttachmentRow a {
+  word-break: break-word;
+}
+
+.chatImageLink {
+  display: block;
+  max-width: min(100%, 360px);
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.chatImage {
+  display: block;
+  width: 100%;
+  height: auto;
+  vertical-align: middle;
+  max-height: 360px;
+  object-fit: contain;
+  background: rgba(0, 0, 0, 0.2);
 }
 
 .chatHeader {
