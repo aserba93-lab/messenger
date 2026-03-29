@@ -365,7 +365,6 @@ export default function App() {
   const [adminCreatePassword, setAdminCreatePassword] = useState("");
   const [adminCreatePhone, setAdminCreatePhone] = useState("");
   const [adminCreateDepartment, setAdminCreateDepartment] = useState("");
-  const [adminCreateStatusText, setAdminCreateStatusText] = useState("");
   const [adminCreateRole, setAdminCreateRole] = useState<"owner" | "admin" | "manager" | "employee" | "guest">("employee");
   const [chatPreviewByKey, setChatPreviewByKey] = useState<Record<string, { text: string; at: string }>>({});
   const [chatError, setChatError] = useState("");
@@ -2862,7 +2861,7 @@ export default function App() {
         role: adminCreateRole,
         department: deptV || undefined,
       });
-      await adminUpdateNewUserExtras(res.createOrganizationUser.id, { phone: adminCreatePhone, statusText: adminCreateStatusText });
+      await adminUpdateNewUserExtras(res.createOrganizationUser.id, { phone: adminCreatePhone });
       setCompanyActionMsg(`Сотрудник добавлен: ${emailV}. Если пароль не применился, сотруднику уйдет инвайт для завершения регистрации.`);
       setAdminCreateEmail("");
       setAdminCreateLastName("");
@@ -2871,7 +2870,6 @@ export default function App() {
       setAdminCreatePassword("");
       setAdminCreatePhone("");
       setAdminCreateDepartment("");
-      setAdminCreateStatusText("");
       await loadUsers();
     } catch (e: any) {
       const msg = String(e?.message ?? e ?? "Не удалось создать пользователя");
@@ -2902,7 +2900,6 @@ export default function App() {
       const roleRaw = String(row.role ?? row.Role ?? "employee").trim().toLowerCase();
       const phoneV = String(row.phone ?? row.Phone ?? row["телефон"] ?? row["Телефон"] ?? "").trim();
       const deptV = String(row.department ?? row.Department ?? row["отдел"] ?? row["Отдел"] ?? "").trim();
-      const statusTextV = String(row.status ?? row.statusText ?? row["статус"] ?? row["Статус"] ?? "").trim();
       const roleV = (["owner", "admin", "manager", "employee", "guest"].includes(roleRaw) ? roleRaw : "employee") as
         | "owner"
         | "admin"
@@ -2915,7 +2912,7 @@ export default function App() {
       }
       try {
         const res = await createCompanyUser({ email: emailV, fullName: fullNameV, password: passwordV, role: roleV, department: deptV || undefined });
-        await adminUpdateNewUserExtras(res.createOrganizationUser.id, { phone: phoneV, statusText: statusTextV });
+        await adminUpdateNewUserExtras(res.createOrganizationUser.id, { phone: phoneV });
         ok += 1;
       } catch {
         fail += 1;
@@ -5302,7 +5299,6 @@ export default function App() {
                             <th>Телефон</th>
                             <th>Роль</th>
                             <th>Отдел</th>
-                            <th>Статус</th>
                             <th>Пароль</th>
                             <th></th>
                           </tr>
@@ -5341,9 +5337,6 @@ export default function App() {
                               <input value={adminCreateDepartment} onChange={(e) => setAdminCreateDepartment(e.target.value)} placeholder="Отдел" />
                             </td>
                             <td>
-                              <input value={adminCreateStatusText} onChange={(e) => setAdminCreateStatusText(e.target.value)} placeholder="Статус" />
-                            </td>
-                            <td>
                               <input
                                 value={adminCreatePassword}
                                 onChange={(e) => setAdminCreatePassword(e.target.value)}
@@ -5366,7 +5359,7 @@ export default function App() {
                     </div>
                     <div className="empty" style={{ textAlign: "left", marginBottom: 8 }}>
                       Колонки: <code>lastName</code>/<code>Фамилия</code>, <code>firstName</code>/<code>Имя</code>, <code>middleName</code>/<code>Отчество</code>,{" "}
-                      <code>email</code>, <code>phone</code>, <code>role</code>, <code>department</code>, <code>status</code>, <code>password</code>.
+                      <code>email</code>, <code>phone</code>, <code>role</code>, <code>department</code>, <code>password</code>.
                     </div>
                     <input
                       type="file"
