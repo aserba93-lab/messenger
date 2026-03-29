@@ -56,5 +56,18 @@ export const groupChatsResolvers = {
             }).parse(args);
             return ctx.groupChatsService.deleteGroupChatMessage(viewer, input);
         },
+        updateGroupChat: async (_p, args, ctx) => {
+            const viewer = requireViewer(ctx);
+            const input = z
+                .object({
+                groupChatId: z.string().min(1),
+                name: z.string().min(1).max(120).optional(),
+                avatarUrl: z
+                    .union([z.string().url(), z.string().refine((s) => s.startsWith("data:"), "data URL"), z.literal("")])
+                    .optional(),
+            })
+                .parse(args.input);
+            return ctx.groupChatsService.updateGroupChat(viewer, input);
+        },
     },
 };

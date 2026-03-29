@@ -1,3 +1,4 @@
+import { prisma } from "../../db/prisma.js";
 import { ChannelsRepository } from "./repository.js";
 import { NotificationsService } from "../notifications/service.js";
 export class ChannelsService {
@@ -26,6 +27,8 @@ export class ChannelsService {
             name: c.name,
             type: c.type,
             description: c.description ?? null,
+            avatarUrl: c.avatarUrl ?? null,
+            createdByUserId: c.createdByUserId,
             isSystem: c.isSystem,
             isArchived: c.isArchived,
             createdAt: c.createdAt,
@@ -53,9 +56,58 @@ export class ChannelsService {
             name: channel.name,
             type: channel.type,
             description: channel.description ?? null,
+            avatarUrl: channel.avatarUrl ?? null,
+            createdByUserId: channel.createdByUserId,
             isSystem: channel.isSystem,
             isArchived: channel.isArchived,
             createdAt: channel.createdAt,
+        };
+    }
+    async updateChannel(viewer, input) {
+        this.requireVerified(viewer);
+        const channel = await this.repo.getChannelById(input.channelId);
+        if (!channel || channel.organizationId !== viewer.organizationId)
+            throw new Error("Not found");
+        const wsMember = await this.repo.isWorkspaceMember({ workspaceId: channel.workspaceId, userId: viewer.userId });
+        const isOrgAdmin = viewer.role === "owner" || viewer.role === "admin";
+        if (!wsMember && !isOrgAdmin)
+            throw new Error("Forbidden");
+        if (channel.type === "private" && !isOrgAdmin) {
+            const inChannel = await this.repo.isChannelMember({ channelId: channel.id, userId: viewer.userId });
+            if (!inChannel)
+                throw new Error("Forbidden");
+        }
+        const isCreator = channel.createdByUserId === viewer.userId;
+        if (!isCreator && !isOrgAdmin)
+            throw new Error("Forbidden");
+        if (input.name !== undefined && input.name.trim() !== channel.name) {
+            const clash = await prisma.channel.findFirst({
+                where: {
+                    workspaceId: channel.workspaceId,
+                    name: input.name.trim(),
+                    id: { not: channel.id },
+                },
+                select: { id: true },
+            });
+            if (clash)
+                throw new Error("Channel name already exists in workspace");
+        }
+        const updated = await this.repo.updateChannelFields({
+            channelId: channel.id,
+            name: input.name,
+            avatarUrl: input.avatarUrl,
+        });
+        return {
+            id: updated.id,
+            workspaceId: updated.workspaceId,
+            name: updated.name,
+            type: updated.type,
+            description: updated.description ?? null,
+            avatarUrl: updated.avatarUrl ?? null,
+            createdByUserId: updated.createdByUserId,
+            isSystem: updated.isSystem,
+            isArchived: updated.isArchived,
+            createdAt: updated.createdAt,
         };
     }
     async addChannelMember(viewer, input) {

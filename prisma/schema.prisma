@@ -53,6 +53,8 @@ model User {
   passwordHash       String
   firstName          String?
   lastName           String?
+  middleName         String?
+  birthDate          DateTime?
   avatarUrl          String?
   status             PresenceStatus @default(offline)
   lastSeen           DateTime?
@@ -178,6 +180,7 @@ model Channel {
   workspaceId    String
   name           String
   type           ChannelType @default(public)
+  avatarUrl      String?
   description    String?
   isSystem       Boolean  @default(false)
   isArchived     Boolean  @default(false)
@@ -214,6 +217,7 @@ model GroupChat {
   id             String   @id @default(cuid())
   organizationId String
   name           String
+  avatarUrl      String?
   createdByUserId String
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt

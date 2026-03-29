@@ -217,4 +217,12 @@ export class ChannelsRepository {
             return deleted;
         });
     }
+    async updateChannelFields(params) {
+        const data = {};
+        if (params.name !== undefined)
+            data.name = String(params.name).trim();
+        if (params.avatarUrl !== undefined)
+            data.avatarUrl = params.avatarUrl || null;
+        return prisma.channel.update({ where: { id: params.channelId }, data });
+    }
 }

@@ -77,7 +77,7 @@ export class AuthService {
         return member;
     }
     async getUser(viewer, targetUserId) {
-        if (viewer.userId !== targetUserId && viewer.role !== "admin")
+        if (viewer.userId !== targetUserId && viewer.role !== "admin" && viewer.role !== "owner")
             throw new Error("Forbidden");
         const member = await this.repo.getUserInOrganization({ organizationId: viewer.organizationId, userId: targetUserId });
         if (!member)
@@ -98,7 +98,7 @@ export class AuthService {
         });
     }
     async updateUser(viewer, input) {
-        if (input.userId !== viewer.userId && viewer.role !== "admin")
+        if (input.userId !== viewer.userId && viewer.role !== "admin" && viewer.role !== "owner")
             throw new Error("Forbidden");
         const out = await this.repo.updateUserProfile({
             organizationId: viewer.organizationId,
@@ -107,6 +107,8 @@ export class AuthService {
             patch: {
                 firstName: input.firstName,
                 lastName: input.lastName,
+                middleName: input.middleName,
+                birthDate: input.birthDate,
                 avatarUrl: input.avatarUrl,
                 phone: input.phone,
                 statusEmoji: input.statusEmoji,

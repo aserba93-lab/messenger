@@ -19,3 +19,11 @@ export const ArchiveChannelInputSchema = z.object({
 export const DeleteChannelInputSchema = z.object({
     channelId: z.string().min(1),
 });
+const avatarUrlField = z
+    .union([z.string().url(), z.string().refine((s) => s.startsWith("data:"), "data URL"), z.literal("")])
+    .optional();
+export const UpdateChannelInputSchema = z.object({
+    channelId: z.string().min(1),
+    name: z.string().min(1).max(120).optional(),
+    avatarUrl: avatarUrlField,
+});

@@ -11,13 +11,14 @@ echo "==> Git: $(git rev-parse --short HEAD) -> pull"
 git fetch origin
 git pull --ff-only origin main
 
-echo "==> Backend deps + build"
+echo "==> Backend deps (postinstall runs prisma generate)"
 npm ci
-npm run build
 
-echo "==> Prisma"
+echo "==> Prisma migrate"
 npx prisma migrate deploy
-npx prisma generate
+
+echo "==> Backend build"
+npm run build
 
 echo "==> Web"
 cd "$ROOT/web"

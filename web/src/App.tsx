@@ -44,8 +44,15 @@ type LoginResult = {
   viewer: { userId: string; organizationId: string; role: string };
 };
 
-type Channel = { id: string; workspaceId: string; name: string; type: "public" | "private" | "broadcast" };
-type GroupChat = { id: string; name: string; memberIds: string[] };
+type Channel = {
+  id: string;
+  workspaceId: string;
+  name: string;
+  type: "public" | "private" | "broadcast";
+  avatarUrl?: string | null;
+  createdByUserId?: string;
+};
+type GroupChat = { id: string; name: string; memberIds: string[]; createdByUserId?: string; avatarUrl?: string | null };
 type DirectChat = { id: string; userIds: string[] };
 
 type Reaction = { emoji: string; count: number; viewerHasReacted: boolean };
@@ -78,13 +85,6 @@ type DirectChatMessage = {
   parentMessageId?: string | null;
   reactions?: Reaction[];
   file?: FileInfo | null;
-};
-
-type GlobalSearchResult = {
-  users: { id: string; email: string; firstName?: string | null; lastName?: string | null }[];
-  channels: { id: string; name: string; workspaceId: string; type: string }[];
-  messages: { id: string; content: string; createdAt: string; type: string; author: { email: string }; channelId?: string | null; groupChatId?: string | null; directChatId?: string | null }[];
-  files: { id: string; url: string }[];
 };
 
 /** В проде без VITE_API_URL используем origin сайта (тот же хост, что и UI), иначе fetch уйдёт не туда. */
@@ -161,14 +161,14 @@ function fileFormatLabel(originalName: string | null | undefined, mimeType: stri
 
 /** Имя для списка чатов и заголовков — без email, только ФИО или нейтральная подпись */
 function displayUserNameForSidebar(
-  u: { email: string; firstName?: string | null; lastName?: string | null } | undefined,
+  u: { email: string; firstName?: string | null; middleName?: string | null; lastName?: string | null } | undefined,
   fallback: string,
 ): string {
   if (!u) {
     if (fallback && !fallback.includes("@")) return `Контакт ${fallback.slice(0, 8)}`;
     return "Участник";
   }
-  const name = [u.firstName, u.lastName]
+  const name = [u.firstName, u.middleName, u.lastName]
     .map((x) => (x != null ? String(x).trim() : ""))
     .filter(Boolean)
     .join(" ")
@@ -176,6 +176,18 @@ function displayUserNameForSidebar(
   if (name) return name;
   if (fallback && !fallback.includes("@")) return `Контакт ${fallback.slice(0, 8)}`;
   return "Участник";
+}
+
+/** Одна «стикерная» графема (эмодзи) — для увеличенного отображения в чате */
+function isSingleStickerContent(content: string): boolean {
+  const t = content.trim();
+  if (!t || t.length > 64) return false;
+  try {
+    const seg = [...new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(t)];
+    return seg.length === 1;
+  } catch {
+    return false;
+  }
 }
 
 export default function App() {
@@ -212,9 +224,6 @@ export default function App() {
   const [typingUserIds, setTypingUserIds] = useState<string[]>([]);
   const [log, setLog] = useState<string[]>([]);
   const [socket, setSocket] = useState<Socket | null>(null);
-  const [globalQuery, setGlobalQuery] = useState("");
-  const [globalResult, setGlobalResult] = useState<GlobalSearchResult | null>(null);
-  const [showGlobalResult, setShowGlobalResult] = useState(false);
   const [showSaved, setShowSaved] = useState(false);
   const [savedIds, setSavedIds] = useState<Set<string>>(new Set());
   const [showPins, setShowPins] = useState(false);
@@ -288,12 +297,20 @@ export default function App() {
   const [myProfileEmail, setMyProfileEmail] = useState("");
   const [profileFirstName, setProfileFirstName] = useState("");
   const [profileLastName, setProfileLastName] = useState("");
+  const [profileMiddleName, setProfileMiddleName] = useState("");
+  const [profileBirthDate, setProfileBirthDate] = useState(""); // yyyy-mm-dd для input type=date
   const [profileAvatarUrl, setProfileAvatarUrl] = useState("");
   const [profileStatusText, setProfileStatusText] = useState("");
   const [profileTitle, setProfileTitle] = useState("");
   const [profileDepartment, setProfileDepartment] = useState("");
   const [profileMsg, setProfileMsg] = useState("");
   const [showStickerPicker, setShowStickerPicker] = useState(false);
+  const [chatMetaNameDraft, setChatMetaNameDraft] = useState("");
+  const [chatMetaAvatarData, setChatMetaAvatarData] = useState("");
+  const [chatMetaMsg, setChatMetaMsg] = useState("");
+  const [infoPanelChannelMembers, setInfoPanelChannelMembers] = useState<
+    { id: string; email: string; firstName?: string | null; lastName?: string | null }[]
+  >([]);
   const [stickerCatalog, setStickerCatalog] = useState(defaultStickerCatalog);
   const [installedStickerPackIds, setInstalledStickerPackIds] = useState<string[]>([]);
   const [activeStickerPackId, setActiveStickerPackId] = useState(defaultStickerCatalog[0].id);
@@ -306,6 +323,8 @@ export default function App() {
   const [archivedChatByKey, setArchivedChatByKey] = useState<Record<string, boolean>>({});
   const [chatFolder, setChatFolder] = useState<"all" | "unread" | "archived">("all");
   const [chatMenu, setChatMenu] = useState<null | { x: number; y: number; key: string }>(null);
+  const [callMenuOpen, setCallMenuOpen] = useState(false);
+  const callMenuWrapRef = useRef<HTMLDivElement | null>(null);
   const [msgMenu, setMsgMenu] = useState<null | { x: number; y: number; messageId: string }>(null);
   const [reactionPopover, setReactionPopover] = useState<null | { messageId: string; top: number; left: number }>(null);
   const reactionPopoverRef = useRef<HTMLDivElement | null>(null);
@@ -321,7 +340,9 @@ export default function App() {
       id: string;
       email: string;
       firstName?: string | null;
+      middleName?: string | null;
       lastName?: string | null;
+      birthDate?: string | null;
       role?: "owner" | "admin" | "manager" | "employee" | "guest" | null;
       department?: string | null;
       status?: string | null;
@@ -430,6 +451,59 @@ export default function App() {
   const activeChannel = useMemo(() => channels.find((c) => c.id === activeChannelId), [channels, activeChannelId]);
   const activeGroupChat = useMemo(() => groupChats.find((g) => g.id === activeGroupChatId), [groupChats, activeGroupChatId]);
   const activeDirectChat = useMemo(() => directChats.find((d) => d.id === activeDirectChatId), [directChats, activeDirectChatId]);
+
+  const canEditActiveGroupMeta = useMemo(() => {
+    if (!activeGroupChatId || !userId) return false;
+    const g = groupChats.find((x) => x.id === activeGroupChatId);
+    if (!g?.createdByUserId) return false;
+    return g.createdByUserId === userId || isCompanyAdmin;
+  }, [groupChats, activeGroupChatId, userId, isCompanyAdmin]);
+
+  const canEditActiveChannelMeta = useMemo(() => {
+    if (!activeChannelId || !userId) return false;
+    const c = channels.find((x) => x.id === activeChannelId);
+    if (!c?.createdByUserId) return false;
+    return c.createdByUserId === userId || isCompanyAdmin;
+  }, [channels, activeChannelId, userId, isCompanyAdmin]);
+
+  useEffect(() => {
+    if (mode === "groups" && activeGroupChat) {
+      setChatMetaNameDraft(activeGroupChat.name);
+      setChatMetaAvatarData(activeGroupChat.avatarUrl?.trim() ?? "");
+    } else if (mode === "channels" && activeChannel) {
+      setChatMetaNameDraft(activeChannel.name);
+      setChatMetaAvatarData(activeChannel.avatarUrl?.trim() ?? "");
+    } else {
+      setChatMetaNameDraft("");
+      setChatMetaAvatarData("");
+    }
+    setChatMetaMsg("");
+  }, [mode, activeGroupChat, activeChannel]);
+
+  useEffect(() => {
+    if (!showRightPanel || !token || mode !== "channels" || !activeChannelId) {
+      setInfoPanelChannelMembers([]);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const data = await gql<{
+          channelMembers: { id: string; email: string; firstName?: string | null; lastName?: string | null }[];
+        }>(
+          `query($id: ID!) { channelMembers(channelId: $id) { id email firstName lastName } }`,
+          { id: activeChannelId },
+          token,
+        );
+        if (!cancelled) setInfoPanelChannelMembers(data.channelMembers ?? []);
+      } catch {
+        if (!cancelled) setInfoPanelChannelMembers([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [showRightPanel, mode, activeChannelId, token]);
 
   function initials(s: string) {
     const v = (s || "").trim();
@@ -658,6 +732,20 @@ export default function App() {
   }, [chatMenu]);
 
   useEffect(() => {
+    if (!callMenuOpen) return;
+    const onDown = (e: globalThis.MouseEvent) => {
+      const el = callMenuWrapRef.current;
+      if (el && !el.contains(e.target as Node)) setCallMenuOpen(false);
+    };
+    document.addEventListener("mousedown", onDown, true);
+    return () => document.removeEventListener("mousedown", onDown, true);
+  }, [callMenuOpen]);
+
+  useEffect(() => {
+    setCallMenuOpen(false);
+  }, [mode, activeChannelId, activeGroupChatId, activeDirectChatId]);
+
+  useEffect(() => {
     if (!msgMenu) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") setMsgMenu(null);
@@ -678,7 +766,7 @@ export default function App() {
     // Auto-scroll to bottom on new messages (Telegram behavior)
     if (!stickToBottomRef.current) return;
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [messages.length, mode, activeChannelId, activeGroupChatId, activeDirectChatId, threadRootId, showPins, showSaved, showGlobalResult]);
+  }, [messages.length, mode, activeChannelId, activeGroupChatId, activeDirectChatId, threadRootId, showPins, showSaved]);
 
   useEffect(() => {
     const el = messagesWrapRef.current;
@@ -732,14 +820,14 @@ export default function App() {
         setMobileSidebarOpen(false);
         return;
       }
-      if (k === "end" && !showGlobalResult && !showSaved && !showPins) {
+      if (k === "end" && !showSaved && !showPins) {
         stickToBottomRef.current = true;
         messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [showGlobalResult, showSaved, showPins]);
+  }, [showSaved, showPins]);
 
   useEffect(() => {
     const onResize = () => setViewportW(window.innerWidth);
@@ -867,29 +955,6 @@ export default function App() {
     } catch {
       // ignore seed info network errors
     }
-  }
-
-  async function runGlobalSearch() {
-    if (!token) return;
-    const q = globalQuery.trim();
-    if (!q) return;
-    const data = await gql<{ globalSearch: GlobalSearchResult }>(
-      `query($query: String!) {
-        globalSearch(query: $query) {
-          users { id email firstName lastName }
-          channels { id name workspaceId type }
-          messages { id channelId groupChatId directChatId content createdAt type author { email } }
-          files { id url }
-        }
-      }`,
-      { query: q },
-      token,
-    );
-    setGlobalResult(data.globalSearch);
-    setShowGlobalResult(true);
-    pushLog(
-      `Поиск "${q}": users=${data.globalSearch.users.length} channels=${data.globalSearch.channels.length} messages=${data.globalSearch.messages.length} files=${data.globalSearch.files.length}`,
-    );
   }
 
   useEffect(() => {
@@ -1063,29 +1128,6 @@ export default function App() {
     setSavedIds(new Set(data.savedMessageIds ?? []));
   }
 
-  async function goToSearchMessage(m: GlobalSearchResult["messages"][number]) {
-    if (m.channelId) {
-      setChatListScope("channels");
-      setMode("channels");
-      setActiveChannelId(m.channelId);
-      await loadMessages(m.channelId);
-      return;
-    }
-    if (m.groupChatId) {
-      setChatListScope("groups");
-      setMode("groups");
-      setActiveGroupChatId(m.groupChatId);
-      await loadGroupMessages(m.groupChatId);
-      return;
-    }
-    if (m.directChatId) {
-      setChatListScope("dms");
-      setMode("dms");
-      setActiveDirectChatId(m.directChatId);
-      await loadDirectMessages(m.directChatId);
-    }
-  }
-
   async function login(e?: FormEvent) {
     e?.preventDefault();
     try {
@@ -1173,8 +1215,6 @@ export default function App() {
     setActiveGroupChatId("");
     setActiveDirectChatId("");
     setTypingUserIds([]);
-    setShowGlobalResult(false);
-    setGlobalResult(null);
     setShowSaved(false);
     setShowPins(false);
     cancelForwardSelect();
@@ -1370,7 +1410,7 @@ export default function App() {
   async function loadChannels() {
     if (!token || !workspaceId) return;
     const data = await gql<{ channels: Channel[] }>(
-      `query($workspaceId: ID!) { channels(workspaceId: $workspaceId) { id workspaceId name type } }`,
+      `query($workspaceId: ID!) { channels(workspaceId: $workspaceId) { id workspaceId name type avatarUrl createdByUserId } }`,
       { workspaceId },
       token,
     );
@@ -1385,7 +1425,11 @@ export default function App() {
 
   async function loadGroupChats() {
     if (!token) return;
-    const data = await gql<{ groupChats: GroupChat[] }>(`query { groupChats { id name memberIds } }`, {}, token);
+    const data = await gql<{ groupChats: GroupChat[] }>(
+      `query { groupChats { id name memberIds createdByUserId avatarUrl } }`,
+      {},
+      token,
+    );
     setGroupChats(data.groupChats);
     setActiveGroupChatId((prev) => {
       const ids = new Set(data.groupChats.map((g) => g.id));
@@ -1510,14 +1554,16 @@ export default function App() {
         id: string;
         email: string;
         firstName?: string | null;
+        middleName?: string | null;
         lastName?: string | null;
+        birthDate?: string | null;
         role?: "owner" | "admin" | "manager" | "employee" | "guest" | null;
         department?: string | null;
         status?: string | null;
         lastSeen?: string | null;
       }[];
     }>(
-      `query($organizationId: ID!) { users(organizationId: $organizationId) { id email firstName lastName role department status lastSeen } }`,
+      `query($organizationId: ID!) { users(organizationId: $organizationId) { id email firstName middleName lastName birthDate role department status lastSeen } }`,
       { organizationId: orgId },
       t,
     );
@@ -1571,6 +1617,8 @@ export default function App() {
         email: string;
         firstName?: string | null;
         lastName?: string | null;
+        middleName?: string | null;
+        birthDate?: string | null;
         avatarUrl?: string | null;
         statusText?: string | null;
         title?: string | null;
@@ -1584,6 +1632,8 @@ export default function App() {
           email
           firstName
           lastName
+          middleName
+          birthDate
           avatarUrl
           statusText
           title
@@ -1598,6 +1648,8 @@ export default function App() {
     setMyProfileEmail(data.me.email);
     setProfileFirstName(data.me.firstName || "");
     setProfileLastName(data.me.lastName || "");
+    setProfileMiddleName(data.me.middleName || "");
+    setProfileBirthDate(data.me.birthDate ? data.me.birthDate.slice(0, 10) : "");
     setProfileAvatarUrl(data.me.avatarUrl || "");
     setProfileStatusText(data.me.statusText || "");
     setProfileTitle(data.me.title || "");
@@ -1624,6 +1676,10 @@ export default function App() {
     const input: Record<string, unknown> = { userId: myProfileId };
     if (profileFirstName.trim()) input.firstName = profileFirstName.trim();
     if (profileLastName.trim()) input.lastName = profileLastName.trim();
+    input.middleName = profileMiddleName.trim() || null;
+    input.birthDate = profileBirthDate.trim()
+      ? new Date(`${profileBirthDate.trim()}T12:00:00`).toISOString()
+      : null;
     if (profileAvatarUrl.trim()) input.avatarUrl = profileAvatarUrl.trim();
     if (profileStatusText.trim()) input.statusText = profileStatusText.trim();
     if (canEditOrgFields && profileTitle.trim()) input.title = profileTitle.trim();
@@ -1637,6 +1693,60 @@ export default function App() {
     );
     setProfileMsg("Профиль сохранен");
     await loadUsers();
+  }
+
+  function applyChatAvatarFromFile(file: File) {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const url = String(reader.result ?? "");
+      if (!url.startsWith("data:image/")) {
+        setChatMetaMsg("Аватар: нужен файл изображения");
+        return;
+      }
+      setChatMetaAvatarData(url);
+    };
+    reader.onerror = () => setChatMetaMsg("Не удалось прочитать файл");
+    reader.readAsDataURL(file);
+  }
+
+  async function saveChatMeta() {
+    if (!token) return;
+    setChatMetaMsg("");
+    try {
+      if (mode === "groups" && activeGroupChatId && canEditActiveGroupMeta) {
+        const input: Record<string, unknown> = { groupChatId: activeGroupChatId };
+        if (chatMetaNameDraft.trim()) input.name = chatMetaNameDraft.trim();
+        input.avatarUrl = chatMetaAvatarData.trim() || null;
+        const data = await gql<{ updateGroupChat: GroupChat }>(
+          `mutation($input: UpdateGroupChatInput!) {
+            updateGroupChat(input: $input) { id name memberIds createdByUserId avatarUrl }
+          }`,
+          { input },
+          token,
+        );
+        setGroupChats((prev) => prev.map((g) => (g.id === data.updateGroupChat.id ? data.updateGroupChat : g)));
+        setChatMetaMsg("Сохранено");
+        return;
+      }
+      if (mode === "channels" && activeChannelId && canEditActiveChannelMeta) {
+        const input: Record<string, unknown> = { channelId: activeChannelId };
+        if (chatMetaNameDraft.trim()) input.name = chatMetaNameDraft.trim();
+        input.avatarUrl = chatMetaAvatarData.trim() || null;
+        const data = await gql<{ updateChannel: Channel }>(
+          `mutation($input: UpdateChannelInput!) {
+            updateChannel(input: $input) { id workspaceId name type avatarUrl createdByUserId }
+          }`,
+          { input },
+          token,
+        );
+        setChannels((prev) =>
+          prev.map((c) => (c.id === data.updateChannel.id ? { ...c, ...data.updateChannel } : c)),
+        );
+        setChatMetaMsg("Сохранено");
+      }
+    } catch (e: unknown) {
+      setChatMetaMsg(String((e as Error)?.message ?? e ?? "Ошибка"));
+    }
   }
 
   function toggleInstallStickerPack(packId: string) {
@@ -2239,6 +2349,22 @@ export default function App() {
     setChatMenu({ x, y, key });
   }
 
+  function openChatMenuAtEditButton(e: MouseEvent, key: string) {
+    e.preventDefault();
+    e.stopPropagation();
+    const el = e.currentTarget as HTMLElement;
+    const r = el.getBoundingClientRect();
+    const menuW = 260;
+    const menuH = 220;
+    const pad = 8;
+    let x = r.right - menuW;
+    if (x < pad) x = pad;
+    if (x + menuW > window.innerWidth - pad) x = window.innerWidth - menuW - pad;
+    let y = r.bottom + 4;
+    if (y + menuH > window.innerHeight - pad) y = Math.max(pad, r.top - menuH - 4);
+    setChatMenu({ x, y, key });
+  }
+
   async function loadMessages(channelId: string) {
     if (!token || !channelId) return;
     const data = await gql<{ messages: { items: Message[] } }>(
@@ -2371,9 +2497,9 @@ export default function App() {
     }
   }
 
-  async function sendMessage(e?: FormEvent) {
+  async function sendMessage(e?: FormEvent, contentOverride?: string) {
     e?.preventDefault();
-    const content = newMessage.trimEnd();
+    const content = (contentOverride !== undefined ? contentOverride : newMessage).trimEnd();
     if (!token || !content.trim()) return;
     setChatError("");
 
@@ -2440,6 +2566,7 @@ export default function App() {
       }
       setNewMessage("");
       setReplyTo(null);
+      setShowStickerPicker(false);
     } catch (e: any) {
       const msg = String(e?.message ?? e ?? "Не удалось отправить сообщение");
       setChatError(msg);
@@ -3389,11 +3516,22 @@ export default function App() {
                             {isPinned(chatKeyFor("d", d.id)) ? "📌 " : ""}
                             <span className="tgPresence">{dot}</span> {title}
                           </div>
-                          <div
-                            className="tgChatTime"
-                            onContextMenu={(e) => openChatMenuAtTime(e, chatKeyFor("d", d.id))}
-                          >
-                            {timeHHMM(chatPreviewByKey[chatKeyFor("d", d.id)]?.at)}
+                          <div className="tgChatTopRight">
+                            <button
+                              type="button"
+                              className="tgChatRowMenuBtn"
+                              title="Чат: закрепить, архив, удалить"
+                              aria-label="Действия с чатом"
+                              onClick={(e) => openChatMenuAtEditButton(e, chatKeyFor("d", d.id))}
+                            >
+                              ⋮
+                            </button>
+                            <div
+                              className="tgChatTime"
+                              onContextMenu={(e) => openChatMenuAtTime(e, chatKeyFor("d", d.id))}
+                            >
+                              {timeHHMM(chatPreviewByKey[chatKeyFor("d", d.id)]?.at)}
+                            </div>
                           </div>
                         </div>
                         <div className="tgChatSub">
@@ -3438,15 +3576,28 @@ export default function App() {
                       void loadGroupMessages(g.id);
                     }}
                   >
-                    <div className="tgAvatar">{initials(g.name)}</div>
+                    <div className={`tgAvatar ${g.avatarUrl ? "tgAvatar--img" : ""}`}>
+                      {g.avatarUrl ? <img src={g.avatarUrl} alt="" className="tgAvatarImg" /> : initials(g.name)}
+                    </div>
                     <div className="tgChatMain">
                       <div className="tgChatTop">
                         <div className="tgChatTitle">{isPinned(chatKeyFor("g", g.id)) ? "📌 " : ""}{g.name}</div>
-                        <div
-                          className="tgChatTime"
-                          onContextMenu={(e) => openChatMenuAtTime(e, chatKeyFor("g", g.id))}
-                        >
-                          {timeHHMM(chatPreviewByKey[chatKeyFor("g", g.id)]?.at)}
+                        <div className="tgChatTopRight">
+                          <button
+                            type="button"
+                            className="tgChatRowMenuBtn"
+                            title="Чат: закрепить, архив, удалить"
+                            aria-label="Действия с чатом"
+                            onClick={(e) => openChatMenuAtEditButton(e, chatKeyFor("g", g.id))}
+                          >
+                            ⋮
+                          </button>
+                          <div
+                            className="tgChatTime"
+                            onContextMenu={(e) => openChatMenuAtTime(e, chatKeyFor("g", g.id))}
+                          >
+                            {timeHHMM(chatPreviewByKey[chatKeyFor("g", g.id)]?.at)}
+                          </div>
                         </div>
                       </div>
                       <div className="tgChatSub">
@@ -3490,15 +3641,28 @@ export default function App() {
                       void loadMessages(c.id);
                     }}
                   >
-                    <div className="tgAvatar">#</div>
+                    <div className={`tgAvatar ${c.avatarUrl ? "tgAvatar--img" : ""}`}>
+                      {c.avatarUrl ? <img src={c.avatarUrl} alt="" className="tgAvatarImg" /> : "#"}
+                    </div>
                     <div className="tgChatMain">
                       <div className="tgChatTop">
                         <div className="tgChatTitle">{isPinned(chatKeyFor("c", c.id)) ? "📌 " : ""}#{c.name}</div>
-                        <div
-                          className="tgChatTime"
-                          onContextMenu={(e) => openChatMenuAtTime(e, chatKeyFor("c", c.id))}
-                        >
-                          {timeHHMM(chatPreviewByKey[chatKeyFor("c", c.id)]?.at)}
+                        <div className="tgChatTopRight">
+                          <button
+                            type="button"
+                            className="tgChatRowMenuBtn"
+                            title="Чат: закрепить, архив, удалить"
+                            aria-label="Действия с чатом"
+                            onClick={(e) => openChatMenuAtEditButton(e, chatKeyFor("c", c.id))}
+                          >
+                            ⋮
+                          </button>
+                          <div
+                            className="tgChatTime"
+                            onContextMenu={(e) => openChatMenuAtTime(e, chatKeyFor("c", c.id))}
+                          >
+                            {timeHHMM(chatPreviewByKey[chatKeyFor("c", c.id)]?.at)}
+                          </div>
                         </div>
                       </div>
                       <div className="tgChatSub">
@@ -3539,15 +3703,28 @@ export default function App() {
                       void loadMessages(c.id);
                     }}
                   >
-                    <div className="tgAvatar">#</div>
+                    <div className={`tgAvatar ${c.avatarUrl ? "tgAvatar--img" : ""}`}>
+                      {c.avatarUrl ? <img src={c.avatarUrl} alt="" className="tgAvatarImg" /> : "#"}
+                    </div>
                     <div className="tgChatMain">
                       <div className="tgChatTop">
                         <div className="tgChatTitle">{isPinned(chatKeyFor("c", c.id)) ? "📌 " : ""}#{c.name}</div>
-                        <div
-                          className="tgChatTime"
-                          onContextMenu={(e) => openChatMenuAtTime(e, chatKeyFor("c", c.id))}
-                        >
-                          {timeHHMM(chatPreviewByKey[chatKeyFor("c", c.id)]?.at)}
+                        <div className="tgChatTopRight">
+                          <button
+                            type="button"
+                            className="tgChatRowMenuBtn"
+                            title="Чат: закрепить, архив, удалить"
+                            aria-label="Действия с чатом"
+                            onClick={(e) => openChatMenuAtEditButton(e, chatKeyFor("c", c.id))}
+                          >
+                            ⋮
+                          </button>
+                          <div
+                            className="tgChatTime"
+                            onContextMenu={(e) => openChatMenuAtTime(e, chatKeyFor("c", c.id))}
+                          >
+                            {timeHHMM(chatPreviewByKey[chatKeyFor("c", c.id)]?.at)}
+                          </div>
                         </div>
                       </div>
                       <div className="tgChatSub">
@@ -3587,15 +3764,28 @@ export default function App() {
                         void loadGroupMessages(g.id);
                       }}
                     >
-                      <div className="tgAvatar">{initials(g.name)}</div>
+                      <div className={`tgAvatar ${g.avatarUrl ? "tgAvatar--img" : ""}`}>
+                        {g.avatarUrl ? <img src={g.avatarUrl} alt="" className="tgAvatarImg" /> : initials(g.name)}
+                      </div>
                       <div className="tgChatMain">
                         <div className="tgChatTop">
                           <div className="tgChatTitle">{isPinned(chatKeyFor("g", g.id)) ? "📌 " : ""}{g.name}</div>
-                          <div
-                            className="tgChatTime"
-                            onContextMenu={(e) => openChatMenuAtTime(e, chatKeyFor("g", g.id))}
-                          >
-                            {timeHHMM(chatPreviewByKey[chatKeyFor("g", g.id)]?.at)}
+                          <div className="tgChatTopRight">
+                            <button
+                              type="button"
+                              className="tgChatRowMenuBtn"
+                              title="Чат: закрепить, архив, удалить"
+                              aria-label="Действия с чатом"
+                              onClick={(e) => openChatMenuAtEditButton(e, chatKeyFor("g", g.id))}
+                            >
+                              ⋮
+                            </button>
+                            <div
+                              className="tgChatTime"
+                              onContextMenu={(e) => openChatMenuAtTime(e, chatKeyFor("g", g.id))}
+                            >
+                              {timeHHMM(chatPreviewByKey[chatKeyFor("g", g.id)]?.at)}
+                            </div>
                           </div>
                         </div>
                         <div className="tgChatSub">
@@ -3648,11 +3838,22 @@ export default function App() {
                               {isPinned(chatKeyFor("d", d.id)) ? "📌 " : ""}
                               <span className="tgPresence">{dot}</span> {title}
                             </div>
-                            <div
-                              className="tgChatTime"
-                              onContextMenu={(e) => openChatMenuAtTime(e, chatKeyFor("d", d.id))}
-                            >
-                              {timeHHMM(chatPreviewByKey[chatKeyFor("d", d.id)]?.at)}
+                            <div className="tgChatTopRight">
+                              <button
+                                type="button"
+                                className="tgChatRowMenuBtn"
+                                title="Чат: закрепить, архив, удалить"
+                                aria-label="Действия с чатом"
+                                onClick={(e) => openChatMenuAtEditButton(e, chatKeyFor("d", d.id))}
+                              >
+                                ⋮
+                              </button>
+                              <div
+                                className="tgChatTime"
+                                onContextMenu={(e) => openChatMenuAtTime(e, chatKeyFor("d", d.id))}
+                              >
+                                {timeHHMM(chatPreviewByKey[chatKeyFor("d", d.id)]?.at)}
+                              </div>
                             </div>
                           </div>
                           <div className="tgChatSub">
@@ -3678,61 +3879,6 @@ export default function App() {
                 </button>
               </div>
               <div className="moreMenuBody">
-                <div className="moreMenuSection">
-                  <div className="moreMenuLabel">Глобальный поиск</div>
-                  <input
-                    placeholder="сообщение, канал, пользователь, файл…"
-                    value={globalQuery}
-                    onChange={(e) => setGlobalQuery(e.target.value)}
-                  />
-                  <div className="row" style={{ marginTop: 8 }}>
-                    <button type="button" onClick={() => void runGlobalSearch()} disabled={!token || !globalQuery.trim()}>
-                      Найти
-                    </button>
-                  </div>
-                </div>
-                <div className="moreMenuSection">
-                  <div className="moreMenuLabel">Быстрый переход</div>
-                  <select
-                    className="moreMenuSelect"
-                    defaultValue=""
-                    onChange={(e) => {
-                      const v = e.target.value;
-                      e.currentTarget.value = "";
-                      void openChatFromList(v);
-                      setMoreMenuOpen(false);
-                      setMobileSidebarOpen(false);
-                    }}
-                  >
-                    <option value="">Выберите чат…</option>
-                    <optgroup label="Каналы">
-                      {orderedChannels.map((c) => (
-                        <option key={`pick-c-${c.id}`} value={`c:${c.id}`}>
-                          #{c.name}
-                        </option>
-                      ))}
-                    </optgroup>
-                    <optgroup label="Группы">
-                      {orderedGroups.map((g) => (
-                        <option key={`pick-g-${g.id}`} value={`g:${g.id}`}>
-                          {g.name}
-                        </option>
-                      ))}
-                    </optgroup>
-                    <optgroup label="Личка">
-                      {orderedDMs.map((d) => {
-                        const otherId = d.userIds.find((id) => id !== userId) ?? d.userIds[0] ?? "";
-                        const u = users.find((x) => x.id === otherId);
-                        const title = displayUserNameForSidebar(u, otherId ?? d.id);
-                        return (
-                          <option key={`pick-d-${d.id}`} value={`d:${d.id}`}>
-                            {title}
-                          </option>
-                        );
-                      })}
-                    </optgroup>
-                  </select>
-                </div>
                 <div className="moreMenuSection">
                   <button
                     type="button"
@@ -3783,17 +3929,6 @@ export default function App() {
                     disabled={!token}
                   >
                     Сохранённые сообщения
-                  </button>
-                  <button
-                    type="button"
-                    className="moreMenuWideBtn"
-                    onClick={() => {
-                      void refreshSavedIds();
-                      setMoreMenuOpen(false);
-                    }}
-                    disabled={!token}
-                  >
-                    Обновить сохранённые ID
                   </button>
                   <button
                     type="button"
@@ -3891,15 +4026,14 @@ export default function App() {
             <button type="button" className="msgMenuItem" onClick={() => { toggleMute(chatMenu.key); setChatMenu(null); }}>
               {isMuted(chatMenu.key) ? "Включить уведомления" : "Выключить уведомления"}
             </button>
-            {isArchived(chatMenu.key) ? (
-              <button type="button" className="msgMenuItem" onClick={() => { toggleArchive(chatMenu.key); setChatMenu(null); }}>
-                Вернуть в список
-              </button>
-            ) : (
+            <button type="button" className="msgMenuItem" onClick={() => { toggleArchive(chatMenu.key); setChatMenu(null); }}>
+              {isArchived(chatMenu.key) ? "Вернуть из архива" : "В архив"}
+            </button>
+            {!isArchived(chatMenu.key) ? (
               <button type="button" className="msgMenuItem danger" onClick={() => removeChatFromList(chatMenu.key)}>
                 Удалить из списка
               </button>
-            )}
+            ) : null}
           </div>
         ) : null}
       </aside>
@@ -3943,7 +4077,7 @@ export default function App() {
                 ☰
               </button>
               <div
-                className="tgHeaderAvatar"
+                className={`tgHeaderAvatar ${mode === "channels" && activeChannel?.avatarUrl ? "tgHeaderAvatar--img" : ""} ${mode === "groups" && activeGroupChat?.avatarUrl ? "tgHeaderAvatar--img" : ""}`}
                 role="button"
                 tabIndex={0}
                 onClick={() => setShowRightPanel(true)}
@@ -3954,15 +4088,25 @@ export default function App() {
                   }
                 }}
               >
-                {mode === "channels"
-                  ? "#"
-                  : mode === "groups"
-                    ? initials(activeGroupChat?.name ?? "G")
-                    : (() => {
-                        const otherId = activeDirectChat?.userIds.find((id) => id !== userId) ?? activeDirectChat?.userIds[0] ?? "";
-                        const u = users.find((x) => x.id === otherId);
-                        return initials(displayUserNameForSidebar(u, otherId || "Л"));
-                      })()}
+                {mode === "channels" ? (
+                  activeChannel?.avatarUrl ? (
+                    <img src={activeChannel.avatarUrl} alt="" className="tgHeaderAvatarImg" />
+                  ) : (
+                    "#"
+                  )
+                ) : mode === "groups" ? (
+                  activeGroupChat?.avatarUrl ? (
+                    <img src={activeGroupChat.avatarUrl} alt="" className="tgHeaderAvatarImg" />
+                  ) : (
+                    initials(activeGroupChat?.name ?? "G")
+                  )
+                ) : (
+                  (() => {
+                    const otherId = activeDirectChat?.userIds.find((id) => id !== userId) ?? activeDirectChat?.userIds[0] ?? "";
+                    const u = users.find((x) => x.id === otherId);
+                    return initials(displayUserNameForSidebar(u, otherId || "Л"));
+                  })()
+                )}
               </div>
               <div
                 className="tgChatHeaderText tgChatHeaderText--clickable"
@@ -4016,7 +4160,7 @@ export default function App() {
                 </div>
               </div>
             </div>
-            <div className="tgChatHeaderRight">
+            <div className="tgChatHeaderRight" ref={callMenuWrapRef}>
               <button
                 type="button"
                 className="tgCircleBtn"
@@ -4027,24 +4171,41 @@ export default function App() {
               >
                 🔍
               </button>
-              <button
-                type="button"
-                className="tgCircleBtn"
-                onClick={() => void startEmbeddedCall(false)}
-                title="Аудиозвонок (Jitsi в окне мессенджера)"
-                disabled={!canStartCalls}
-              >
-                📞
-              </button>
-              <button
-                type="button"
-                className="tgCircleBtn"
-                onClick={() => void startEmbeddedCall(true)}
-                title="Видеозвонок (Jitsi в окне мессенджера)"
-                disabled={!canStartCalls}
-              >
-                🎥
-              </button>
+              <div className="tgCallMenuAnchor">
+                <button
+                  type="button"
+                  className="tgCircleBtn"
+                  title="Созвон (аудио или видео)"
+                  disabled={!canStartCalls}
+                  onClick={() => setCallMenuOpen((v) => !v)}
+                >
+                  📞
+                </button>
+                {callMenuOpen && canStartCalls ? (
+                  <div className="tgPopoverMenu" role="menu">
+                    <button
+                      type="button"
+                      className="tgPopoverItem"
+                      onClick={() => {
+                        setCallMenuOpen(false);
+                        void startEmbeddedCall(false);
+                      }}
+                    >
+                      Аудиозвонок
+                    </button>
+                    <button
+                      type="button"
+                      className="tgPopoverItem"
+                      onClick={() => {
+                        setCallMenuOpen(false);
+                        void startEmbeddedCall(true);
+                      }}
+                    >
+                      Видеозвонок
+                    </button>
+                  </div>
+                ) : null}
+              </div>
               <button type="button" className="tgCircleBtn" onClick={() => setShowRightPanel((v) => !v)} title="Сведения о чате">
                 ℹ️
               </button>
@@ -4077,96 +4238,6 @@ export default function App() {
             </div>
           ) : null}
         </header>
-
-        {showGlobalResult && globalResult ? (
-          <section className="messages" style={{ borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
-            <div className="empty" style={{ textAlign: "left" }}>
-              <div style={{ display: "flex", gap: 8, marginBottom: 10, alignItems: "center" }}>
-                <div style={{ fontWeight: 700 }}>Результаты поиска: “{globalQuery.trim()}”</div>
-                <button onClick={() => setShowGlobalResult(false)}>Закрыть</button>
-              </div>
-
-              <div style={{ marginBottom: 10 }}>
-                <div style={{ fontWeight: 700, marginBottom: 6 }}>Сообщения</div>
-                {globalResult.messages.length === 0 ? (
-                  <div>Нет</div>
-                ) : (
-                  globalResult.messages.map((m) => (
-                    <button
-                      key={m.id}
-                      onClick={() => void goToSearchMessage(m)}
-                      style={{ display: "block", width: "100%", textAlign: "left", marginBottom: 6 }}
-                    >
-                      <div style={{ fontSize: 12, opacity: 0.8 }}>
-                        {new Date(m.createdAt).toLocaleString()}
-                        {m.directChatId ? null : (
-                          <> · {messageAuthorLabel(m)}</>
-                        )}
-                        {" · "}
-                        {m.channelId ? "Канал" : m.groupChatId ? "Группа" : "Личка"}
-                      </div>
-                      <div style={{ fontSize: 13 }}>{(m.content || "").slice(0, 200) || "(без текста)"}</div>
-                    </button>
-                  ))
-                )}
-              </div>
-
-              <div style={{ marginBottom: 10 }}>
-                <div style={{ fontWeight: 700, marginBottom: 6 }}>Каналы</div>
-                {globalResult.channels.length === 0 ? (
-                  <div>Нет</div>
-                ) : (
-                  globalResult.channels.map((c) => (
-                    <button
-                      key={c.id}
-                      onClick={() => {
-                        setMode("channels");
-                        setActiveChannelId(c.id);
-                        void loadMessages(c.id);
-                        setShowGlobalResult(false);
-                      }}
-                      style={{ display: "block", width: "100%", textAlign: "left", marginBottom: 6 }}
-                    >
-                      #{c.name}
-                    </button>
-                  ))
-                )}
-              </div>
-
-              <div style={{ marginBottom: 10 }}>
-                <div style={{ fontWeight: 700, marginBottom: 6 }}>Пользователи</div>
-                {globalResult.users.length === 0 ? (
-                  <div>Нет</div>
-                ) : (
-                  globalResult.users.map((u) => (
-                    <div key={u.id} style={{ marginBottom: 6, fontSize: 13 }}>
-                      {u.email} {u.firstName || u.lastName ? `(${[u.firstName, u.lastName].filter(Boolean).join(" ")})` : ""}
-                    </div>
-                  ))
-                )}
-              </div>
-
-              <div style={{ marginBottom: 10 }}>
-                <div style={{ fontWeight: 700, marginBottom: 6 }}>Файлы</div>
-                {globalResult.files.length === 0 ? (
-                  <div>Нет</div>
-                ) : (
-                  globalResult.files.map((f) => (
-                    <div key={f.id} style={{ marginBottom: 6, fontSize: 13 }}>
-                      {f.url ? (
-                        <a href={f.url} target="_blank" rel="noreferrer">
-                          file {f.id}
-                        </a>
-                      ) : (
-                        <span style={{ opacity: 0.8 }}>file {f.id} (нет доступа/не clean)</span>
-                      )}
-                    </div>
-                  ))
-                )}
-              </div>
-            </div>
-          </section>
-        ) : null}
 
         {showForwardPicker ? (
           <section className="messages" style={{ borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
@@ -4678,7 +4749,7 @@ export default function App() {
                   </div>
                   <div style={{ minWidth: 0 }}>
                     <div style={{ fontWeight: 700 }}>
-                      {[profileFirstName, profileLastName].filter(Boolean).join(" ").trim() || myProfileEmail || email}
+                      {[profileFirstName, profileMiddleName, profileLastName].filter(Boolean).join(" ").trim() || myProfileEmail || email}
                     </div>
                     <div className="empty" style={{ fontSize: 12, opacity: 0.85 }}>
                       {myProfileEmail || email}
@@ -4694,8 +4765,12 @@ export default function App() {
 
                 <label>Имя</label>
                 <input value={profileFirstName} onChange={(e) => setProfileFirstName(e.target.value)} placeholder="Имя" />
+                <label>Отчество</label>
+                <input value={profileMiddleName} onChange={(e) => setProfileMiddleName(e.target.value)} placeholder="Отчество" />
                 <label>Фамилия</label>
                 <input value={profileLastName} onChange={(e) => setProfileLastName(e.target.value)} placeholder="Фамилия" />
+                <label>Дата рождения</label>
+                <input type="date" value={profileBirthDate} onChange={(e) => setProfileBirthDate(e.target.value)} />
                 <label>Статус</label>
                 <input value={profileStatusText} onChange={(e) => setProfileStatusText(e.target.value)} placeholder="О чем вы думаете?" />
                 <label>Avatar URL или data:image</label>
@@ -4814,11 +4889,6 @@ export default function App() {
                   <span>{dt.toLocaleDateString()}</span>
                 </div>
               ) : null}
-              {showMeta && mode !== "dms" ? (
-                <div className="meta">
-                  {messageAuthorLabel(m)}
-                </div>
-              ) : null}
               <div className="actions">
                 <button className="chip" onClick={() => void editMessageInChat(m.id)} disabled={!token || m.author?.email !== email}>
                   ✎
@@ -4893,7 +4963,7 @@ export default function App() {
                 </button>
               </div>
               <div
-                className="bubble"
+                className={`bubble ${m.type !== "file" && m.type !== "voice" && m.content && isSingleStickerContent(m.content) ? "bubble--stickerLarge" : ""}`}
                 onDoubleClick={() => setReplyTo({ id: m.id, preview: (m.content || "").slice(0, 80) || m.type || "" })}
                 onClick={forwardSelecting ? () => toggleForwardSelected(m.id) : undefined}
                 onContextMenu={(e) => {
@@ -4908,6 +4978,9 @@ export default function App() {
                   setMsgMenu({ x, y, messageId: m.id });
                 }}
               >
+                {(mode === "groups" || mode === "channels") && showMeta && m.author?.email !== email ? (
+                  <div className="bubbleAuthor">{messageAuthorLabel(m)}</div>
+                ) : null}
                 {m.type === "file" || m.type === "voice" ? (
                   m.file ? (
                     m._localFileState ? (
@@ -4926,25 +4999,27 @@ export default function App() {
                     ) : m.file.downloadUrl ? (
                       m.type === "voice" ? (
                         <div className="voiceMsgBlock">
-                          <div style={{ fontSize: 12, opacity: 0.85, marginBottom: 6 }}>
-                            Голосовое: {m.file.originalName ?? m.file.id}
+                          <div className="voiceMsgRow">
+                            <audio
+                              key={`${m.id}-audio`}
+                              className="voiceMsgAudio"
+                              controls
+                              preload="metadata"
+                              playsInline
+                              src={normalizeDownloadUrl(m.file.downloadUrl)}
+                            />
+                            <a
+                              className="fileDownloadIconBtn"
+                              href={normalizeDownloadUrl(m.file.downloadUrl)}
+                              download={m.file.originalName || "voice.webm"}
+                              target="_blank"
+                              rel="noreferrer"
+                              title="Скачать"
+                              aria-label="Скачать"
+                            >
+                              ⬇
+                            </a>
                           </div>
-                          <audio
-                            controls
-                            preload="metadata"
-                            playsInline
-                            style={{ maxWidth: 320, width: "100%" }}
-                          >
-                            <source src={normalizeDownloadUrl(m.file.downloadUrl)} type={m.file.mimeType || "audio/webm"} />
-                          </audio>
-                          <a
-                            className="voiceMsgOpenLink"
-                            href={normalizeDownloadUrl(m.file.downloadUrl)}
-                            target="_blank"
-                            rel="noreferrer"
-                          >
-                            Открыть / скачать файл
-                          </a>
                         </div>
                       ) : (m.file.mimeType || "").startsWith("image/") ? (
                         <div>
@@ -4971,8 +5046,17 @@ export default function App() {
                           <span className="fileFormatBadge" title={m.file.mimeType}>
                             {fileFormatLabel(m.file.originalName, m.file.mimeType)}
                           </span>
-                          <a href={normalizeDownloadUrl(m.file.downloadUrl)} target="_blank" rel="noreferrer">
-                            {m.file.originalName ?? m.file.id}
+                          <span className="fileAttachmentName">{m.file.originalName ?? m.file.id}</span>
+                          <a
+                            className="fileDownloadIconBtn"
+                            href={normalizeDownloadUrl(m.file.downloadUrl)}
+                            download={m.file.originalName || undefined}
+                            target="_blank"
+                            rel="noreferrer"
+                            title="Скачать"
+                            aria-label="Скачать"
+                          >
+                            ⬇
                           </a>
                         </div>
                       )
@@ -5171,8 +5255,8 @@ export default function App() {
                     type="button"
                     key={`${activeStickerPackId}-${idx}-${s}`}
                     className="stickerBtn"
-                    onClick={() => setNewMessage((prev) => (prev ? `${prev} ${s}` : s))}
-                    title="Добавить стикер в сообщение"
+                    onClick={() => void sendMessage(undefined, s)}
+                    title="Отправить стикер"
                   >
                     {s}
                   </button>
@@ -5187,6 +5271,25 @@ export default function App() {
         >
           Сборка: {__BUILD_TIME__} · git {__GIT_SHA__} · кэш: Ctrl+Shift+R
         </div>
+
+        {embeddedCall ? (
+          <div className="callOverlay" role="dialog" aria-label="Звонок">
+            <div className="callOverlayInner">
+              <div className="callOverlayToolbar">
+                <span className="callOverlayTitle">{embeddedCall.video ? "Видеозвонок" : "Аудиозвонок"}</span>
+                <button type="button" className="chip" onClick={() => setEmbeddedCall(null)}>
+                  Закрыть
+                </button>
+              </div>
+              <iframe
+                className="callOverlayFrame"
+                title="Jitsi Meet"
+                src={`https://meet.jit.si/${encodeURIComponent(embeddedCall.room)}#config.startWithVideoMuted=${!embeddedCall.video}`}
+                allow="camera; microphone; fullscreen; display-capture; autoplay; clipboard-write"
+              />
+            </div>
+          </div>
+        ) : null}
       </main>
 
       {showRightPanel ? (
@@ -5202,16 +5305,26 @@ export default function App() {
               </button>
             </div>
             <div className="infoPanelBody">
-              <div className="infoPanelHeroAvatar">
-                {mode === "channels"
-                  ? "#"
-                  : mode === "groups"
-                    ? initials(activeGroupChat?.name ?? "G")
-                    : (() => {
-                        const otherId = activeDirectChat?.userIds.find((id) => id !== userId) ?? activeDirectChat?.userIds[0] ?? "";
-                        const u = users.find((x) => x.id === otherId);
-                        return initials(displayUserNameForSidebar(u, otherId || "Л"));
-                      })()}
+              <div className={`infoPanelHeroAvatar ${mode === "channels" && activeChannel?.avatarUrl ? "infoPanelHeroAvatar--img" : ""} ${mode === "groups" && activeGroupChat?.avatarUrl ? "infoPanelHeroAvatar--img" : ""}`}>
+                {mode === "channels" ? (
+                  activeChannel?.avatarUrl ? (
+                    <img src={activeChannel.avatarUrl} alt="" className="infoPanelHeroAvatarImg" />
+                  ) : (
+                    "#"
+                  )
+                ) : mode === "groups" ? (
+                  activeGroupChat?.avatarUrl ? (
+                    <img src={activeGroupChat.avatarUrl} alt="" className="infoPanelHeroAvatarImg" />
+                  ) : (
+                    initials(activeGroupChat?.name ?? "G")
+                  )
+                ) : (
+                  (() => {
+                    const otherId = activeDirectChat?.userIds.find((id) => id !== userId) ?? activeDirectChat?.userIds[0] ?? "";
+                    const u = users.find((x) => x.id === otherId);
+                    return initials(displayUserNameForSidebar(u, otherId || "Л"));
+                  })()
+                )}
               </div>
               <div className="infoPanelHeroTitle">
                 {mode === "channels"
@@ -5234,6 +5347,80 @@ export default function App() {
               <p className="infoPanelHeroSub">
                 {organizationId ? `Организация: ${displayOrganizationId}` : "—"} · {myProfileEmail || email}
               </p>
+
+              {mode === "groups" && activeGroupChat ? (
+                <div className="infoPanelSection">
+                  <div className="infoPanelSectionTitle">Участники ({activeGroupChat.memberIds.length})</div>
+                  <ul className="infoPanelMemberList">
+                    {activeGroupChat.memberIds.map((mid) => {
+                      const u = users.find((x) => x.id === mid);
+                      return (
+                        <li key={mid}>
+                          {displayUserNameForSidebar(u, mid)}
+                          <span className="infoPanelMemberEmail">{u?.email ?? mid}</span>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
+              ) : null}
+
+              {mode === "channels" && activeChannelId ? (
+                <div className="infoPanelSection">
+                  <div className="infoPanelSectionTitle">
+                    Участники канала
+                    {activeChannel?.type === "public" || activeChannel?.type === "broadcast"
+                      ? " (все в workspace)"
+                      : null}
+                  </div>
+                  {activeChannel?.type === "private" ? (
+                    <ul className="infoPanelMemberList">
+                      {infoPanelChannelMembers.map((u) => (
+                        <li key={u.id}>
+                          {displayUserNameForSidebar(u, u.id)}
+                          <span className="infoPanelMemberEmail">{u.email}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="infoPanelHint">Публичный и broadcast-канал виден участникам workspace; список подписчиков не хранится отдельно.</p>
+                  )}
+                </div>
+              ) : null}
+
+              {(mode === "groups" && canEditActiveGroupMeta) || (mode === "channels" && canEditActiveChannelMeta) ? (
+                <div className="infoPanelSection">
+                  <div className="infoPanelSectionTitle">Название и аватар</div>
+                  {chatMetaMsg ? <div className="empty">{chatMetaMsg}</div> : null}
+                  <label className="infoPanelLabel">Название</label>
+                  <input
+                    className="infoPanelInput"
+                    value={chatMetaNameDraft}
+                    onChange={(e) => setChatMetaNameDraft(e.target.value)}
+                    placeholder={mode === "channels" ? "Имя канала" : "Имя группы"}
+                  />
+                  <label className="infoPanelLabel">Аватар (файл или data:image)</label>
+                  <input
+                    className="infoPanelInput"
+                    value={chatMetaAvatarData}
+                    onChange={(e) => setChatMetaAvatarData(e.target.value)}
+                    placeholder="https://… или data:image/…"
+                  />
+                  <input
+                    type="file"
+                    accept="image/*"
+                    onChange={(e) => {
+                      const f = e.currentTarget.files?.[0];
+                      if (f) applyChatAvatarFromFile(f);
+                      e.currentTarget.value = "";
+                    }}
+                  />
+                  <button type="button" className="moreMenuWideBtn" onClick={() => void saveChatMeta()} disabled={!token}>
+                    Сохранить
+                  </button>
+                </div>
+              ) : null}
+
               <div className="infoPanelSection">
                 <div className="infoPanelSectionTitle">Действия</div>
                 <button
@@ -5284,7 +5471,6 @@ export default function App() {
                   </button>
                 ) : null}
               </div>
-              <p className="infoPanelFootnote">Медиа, файлы и участники в общем списке — следующие итерации UI.</p>
             </div>
           </aside>
         </div>
@@ -5430,23 +5616,6 @@ export default function App() {
               </div>
             </div>
           </section>
-        </div>
-      ) : null}
-
-      {embeddedCall ? (
-        <div className="callOverlay" role="dialog" aria-label="Звонок">
-          <div className="callOverlayToolbar">
-            <span className="callOverlayTitle">{embeddedCall.video ? "Видеозвонок" : "Аудиозвонок"}</span>
-            <button type="button" className="chip" onClick={() => setEmbeddedCall(null)}>
-              Закрыть
-            </button>
-          </div>
-          <iframe
-            className="callOverlayFrame"
-            title="Jitsi Meet"
-            src={`https://meet.jit.si/${encodeURIComponent(embeddedCall.room)}#config.startWithVideoMuted=${!embeddedCall.video}`}
-            allow="camera; microphone; fullscreen; display-capture; autoplay; clipboard-write"
-          />
         </div>
       ) : null}
 

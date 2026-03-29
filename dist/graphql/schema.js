@@ -117,6 +117,7 @@ export const typeDefs = /* GraphQL */ `
     channelRemoveMember(input: ChannelRemoveMemberInput!): Boolean!
     archiveChannel(input: ArchiveChannelInput!): Boolean!
     deleteChannel(input: DeleteChannelInput!): Boolean!
+    updateChannel(input: UpdateChannelInput!): Channel!
 
     sendMessage(input: SendMessageInput!): Message!
     sendFileMessage(input: SendFileMessageInput!): Message!
@@ -141,6 +142,7 @@ export const typeDefs = /* GraphQL */ `
     sendGroupChatFileMessage(input: SendGroupChatFileMessageInput!): Message!
     editGroupChatMessage(groupChatId: ID!, messageId: ID!, content: String!): Message!
     deleteGroupChatMessage(groupChatId: ID!, messageId: ID!): Boolean!
+    updateGroupChat(input: UpdateGroupChatInput!): GroupChat!
 
     # Module 5 stubs
     uploadFileStub: Boolean!
@@ -186,6 +188,8 @@ export const typeDefs = /* GraphQL */ `
     email: String!
     firstName: String
     lastName: String
+    middleName: String
+    birthDate: DateTime
     avatarUrl: String
     phone: String
     status: PresenceStatus
@@ -225,6 +229,8 @@ export const typeDefs = /* GraphQL */ `
     name: String!
     type: ChannelType!
     description: String
+    avatarUrl: String
+    createdByUserId: ID!
     isSystem: Boolean!
     isArchived: Boolean!
     createdAt: DateTime!
@@ -270,6 +276,8 @@ export const typeDefs = /* GraphQL */ `
     id: ID!
     name: String!
     memberIds: [ID!]!
+    createdByUserId: ID!
+    avatarUrl: String
   }
 
   input SendDirectMessageInput {
@@ -403,6 +411,8 @@ export const typeDefs = /* GraphQL */ `
     userId: ID!
     firstName: String
     lastName: String
+    middleName: String
+    birthDate: DateTime
     avatarUrl: String
     phone: String
     status: PresenceStatus
@@ -410,6 +420,18 @@ export const typeDefs = /* GraphQL */ `
     statusText: String
     title: String
     department: String
+  }
+
+  input UpdateGroupChatInput {
+    groupChatId: ID!
+    name: String
+    avatarUrl: String
+  }
+
+  input UpdateChannelInput {
+    channelId: ID!
+    name: String
+    avatarUrl: String
   }
 
   type Invite {

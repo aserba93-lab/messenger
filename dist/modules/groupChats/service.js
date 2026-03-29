@@ -73,6 +73,8 @@ export class GroupChatsService {
             id: g.id,
             name: g.name,
             memberIds: g.members.map((m) => m.userId),
+            createdByUserId: g.createdByUserId,
+            avatarUrl: g.avatarUrl ?? null,
         }));
     }
     async createGroupChat(viewer, input) {
@@ -95,7 +97,40 @@ export class GroupChatsService {
                 groupChatId: group.id,
             });
         }
-        return { id: group.id, name: group.name, memberIds: group.members.map((m) => m.userId) };
+        return {
+            id: group.id,
+            name: group.name,
+            memberIds: group.members.map((m) => m.userId),
+            createdByUserId: group.createdByUserId,
+            avatarUrl: group.avatarUrl ?? null,
+        };
+    }
+    async updateGroupChat(viewer, input) {
+        if (!viewer.emailVerified)
+            throw new Error("Email not verified");
+        const g = await this.repo.getGroupChatById(input.groupChatId);
+        if (!g || g.organizationId !== viewer.organizationId)
+            throw new Error("Not found");
+        const isOrgAdmin = viewer.role === "owner" || viewer.role === "admin";
+        const member = await this.repo.isGroupMember({ groupChatId: input.groupChatId, userId: viewer.userId });
+        if (!member && !isOrgAdmin)
+            throw new Error("Forbidden");
+        const isCreator = g.createdByUserId === viewer.userId;
+        if (!isCreator && !isOrgAdmin)
+            throw new Error("Forbidden");
+        const updated = await this.repo.updateGroupChat({
+            organizationId: viewer.organizationId,
+            groupChatId: input.groupChatId,
+            name: input.name,
+            avatarUrl: input.avatarUrl,
+        });
+        return {
+            id: updated.id,
+            name: updated.name,
+            memberIds: updated.members.map((m) => m.userId),
+            createdByUserId: updated.createdByUserId,
+            avatarUrl: updated.avatarUrl ?? null,
+        };
     }
     async listMessages(viewer, input) {
         const member = await this.repo.isGroupMember({ groupChatId: input.groupChatId, userId: viewer.userId });

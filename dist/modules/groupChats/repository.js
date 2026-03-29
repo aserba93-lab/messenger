@@ -88,4 +88,29 @@ export class GroupChatsRepository {
             include: { author: true, reactions: true },
         });
     }
+    async updateGroupChat(params) {
+        const g = await prisma.groupChat.findFirst({
+            where: { id: params.groupChatId, organizationId: params.organizationId },
+            include: { members: true },
+        });
+        if (!g)
+            throw new Error("Not found");
+        const data = {};
+        if (params.name !== undefined) {
+            const trimmed = String(params.name).trim();
+            if (trimmed.length < 1)
+                throw new Error("Invalid name");
+            if (trimmed !== g.name) {
+                const clash = await prisma.groupChat.findFirst({
+                    where: { organizationId: params.organizationId, name: trimmed, NOT: { id: g.id } },
+                });
+                if (clash)
+                    throw new Error("Группа с таким именем уже есть");
+            }
+            data.name = trimmed;
+        }
+        if (params.avatarUrl !== undefined)
+            data.avatarUrl = params.avatarUrl || null;
+        return prisma.groupChat.update({ where: { id: g.id }, data, include: { members: true } });
+    }
 }

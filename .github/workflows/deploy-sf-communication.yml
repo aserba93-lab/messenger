@@ -30,9 +30,9 @@ jobs:
             git fetch origin
             git pull --ff-only origin main
             npm ci
-            npm run build
-            npx prisma migrate deploy
             npx prisma generate
+            npx prisma migrate deploy
+            npm run build
             cd /var/www/messenger/web
             npm ci
             npm run build

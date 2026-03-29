@@ -12,6 +12,8 @@ function mapUserWithMember(member) {
         email: member.user.email,
         firstName: member.user.firstName,
         lastName: member.user.lastName,
+        middleName: member.user.middleName ?? null,
+        birthDate: member.user.birthDate ?? null,
         avatarUrl: member.user.avatarUrl,
         phone: member.user.phone,
         status: member.status,
@@ -142,6 +144,8 @@ export const authResolvers = {
                 userId: input.userId,
                 firstName: input.firstName,
                 lastName: input.lastName,
+                middleName: input.middleName,
+                birthDate: input.birthDate,
                 avatarUrl: input.avatarUrl,
                 phone: input.phone,
                 status: input.status,
@@ -150,19 +154,7 @@ export const authResolvers = {
                 department: input.department,
                 title: input.title,
             });
-            return {
-                id: out.user.id,
-                email: out.user.email,
-                firstName: out.user.firstName,
-                lastName: out.user.lastName,
-                avatarUrl: out.user.avatarUrl,
-                phone: out.user.phone,
-                status: out.member.status,
-                department: out.member.department,
-                title: out.member.title,
-                role: out.member.role,
-                lastSeen: out.user.lastSeen,
-            };
+            return mapUserWithMember({ ...out.member, user: out.user });
         },
         inviteUser: async (_p, args, ctx) => {
             const viewer = requireViewer(ctx);

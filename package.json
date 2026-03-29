@@ -8,6 +8,7 @@
     "dev:worker:filescan": "tsx watch src/workers/fileScanWorker.ts",
     "build": "node scripts/build-backend.mjs",
     "start": "node dist/server.js",
+    "postinstall": "prisma generate",
     "seed": "tsx prisma/seed.ts",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",

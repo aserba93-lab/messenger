@@ -1,4 +1,4 @@
-import { CreateChannelInputSchema, ChannelAddMemberInputSchema, ChannelRemoveMemberInputSchema, ArchiveChannelInputSchema, DeleteChannelInputSchema, } from "./schemas.js";
+import { CreateChannelInputSchema, ChannelAddMemberInputSchema, ChannelRemoveMemberInputSchema, ArchiveChannelInputSchema, DeleteChannelInputSchema, UpdateChannelInputSchema, } from "./schemas.js";
 function requireViewer(ctx) {
     if (!ctx?.viewer)
         throw new Error("Unauthorized");
@@ -40,6 +40,11 @@ export const channelsResolvers = {
             const viewer = requireViewer(ctx);
             const input = DeleteChannelInputSchema.parse(args.input);
             return ctx.channelsService.deleteChannel(viewer, input);
+        },
+        updateChannel: async (_p, args, ctx) => {
+            const viewer = requireViewer(ctx);
+            const input = UpdateChannelInputSchema.parse(args.input);
+            return ctx.channelsService.updateChannel(viewer, input);
         },
     },
 };

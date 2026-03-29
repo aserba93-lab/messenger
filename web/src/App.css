@@ -291,9 +291,18 @@ body {
   gap: 6px;
   margin-top: 10px;
 }
+.tgChatSectionTitle {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--tg-muted);
+  padding: 10px 4px 4px;
+  margin-top: 4px;
+}
 .tgChatRow {
   display: grid;
-  grid-template-columns: 48px 1fr auto auto;
+  grid-template-columns: 48px minmax(0, 1fr) auto;
   gap: 10px;
   align-items: center;
   min-height: 72px;
@@ -329,6 +338,18 @@ body {
   border: 1px solid rgba(255, 255, 255, 0.22);
   font-weight: 800;
   font-size: 15px;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+.tgAvatar--img {
+  padding: 0;
+  background: rgba(0, 0, 0, 0.2);
+}
+.tgAvatarImg {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
 }
 .tgChatMain {
   min-width: 0;
@@ -336,20 +357,26 @@ body {
 .tgChatTop {
   display: flex;
   justify-content: space-between;
-  align-items: baseline;
+  align-items: flex-start;
   gap: 10px;
 }
 .tgChatTitle {
   font-weight: 600;
   font-size: 16px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  white-space: normal;
+  overflow: visible;
+  word-break: break-word;
+  line-height: 1.25;
+  min-width: 0;
 }
 .tgChatTime {
   color: var(--tg-muted);
   font-size: 12px;
   white-space: nowrap;
+  flex-shrink: 0;
+  align-self: flex-start;
+  padding-top: 2px;
+  cursor: context-menu;
 }
 .tgChatSub {
   margin-top: 2px;
@@ -603,6 +630,13 @@ button.active {
   min-width: 0;
 }
 
+.fileAttachmentName {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  word-break: break-word;
+}
+
 .fileAttachmentRow a {
   word-break: break-word;
 }
@@ -623,6 +657,48 @@ button.active {
   max-height: 360px;
   object-fit: contain;
   background: rgba(0, 0, 0, 0.2);
+}
+
+.voiceMsgBlock audio {
+  display: block;
+}
+.voiceMsgOpenLink {
+  display: inline-block;
+  margin-top: 6px;
+  font-size: 11px;
+  opacity: 0.75;
+  color: var(--tg-accent);
+  text-decoration: none;
+}
+.voiceMsgOpenLink:hover {
+  text-decoration: underline;
+}
+
+.msgReactionPopover {
+  position: fixed;
+  z-index: 90;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-width: min(300px, calc(100vw - 16px));
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: rgba(22, 24, 32, 0.96);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+}
+.msgReactionEmojiBtn {
+  font-size: 22px;
+  line-height: 1;
+  padding: 4px 6px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+.msgReactionEmojiBtn:hover {
+  background: rgba(255, 255, 255, 0.1);
 }
 
 .chatHeader {
@@ -663,6 +739,17 @@ button.active {
   font-weight: 900;
   cursor: pointer;
   transition: background 0.1s ease;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+.tgHeaderAvatar--img {
+  padding: 0;
+}
+.tgHeaderAvatarImg {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
 }
 .tgHeaderAvatar:hover {
   background: rgba(255, 255, 255, 0.1);
@@ -810,6 +897,16 @@ button.active {
   white-space: pre-wrap;
   word-break: break-word;
   position: relative;
+}
+.bubble--stickerLarge {
+  font-size: 3.25rem;
+  line-height: 1.12;
+  padding: 8px 12px;
+  text-align: center;
+}
+.bubble--stickerLarge .bubbleTime {
+  font-size: 11px;
+  vertical-align: middle;
 }
 .bubble .bubbleTime {
   float: right;
@@ -965,6 +1062,124 @@ pre {
   word-break: break-word;
   font-size: 12px;
   opacity: 0.9;
+}
+
+/* Оверлей звонка — по центру области чата (main.chat position: relative) */
+.callOverlay {
+  position: absolute;
+  inset: 0;
+  z-index: 45;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 12px;
+  background: rgba(6, 8, 14, 0.72);
+  backdrop-filter: blur(4px);
+  pointer-events: auto;
+}
+.callOverlayInner {
+  width: min(920px, 100%);
+  height: min(72vh, 640px);
+  min-height: 280px;
+  display: grid;
+  grid-template-rows: auto 1fr;
+  border-radius: 14px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.55);
+  background: rgba(10, 12, 20, 0.96);
+}
+.callOverlayToolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  background: rgba(0, 0, 0, 0.35);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  flex-shrink: 0;
+}
+.callOverlayTitle {
+  font-weight: 700;
+  font-size: 14px;
+}
+.callOverlayFrame {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  border: 0;
+  background: #000;
+}
+
+.tgChatTopRight {
+  display: flex;
+  align-items: flex-start;
+  gap: 2px;
+  flex-shrink: 0;
+}
+.tgChatRowMenuBtn {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--tg-muted);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.tgChatRowMenuBtn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--tg-text);
+}
+
+.tgCallMenuAnchor {
+  position: relative;
+}
+
+.bubbleAuthor {
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.2;
+  margin: 0 0 6px;
+  opacity: 0.92;
+  color: rgba(200, 220, 255, 0.95);
+}
+.msg.mine .bubbleAuthor {
+  color: rgba(220, 235, 255, 0.95);
+}
+
+.voiceMsgRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  max-width: 100%;
+}
+.voiceMsgAudio {
+  flex: 1;
+  min-width: 0;
+  max-width: 320px;
+  height: 36px;
+}
+.fileDownloadIconBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  text-decoration: none;
+  font-size: 16px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: var(--tg-text);
+  flex-shrink: 0;
+}
+.fileDownloadIconBtn:hover {
+  background: rgba(255, 255, 255, 0.14);
 }
 
 .logsDrawer {
@@ -1450,6 +1665,55 @@ pre {
   font-weight: 800;
   background: rgba(255, 255, 255, 0.08);
   border: 1px solid var(--tg-border-subtle);
+  overflow: hidden;
+}
+.infoPanelHeroAvatar--img {
+  padding: 0;
+}
+.infoPanelHeroAvatarImg {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.infoPanelMemberList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  font-size: 13px;
+}
+.infoPanelMemberList li {
+  padding: 8px 0;
+  border-bottom: 1px solid var(--tg-border-subtle);
+}
+.infoPanelMemberEmail {
+  display: block;
+  font-size: 11px;
+  opacity: 0.65;
+  margin-top: 2px;
+  word-break: break-all;
+}
+.infoPanelHint {
+  font-size: 12px;
+  opacity: 0.8;
+  margin: 0;
+}
+.infoPanelLabel {
+  display: block;
+  font-size: 12px;
+  opacity: 0.85;
+  margin-top: 8px;
+  margin-bottom: 4px;
+}
+.infoPanelInput {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--tg-border-subtle);
+  background: rgba(0, 0, 0, 0.2);
+  color: inherit;
 }
 
 .infoPanelHeroTitle {
