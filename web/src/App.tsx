@@ -257,6 +257,7 @@ export default function App() {
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [viewportW, setViewportW] = useState(() => (typeof window !== "undefined" ? window.innerWidth : 1280));
   const [authError, setAuthError] = useState("");
+  const [showForgotPassword, setShowForgotPassword] = useState(false);
   const [chatSearch, setChatSearch] = useState("");
   const [showCompanyCabinet, setShowCompanyCabinet] = useState(false);
   const [showAdminUsersPage, setShowAdminUsersPage] = useState(false);
@@ -330,6 +331,10 @@ export default function App() {
   const [readReceiptUsers, setReadReceiptUsers] = useState<
     { id: string; email: string; firstName?: string | null; lastName?: string | null }[]
   >([]);
+  const totalUnread = useMemo(
+    () => Object.values(unreadByKey).reduce((sum, n) => sum + (Number.isFinite(n) ? n : 0), 0),
+    [unreadByKey],
+  );
   const [threadSearchQ, setThreadSearchQ] = useState("");
   const [threadSearchHits, setThreadSearchHits] = useState<Message[]>([]);
   const [threadSearchOpen, setThreadSearchOpen] = useState(false);
@@ -1087,34 +1092,6 @@ export default function App() {
       // ignore
     }
   }, [installedStickerPackIds, stickerCatalog]);
-
-  async function fillSeedInfo() {
-    setAuthError("");
-    try {
-      const res = await fetch(`${API_BASE}/playground-ru/seed-info`);
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Seed not found");
-      const orgId = String(data.organizationId || "");
-      setOrganizationId(orgId);
-      const rawCodeMap = localStorage.getItem("tg:orgCodeBindings");
-      const codeMap = rawCodeMap ? (JSON.parse(rawCodeMap) as Record<string, string>) : {};
-      let code = Object.entries(codeMap).find(([, id]) => id === orgId)?.[0] || "";
-      if (!code) {
-        const nums = Object.keys(codeMap)
-          .map((k) => Number((k.match(/^ID(\d{6})$/)?.[1] ?? "0")))
-          .filter((n) => Number.isFinite(n));
-        const next = (nums.length ? Math.max(...nums) : 0) + 1;
-        code = `ID${String(next).padStart(6, "0")}`;
-        codeMap[code] = orgId;
-        localStorage.setItem("tg:orgCodeBindings", JSON.stringify(codeMap));
-      }
-      setOrganizationCode(code);
-      setWorkspaceId(data.workspaceId || "");
-    } catch (e: any) {
-      const msg = String(e?.message ?? e ?? "Seed request failed");
-      setAuthError(`Seed ID не получен: ${msg}`);
-    }
-  }
 
   async function resolveSeedOrgForEmail(emailValue: string) {
     const emailKey = emailValue.trim().toLowerCase();
@@ -3625,12 +3602,6 @@ export default function App() {
           <div className="authTitle">sf-communication</div>
           <div className="authSub">Вход</div>
 
-          <div className="authRow" style={{ marginTop: 4 }}>
-            <button type="button" onClick={() => void fillSeedInfo()}>
-              Заполнить из seed (dev)
-            </button>
-          </div>
-
           <label>Почта или телефон</label>
           <input
             value={loginIdentifier}
@@ -3664,22 +3635,49 @@ export default function App() {
               </div>
             </>
           ) : (
-            <div className="authRow">
+            <>
+              <div className="authRow">
+                <button
+                  type="button"
+                  onClick={(e) => void login(e as any)}
+                  disabled={!loginIdentifier.trim() || !password}
+                >
+                  Войти
+                </button>
+              </div>
               <button
                 type="button"
-                onClick={(e) => void login(e as any)}
-                disabled={!loginIdentifier.trim() || !password}
+                className="authLinkBtn"
+                onClick={() => setShowForgotPassword(true)}
               >
-                Войти
+                Забыли пароль?
               </button>
-            </div>
+            </>
           )}
           {authError ? <div style={{ color: "#ff9ea6", fontSize: 12, marginTop: 6 }}>{authError}</div> : null}
 
-          <div style={{ opacity: 0.75, fontSize: 12, marginTop: 10 }}>
-            Уровни доступа: платформа / организация / базовый (задаются в учётной записи). Двухфакторный вход по коду на
-            почте включается на сервере (LOGIN_EMAIL_OTP=on). После входа подключается Socket и загружаются чаты.
-          </div>
+          {showForgotPassword ? (
+            <div className="modalBackdrop" role="presentation" onClick={() => setShowForgotPassword(false)}>
+              <div className="modalPanel" role="dialog" onClick={(e) => e.stopPropagation()}>
+                <div style={{ fontWeight: 700, marginBottom: 8 }}>Восстановление доступа</div>
+                <p style={{ fontSize: 13, lineHeight: 1.4, marginTop: 0 }}>
+                  Если вы забыли пароль, напишите администратору вашей компании. Админ зайдет в раздел
+                  «Админ: пользователи» и задаст вам новый пароль для входа.
+                </p>
+                <p style={{ fontSize: 12, opacity: 0.8 }}>
+                  Для безопасности система не показывает текущие пароли и не рассылает их по почте.
+                </p>
+                <button
+                  type="button"
+                  className="chip"
+                  style={{ marginTop: 10 }}
+                  onClick={() => setShowForgotPassword(false)}
+                >
+                  Понятно
+                </button>
+              </div>
+            </div>
+          ) : null}
         </div>
       </div>
     );
@@ -3811,7 +3809,12 @@ export default function App() {
             ☰
           </button>
           <div className="tgLogoMark" aria-hidden>
-            <span className="tgLogoPlane">✈</span>
+            <span className="tgLogoPlane">SF</span>
+            {totalUnread > 0 ? (
+              <span className="tgLogoBadge" aria-hidden>
+                {totalUnread > 9 ? "9+" : totalUnread}
+              </span>
+            ) : null}
           </div>
           <div className="tgTopBarTitle">Messenger</div>
           <div className="tgTopBarActions">
