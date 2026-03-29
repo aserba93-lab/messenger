@@ -312,8 +312,13 @@ export default function App() {
   const [companyRoleFilter, setCompanyRoleFilter] = useState<"all" | "owner" | "admin" | "manager" | "employee" | "guest">("all");
   const [companyActionMsg, setCompanyActionMsg] = useState("");
   const [adminCreateEmail, setAdminCreateEmail] = useState("");
-  const [adminCreateFullName, setAdminCreateFullName] = useState("");
+  const [adminCreateLastName, setAdminCreateLastName] = useState("");
+  const [adminCreateFirstName, setAdminCreateFirstName] = useState("");
+  const [adminCreateMiddleName, setAdminCreateMiddleName] = useState("");
   const [adminCreatePassword, setAdminCreatePassword] = useState("");
+  const [adminCreatePhone, setAdminCreatePhone] = useState("");
+  const [adminCreateDepartment, setAdminCreateDepartment] = useState("");
+  const [adminCreateStatusText, setAdminCreateStatusText] = useState("");
   const [adminCreateRole, setAdminCreateRole] = useState<"owner" | "admin" | "manager" | "employee" | "guest">("employee");
   const [chatPreviewByKey, setChatPreviewByKey] = useState<Record<string, { text: string; at: string }>>({});
   const [chatError, setChatError] = useState("");
@@ -716,7 +721,7 @@ export default function App() {
     if (Number.isNaN(t)) return false;
     return Date.now() < t;
   }
-  function setChatMute(key: string, mode: "off" | "forever" | 1 | 2 | 4 | 8 | 24) {
+  function setChatMute(key: string, mode: "off" | "forever" | number) {
     setChatMuteMap((prev) => {
       const next = { ...prev };
       if (mode === "off") {
@@ -1748,6 +1753,17 @@ export default function App() {
       if (webrtcBusyRef.current) return;
       const audioOnly = !String(p.sdp).includes("m=video");
       setIncomingCall({ fromUserId: from, offerSdp: p.sdp, audioOnly });
+      if (
+        browserNotifyRef.current &&
+        typeof Notification !== "undefined" &&
+        Notification.permission === "granted"
+      ) {
+        try {
+          new Notification("Sales factory", { body: audioOnly ? "Входящий аудиозвонок" : "Входящий видеозвонок", tag: "call" });
+        } catch {
+          /* ignore */
+        }
+      }
     });
     s.on("call:hand", (data: any) => {
       const from = String(data?.fromUserId ?? "");
@@ -2721,29 +2737,61 @@ export default function App() {
     fullName: string;
     password: string;
     role: "owner" | "admin" | "manager" | "employee" | "guest";
+    department?: string;
   }) {
     if (!token || !organizationId) throw new Error("Нет organizationId или токена");
-    // Используем тот же backend-путь, что и вкладка Инвайтов: inviteUser.
     const emailLower = input.email.trim().toLowerCase();
-    const mutation = `mutation($input: InviteUserInput!) { inviteUser(input: $input) { id email inviteToken } }`;
-
-    // В разных версиях backend роль могла быть несовместима.
-    // Самый надежный вариант — сначала без role (пусть сервер возьмёт дефолт), потом с role из UI.
-    let data: { inviteUser: { id: string; email: string; inviteToken?: string | null } } | null = null;
     try {
-      data = await gql<{ inviteUser: { id: string; email: string; inviteToken?: string | null } }>(
-        mutation,
-        { input: { organizationId, email: emailLower } },
+      const data = await gql<{ createOrganizationUser: { id: string; email: string } }>(
+        `mutation($input: CreateOrganizationUserInput!) { createOrganizationUser(input: $input) { id email } }`,
+        {
+          input: {
+            organizationId,
+            email: emailLower,
+            password: input.password,
+            fullName: input.fullName?.trim() || undefined,
+            role: input.role,
+            department: input.department?.trim() || undefined,
+          },
+        },
         token,
       );
-    } catch (e1: any) {
-      data = await gql<{ inviteUser: { id: string; email: string; inviteToken?: string | null } }>(
-        mutation,
-        { input: { organizationId, email: emailLower, role: input.role } },
-        token,
-      );
+      return { createOrganizationUser: data.createOrganizationUser };
+    } catch {
+      // Fallback: inviteUser (в старых бэках может не быть createOrganizationUser).
+      const mutation = `mutation($input: InviteUserInput!) { inviteUser(input: $input) { id email inviteToken } }`;
+      let data: { inviteUser: { id: string; email: string; inviteToken?: string | null } } | null = null;
+      try {
+        data = await gql<{ inviteUser: { id: string; email: string; inviteToken?: string | null } }>(
+          mutation,
+          { input: { organizationId, email: emailLower } },
+          token,
+        );
+      } catch {
+        data = await gql<{ inviteUser: { id: string; email: string; inviteToken?: string | null } }>(
+          mutation,
+          { input: { organizationId, email: emailLower, role: input.role } },
+          token,
+        );
+      }
+      return { createOrganizationUser: { id: data.inviteUser.id, email: data.inviteUser.email } };
     }
-    return { createOrganizationUser: { id: data.inviteUser.id, email: data.inviteUser.email } };
+  }
+
+  async function adminUpdateNewUserExtras(userIdToUpdate: string, extras: { phone?: string; statusText?: string }) {
+    if (!token || !userIdToUpdate) return;
+    const phone = (extras.phone ?? "").trim();
+    const statusText = (extras.statusText ?? "").trim();
+    if (!phone && !statusText) return;
+    try {
+      await gql<{ updateUser: { id: string } }>(
+        `mutation($input: UpdateUserInput!) { updateUser(input: $input) { id } }`,
+        { input: { userId: userIdToUpdate, ...(phone ? { phone } : {}), ...(statusText ? { statusText } : {}) } },
+        token,
+      );
+    } catch {
+      /* ignore */
+    }
   }
 
   async function createCompanyUserSingle() {
@@ -2752,23 +2800,31 @@ export default function App() {
       return;
     }
     const emailV = adminCreateEmail.trim().toLowerCase();
-    const fullNameV = adminCreateFullName.trim();
+    const fullNameV = [adminCreateLastName, adminCreateFirstName, adminCreateMiddleName].map((x) => x.trim()).filter(Boolean).join(" ");
+    const deptV = adminCreateDepartment.trim();
     if (!emailV || !adminCreatePassword.trim()) {
       setCompanyActionMsg("Заполните email и пароль");
       return;
     }
     try {
       setCompanyActionMsg("Создание пользователя…");
-      await createCompanyUser({
+      const res = await createCompanyUser({
         email: emailV,
         fullName: fullNameV,
         password: adminCreatePassword.trim(),
         role: adminCreateRole,
+        department: deptV || undefined,
       });
+      await adminUpdateNewUserExtras(res.createOrganizationUser.id, { phone: adminCreatePhone, statusText: adminCreateStatusText });
       setCompanyActionMsg(`Сотрудник добавлен: ${emailV}. Если пароль не применился, сотруднику уйдет инвайт для завершения регистрации.`);
       setAdminCreateEmail("");
-      setAdminCreateFullName("");
+      setAdminCreateLastName("");
+      setAdminCreateFirstName("");
+      setAdminCreateMiddleName("");
       setAdminCreatePassword("");
+      setAdminCreatePhone("");
+      setAdminCreateDepartment("");
+      setAdminCreateStatusText("");
       await loadUsers();
     } catch (e: any) {
       const msg = String(e?.message ?? e ?? "Не удалось создать пользователя");
@@ -2790,9 +2846,16 @@ export default function App() {
     let fail = 0;
     for (const row of rows) {
       const emailV = String(row.email ?? row.Email ?? row["почта"] ?? "").trim().toLowerCase();
-      const fullNameV = String(row.fullName ?? row.fio ?? row["ФИО"] ?? row["фио"] ?? "").trim();
+      const lastNameV = String(row.lastName ?? row["Фамилия"] ?? row["фамилия"] ?? "").trim();
+      const firstNameV = String(row.firstName ?? row["Имя"] ?? row["имя"] ?? "").trim();
+      const middleNameV = String(row.middleName ?? row["Отчество"] ?? row["отчество"] ?? "").trim();
+      const fioFallback = String(row.fullName ?? row.fio ?? row["ФИО"] ?? row["фио"] ?? "").trim();
+      const fullNameV = ([lastNameV, firstNameV, middleNameV].filter(Boolean).join(" ") || fioFallback).trim();
       const passwordV = String(row.password ?? row.Password ?? row["пароль"] ?? "").trim();
       const roleRaw = String(row.role ?? row.Role ?? "employee").trim().toLowerCase();
+      const phoneV = String(row.phone ?? row.Phone ?? row["телефон"] ?? row["Телефон"] ?? "").trim();
+      const deptV = String(row.department ?? row.Department ?? row["отдел"] ?? row["Отдел"] ?? "").trim();
+      const statusTextV = String(row.status ?? row.statusText ?? row["статус"] ?? row["Статус"] ?? "").trim();
       const roleV = (["owner", "admin", "manager", "employee", "guest"].includes(roleRaw) ? roleRaw : "employee") as
         | "owner"
         | "admin"
@@ -2804,7 +2867,8 @@ export default function App() {
         continue;
       }
       try {
-        await createCompanyUser({ email: emailV, fullName: fullNameV, password: passwordV, role: roleV });
+        const res = await createCompanyUser({ email: emailV, fullName: fullNameV, password: passwordV, role: roleV, department: deptV || undefined });
+        await adminUpdateNewUserExtras(res.createOrganizationUser.id, { phone: phoneV, statusText: statusTextV });
         ok += 1;
       } catch {
         fail += 1;
@@ -4809,6 +4873,9 @@ export default function App() {
                 </button>
                 <div className="msgMenuSep" />
                 <div className="msgMenuSub">Отключить уведомления на срок</div>
+                <button type="button" className="msgMenuItem" onClick={() => { setChatMute(chatMenu.key, 0.5); setChatMenu(null); }}>
+                  30 мин
+                </button>
                 <button type="button" className="msgMenuItem" onClick={() => { setChatMute(chatMenu.key, 1); setChatMenu(null); }}>
                   1 ч
                 </button>
@@ -4823,6 +4890,9 @@ export default function App() {
                 </button>
                 <button type="button" className="msgMenuItem" onClick={() => { setChatMute(chatMenu.key, 24); setChatMenu(null); }}>
                   24 ч
+                </button>
+                <button type="button" className="msgMenuItem" onClick={() => { setChatMute(chatMenu.key, 24 * 7); setChatMenu(null); }}>
+                  7 дней
                 </button>
                 <button type="button" className="msgMenuItem" onClick={() => { setChatMute(chatMenu.key, "forever"); setChatMenu(null); }}>
                   Навсегда
@@ -5178,39 +5248,98 @@ export default function App() {
 
               <div className="companyBody">
                 {isCompanyAdmin ? (
-                  <div
-                    className="row"
-                    style={{
-                      marginBottom: 12,
-                      padding: "12px 14px",
-                      borderRadius: 12,
-                      background: "rgba(100, 160, 255, 0.1)",
-                      border: "1px solid rgba(100, 160, 255, 0.22)",
-                      flexWrap: "wrap",
-                      gap: 10,
-                      alignItems: "center",
-                    }}
-                  >
-                    <div style={{ flex: 1, minWidth: 200, fontSize: 13, lineHeight: 1.4 }}>
-                      <strong>Админ: пользователи</strong> — отдельная страница: таблица, создание учётной записи, сброс пароля, деактивация.
+                  <>
+                    <div className="companyModalSubhead" style={{ marginTop: 8 }}>
+                      Добавить сотрудника
                     </div>
-                    <button
-                      type="button"
-                      className="chip"
-                      onClick={() => {
-                        setShowCompanyCabinet(false);
-                        openAdminUsersPanel();
+                    <div className="companyTableWrap">
+                      <table className="companyTable">
+                        <thead>
+                          <tr>
+                            <th>Фамилия</th>
+                            <th>Имя</th>
+                            <th>Отчество</th>
+                            <th>Email</th>
+                            <th>Телефон</th>
+                            <th>Роль</th>
+                            <th>Отдел</th>
+                            <th>Статус</th>
+                            <th>Пароль</th>
+                            <th></th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <tr>
+                            <td>
+                              <input value={adminCreateLastName} onChange={(e) => setAdminCreateLastName(e.target.value)} placeholder="Фамилия" />
+                            </td>
+                            <td>
+                              <input value={adminCreateFirstName} onChange={(e) => setAdminCreateFirstName(e.target.value)} placeholder="Имя" />
+                            </td>
+                            <td>
+                              <input value={adminCreateMiddleName} onChange={(e) => setAdminCreateMiddleName(e.target.value)} placeholder="Отчество" />
+                            </td>
+                            <td>
+                              <input value={adminCreateEmail} onChange={(e) => setAdminCreateEmail(e.target.value)} placeholder="Email" />
+                            </td>
+                            <td>
+                              <input value={adminCreatePhone} onChange={(e) => setAdminCreatePhone(e.target.value)} placeholder="+7…" />
+                            </td>
+                            <td>
+                              <select
+                                value={adminCreateRole}
+                                onChange={(e) => setAdminCreateRole(e.target.value as "owner" | "admin" | "manager" | "employee" | "guest")}
+                                className="companyTableSelect"
+                              >
+                                <option value="owner">Владелец</option>
+                                <option value="admin">Администратор</option>
+                                <option value="manager">Менеджер</option>
+                                <option value="employee">Сотрудник</option>
+                                <option value="guest">Гость</option>
+                              </select>
+                            </td>
+                            <td>
+                              <input value={adminCreateDepartment} onChange={(e) => setAdminCreateDepartment(e.target.value)} placeholder="Отдел" />
+                            </td>
+                            <td>
+                              <input value={adminCreateStatusText} onChange={(e) => setAdminCreateStatusText(e.target.value)} placeholder="Статус" />
+                            </td>
+                            <td>
+                              <input
+                                value={adminCreatePassword}
+                                onChange={(e) => setAdminCreatePassword(e.target.value)}
+                                placeholder="Временный пароль"
+                                type="password"
+                              />
+                            </td>
+                            <td>
+                              <button onClick={() => void createCompanyUserSingle()} disabled={!token || !organizationId}>
+                                Добавить
+                              </button>
+                            </td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+
+                    <div className="companyModalSubhead" style={{ marginTop: 12 }}>
+                      Массовый импорт из Excel/CSV
+                    </div>
+                    <div className="empty" style={{ textAlign: "left", marginBottom: 8 }}>
+                      Колонки: <code>lastName</code>/<code>Фамилия</code>, <code>firstName</code>/<code>Имя</code>, <code>middleName</code>/<code>Отчество</code>,{" "}
+                      <code>email</code>, <code>phone</code>, <code>role</code>, <code>department</code>, <code>status</code>, <code>password</code>.
+                    </div>
+                    <input
+                      type="file"
+                      accept=".xlsx,.xls,.csv"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        if (file) void importCompanyUsersFromExcel(file);
+                        e.currentTarget.value = "";
                       }}
-                    >
-                      Открыть страницу
-                    </button>
-                  </div>
-                ) : (
-                  <p style={{ fontSize: 12, opacity: 0.75, margin: "0 0 12px" }}>
-                    Раздел «Админ: пользователи» доступен только ролям <strong>owner</strong> и <strong>admin</strong>. Ваша роль:{" "}
-                    <strong>{viewerRole || "—"}</strong>.
-                  </p>
-                )}
+                    />
+                  </>
+                ) : null}
                 <div className="row">
                   <input
                     value={companyUserQuery}
@@ -5290,53 +5419,7 @@ export default function App() {
                   </table>
                 </div>
 
-                {isCompanyAdmin ? (
-                  <>
-                    <div className="title" style={{ marginTop: 16 }}>
-                      Администрирование
-                    </div>
-                    <div className="title" style={{ marginTop: 4, fontSize: 13 }}>
-                      Добавить сотрудника (по одному)
-                    </div>
-                    <input value={adminCreateEmail} onChange={(e) => setAdminCreateEmail(e.target.value)} placeholder="Email сотрудника" />
-                    <input value={adminCreateFullName} onChange={(e) => setAdminCreateFullName(e.target.value)} placeholder="ФИО (фамилия имя отчество)" />
-                    <div className="row">
-                      <input
-                        value={adminCreatePassword}
-                        onChange={(e) => setAdminCreatePassword(e.target.value)}
-                        placeholder="Временный пароль"
-                        type="password"
-                      />
-                      <select
-                        value={adminCreateRole}
-                        onChange={(e) => setAdminCreateRole(e.target.value as "owner" | "admin" | "manager" | "employee" | "guest")}
-                        className="companyFilterSelect"
-                      >
-                        <option value="owner">Владелец</option>
-                        <option value="admin">Администратор</option>
-                        <option value="manager">Менеджер</option>
-                        <option value="employee">Сотрудник</option>
-                        <option value="guest">Гость</option>
-                      </select>
-                      <button onClick={() => void createCompanyUserSingle()} disabled={!token || !organizationId}>
-                        Создать
-                      </button>
-                    </div>
-                    <div className="title" style={{ marginTop: 8 }}>Массовый импорт из Excel/CSV</div>
-                    <div className="empty" style={{ textAlign: "left" }}>
-                      Колонки: <code>email</code>, <code>fio</code> (или <code>fullName</code>), <code>password</code>, <code>role</code> (опционально)
-                    </div>
-                    <input
-                      type="file"
-                      accept=".xlsx,.xls,.csv"
-                      onChange={(e) => {
-                        const file = e.target.files?.[0];
-                        if (file) void importCompanyUsersFromExcel(file);
-                        e.currentTarget.value = "";
-                      }}
-                    />
-                  </>
-                ) : null}
+                {/* блок «Администрирование» убран: добавление и импорт — выше */}
               </div>
             </section>
           </div>
