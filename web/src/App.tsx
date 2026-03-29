@@ -159,6 +159,19 @@ function fileFormatLabel(originalName: string | null | undefined, mimeType: stri
   return part ? part.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 12) : "FILE";
 }
 
+function displayUserName(
+  u: { email: string; firstName?: string | null; lastName?: string | null } | undefined,
+  fallback = "",
+): string {
+  if (!u) return fallback;
+  const name = [u.firstName, u.lastName]
+    .map((x) => (x != null ? String(x).trim() : ""))
+    .filter(Boolean)
+    .join(" ")
+    .trim();
+  return name || u.email || fallback;
+}
+
 export default function App() {
   const [authMode, setAuthMode] = useState<"admin" | "user">("user");
   const [organizationId, setOrganizationId] = useState(() => initialSession?.organizationId ?? "");
@@ -295,7 +308,9 @@ export default function App() {
     {
       id: string;
       email: string;
-        role?: "owner" | "admin" | "manager" | "employee" | "guest" | null;
+      firstName?: string | null;
+      lastName?: string | null;
+      role?: "owner" | "admin" | "manager" | "employee" | "guest" | null;
       department?: string | null;
       status?: string | null;
       lastSeen?: string | null;
@@ -305,7 +320,9 @@ export default function App() {
     const q = companyUserQuery.trim().toLowerCase();
     return users.filter((u) => {
       const roleOk = companyRoleFilter === "all" ? true : (u.role ?? "employee") === companyRoleFilter;
-      const textOk = !q ? true : `${u.email} ${u.department ?? ""}`.toLowerCase().includes(q);
+      const textOk = !q
+        ? true
+        : `${u.email} ${u.firstName ?? ""} ${u.lastName ?? ""} ${u.department ?? ""}`.toLowerCase().includes(q);
       return roleOk && textOk;
     });
   }, [users, companyUserQuery, companyRoleFilter]);
@@ -314,7 +331,11 @@ export default function App() {
     const q = wizardUserQuery.trim().toLowerCase();
     return users
       .filter((u) => u.id !== userId)
-      .filter((u) => !q || `${u.email} ${u.department ?? ""}`.toLowerCase().includes(q))
+      .filter(
+        (u) =>
+          !q ||
+          `${u.email} ${u.firstName ?? ""} ${u.lastName ?? ""} ${u.department ?? ""}`.toLowerCase().includes(q),
+      )
       .slice()
       .sort((a, b) => a.email.localeCompare(b.email));
   }, [users, userId, wizardUserQuery]);
@@ -421,8 +442,9 @@ export default function App() {
     return directChats.filter((d) => {
       const otherId = d.userIds.find((id) => id !== userId) ?? d.userIds[0] ?? "";
       const u = users.find((x) => x.id === otherId);
-      const title = u?.email ?? otherId ?? d.id;
-      return title.toLowerCase().includes(chatSearchQ);
+      const label = displayUserName(u, otherId || d.id);
+      const hay = `${label} ${u?.email ?? ""} ${otherId}`.toLowerCase();
+      return hay.includes(chatSearchQ);
     });
   }, [directChats, users, userId, chatSearchQ]);
 
@@ -1445,18 +1467,6 @@ export default function App() {
     pushLog(`Созвон создан: ${room}`);
   }
 
-  async function startVideoMeeting() {
-    if (!canStartCalls) {
-      setChatError("Недостаточно прав для видео встреч");
-      return;
-    }
-    const room = `sf-video-${Date.now()}`;
-    const link = `https://meet.jit.si/${room}#config.startWithVideoMuted=false`;
-    await sendServiceMessageToCurrentChat(`🎥 Видеовстреча: ${link}`);
-    window.open(link, "_blank", "noopener,noreferrer");
-    pushLog(`Видеовстреча создана: ${room}`);
-  }
-
   async function loadUsers(tokenOverride?: string, orgIdOverride?: string) {
     const t = tokenOverride ?? token;
     const orgId = orgIdOverride ?? organizationId;
@@ -1465,13 +1475,15 @@ export default function App() {
       users: {
         id: string;
         email: string;
+        firstName?: string | null;
+        lastName?: string | null;
         role?: "owner" | "admin" | "manager" | "employee" | "guest" | null;
         department?: string | null;
         status?: string | null;
         lastSeen?: string | null;
       }[];
     }>(
-      `query($organizationId: ID!) { users(organizationId: $organizationId) { id email role department status lastSeen } }`,
+      `query($organizationId: ID!) { users(organizationId: $organizationId) { id email firstName lastName role department status lastSeen } }`,
       { organizationId: orgId },
       t,
     );
@@ -2630,7 +2642,7 @@ export default function App() {
                   : m,
               ),
             );
-            void hydrateDownloadUrl(localId, fileId);
+            void hydrateDownloadUrl(fileId);
             return;
           }
           if (mode === "groups") {
@@ -2657,7 +2669,7 @@ export default function App() {
                   : m,
               ),
             );
-            void hydrateDownloadUrl(localId, fileId);
+            void hydrateDownloadUrl(fileId);
             return;
           }
           const data = await gql<{ sendDirectFileMessage: any }>(
@@ -2684,7 +2696,7 @@ export default function App() {
                 : m,
             ),
           );
-          void hydrateDownloadUrl(localId, fileId);
+          void hydrateDownloadUrl(fileId);
           return;
         } catch (e: unknown) {
           if (isFileNotReadyError(e) && attempt < maxSendAttempts - 1) {
@@ -2702,7 +2714,7 @@ export default function App() {
     }
   }
 
-  async function hydrateDownloadUrl(messageId: string, fileId: string) {
+  async function hydrateDownloadUrl(fileId: string) {
     if (!token) return;
     const data = await gql<{ file: { id: string; downloadUrl?: string | null; originalName?: string | null; mimeType: string; size: number } }>(
       `query($id: ID!) {
@@ -2712,9 +2724,10 @@ export default function App() {
       token,
     );
     const url = data.file.downloadUrl ? String(data.file.downloadUrl) : undefined;
+    /** Ищем по fileId: после send сообщение уже с серверным id, а не local-file-… */
     setMessages((prev) =>
       prev.map((m) =>
-        m.id === messageId
+        m.file?.id === fileId
           ? {
               ...m,
               file: {
@@ -2742,7 +2755,7 @@ export default function App() {
           !m.file.downloadUrl &&
           !m._localFileState
         ) {
-          void hydrateDownloadUrl(m.id, m.file.id);
+          void hydrateDownloadUrl(m.file.id);
         }
       }
     };
@@ -2816,7 +2829,12 @@ export default function App() {
         mediaRecorderRef.current = null;
         return;
       }
-      rec.start();
+      /* Интервал ms — иначе в части браузеров ondataavailable не даёт данные до stop и blob пустой */
+      try {
+        rec.start(250);
+      } catch {
+        rec.start();
+      }
       setIsRecordingVoice(true);
       setVoiceHoldMs(0);
       pushLog("Запись голосового... нажмите 🎤 или «Готово» для отправки");
@@ -2850,6 +2868,9 @@ export default function App() {
     }
     if (rec.state === "recording" || rec.state === "paused") {
       try {
+        if (typeof (rec as MediaRecorder & { requestData?: () => void }).requestData === "function") {
+          (rec as MediaRecorder & { requestData: () => void }).requestData();
+        }
         rec.stop();
       } catch {
         mediaStreamRef.current?.getTracks().forEach((t) => t.stop());
@@ -2879,16 +2900,20 @@ export default function App() {
   }
 
   function syncChatDragPreview(dt: DataTransfer) {
+    let file: File | null = null;
     const item = dt.items?.[0];
-    if (!item || item.kind !== "file") return;
-    const file = item.getAsFile();
+    if (item?.kind === "file") file = item.getAsFile();
+    if (!file && dt.files?.length) file = dt.files[0];
     if (!file) return;
     const key = `${file.name}:${file.size}:${file.lastModified}`;
     if (key === chatDragPreviewKeyRef.current) return;
     chatDragPreviewKeyRef.current = key;
+    const mime = file.type || "";
+    const looksLikeImage =
+      mime.startsWith("image/") || /\.(jpe?g|png|gif|webp|bmp|svg|avif|heic|heif)$/i.test(file.name);
     setChatDragPreview((prev) => {
       if (prev?.kind === "image") URL.revokeObjectURL(prev.url);
-      if (file.type.startsWith("image/")) {
+      if (looksLikeImage) {
         return { kind: "image", url: URL.createObjectURL(file), name: file.name };
       }
       return {
@@ -3207,17 +3232,6 @@ export default function App() {
         </div>
 
         <div className="sidebarChatsBlock">
-          <div className="row tgModeTabs">
-            <button className={mode === "channels" ? "active" : ""} onClick={() => setMode("channels")} disabled={!canReadChats}>
-              Каналы
-            </button>
-            <button className={mode === "groups" ? "active" : ""} onClick={() => setMode("groups")} disabled={!canReadChats}>
-              Группы
-            </button>
-            <button className={mode === "dms" ? "active" : ""} onClick={() => setMode("dms")} disabled={!canReadChats}>
-              DM
-            </button>
-          </div>
           <div className="row tgFolderTabs">
             <button className={chatFolder === "all" ? "active" : ""} onClick={() => setChatFolder("all")}>
               Все
@@ -3227,6 +3241,17 @@ export default function App() {
             </button>
             <button className={chatFolder === "archived" ? "active" : ""} onClick={() => setChatFolder("archived")}>
               Архив
+            </button>
+          </div>
+          <div className="row tgModeTabs">
+            <button className={mode === "channels" ? "active" : ""} onClick={() => setMode("channels")} disabled={!canReadChats}>
+              Каналы
+            </button>
+            <button className={mode === "groups" ? "active" : ""} onClick={() => setMode("groups")} disabled={!canReadChats}>
+              Группы
+            </button>
+            <button className={mode === "dms" ? "active" : ""} onClick={() => setMode("dms")} disabled={!canReadChats}>
+              Личка
             </button>
           </div>
           <div className="tgChatList">
@@ -3364,7 +3389,7 @@ export default function App() {
                     const p = otherId ? presenceByUserId[otherId] : undefined;
                     const st = p?.status ?? u?.status ?? "unknown";
                     const dot = st === "online" ? "●" : st === "away" ? "◐" : st === "dnd" ? "◍" : "○";
-                    const title = u?.email ?? (otherId || d.id);
+                    const title = displayUserName(u, otherId || d.id);
                     return (
                       <button
                         key={d.id}
@@ -3487,11 +3512,11 @@ export default function App() {
                         </option>
                       ))}
                     </optgroup>
-                    <optgroup label="DM">
+                    <optgroup label="Личка">
                       {orderedDMs.map((d) => {
                         const otherId = d.userIds.find((id) => id !== userId) ?? d.userIds[0] ?? "";
                         const u = users.find((x) => x.id === otherId);
-                        const title = u?.email ?? otherId ?? d.id;
+                        const title = displayUserName(u, otherId ?? d.id);
                         return (
                           <option key={`pick-d-${d.id}`} value={`d:${d.id}`}>
                             {title}
@@ -3571,7 +3596,17 @@ export default function App() {
                       setMoreMenuOpen(false);
                     }}
                   >
-                    Журнал событий
+                    Журнал / отладка
+                  </button>
+                  <button
+                    type="button"
+                    className="moreMenuWideBtn danger"
+                    onClick={() => {
+                      void logout();
+                      setMoreMenuOpen(false);
+                    }}
+                  >
+                    Выйти
                   </button>
                 </div>
                 <div className="moreMenuSection">
@@ -3598,7 +3633,10 @@ export default function App() {
                             <span className="moreMenuUserDot">
                               {st === "online" ? "●" : st === "away" ? "◐" : st === "dnd" ? "◍" : "○"}
                             </span>
-                            {u.email}
+                            <span className="moreMenuUserLabel">
+                              <span className="moreMenuUserName">{displayUserName(u, u.email)}</span>
+                              <span className="moreMenuUserEmail">{u.email}</span>
+                            </span>
                           </button>
                         );
                       })}
@@ -3624,7 +3662,7 @@ export default function App() {
                           Группы
                         </button>
                         <button type="button" onClick={() => void loadDirectChats()} disabled={!token}>
-                          DM
+                          Личка
                         </button>
                         <button type="button" onClick={() => void loadUsers()} disabled={!token || !organizationId}>
                           Users
@@ -3714,7 +3752,7 @@ export default function App() {
                     : (() => {
                         const otherId = activeDirectChat?.userIds.find((id) => id !== userId) ?? activeDirectChat?.userIds[0] ?? "";
                         const u = users.find((x) => x.id === otherId);
-                        return initials(u?.email ?? otherId ?? "DM");
+                        return initials(displayUserName(u, otherId || "Л"));
                       })()}
               </div>
               <div
@@ -3743,9 +3781,9 @@ export default function App() {
                             const otherId =
                               activeDirectChat.userIds.find((id) => id !== userId) ?? activeDirectChat.userIds[0] ?? "";
                             const u = users.find((x) => x.id === otherId);
-                            return u?.email ?? otherId ?? activeDirectChat.id;
+                            return displayUserName(u, otherId || activeDirectChat.id);
                           })()
-                        : "Выберите DM"}
+                        : "Выберите личку"}
                 </div>
                 <div className="tgChatHeaderSub">
                   {mode === "dms" && activeDirectChat
@@ -3755,7 +3793,10 @@ export default function App() {
                         const u = users.find((x) => x.id === otherId);
                         const p = otherId ? presenceByUserId[otherId] : undefined;
                         const st = p?.status ?? u?.status ?? "unknown";
-                        return st === "online" ? "в сети" : st === "away" ? "не активен" : st === "dnd" ? "не беспокоить" : "не в сети";
+                        const presence =
+                          st === "online" ? "в сети" : st === "away" ? "не активен" : st === "dnd" ? "не беспокоить" : "не в сети";
+                        const mail = u?.email ?? "";
+                        return mail && displayUserName(u, otherId) !== mail ? `${presence} · ${mail}` : presence;
                       })()
                     : mode === "groups" && activeGroupChat
                       ? `Участников: ${activeGroupChat.memberIds?.length ?? 0}`
@@ -3782,28 +3823,13 @@ export default function App() {
                 type="button"
                 className="tgCircleBtn"
                 onClick={() => void startAudioCall()}
-                title="Голосовой звонок"
+                title="Созвон (Jitsi)"
                 disabled={!canStartCalls}
               >
                 📞
               </button>
-              <button
-                type="button"
-                className="tgCircleBtn"
-                onClick={() => void startVideoMeeting()}
-                title="Видеозвонок"
-                disabled={!canStartCalls}
-              >
-                🎥
-              </button>
               <button type="button" className="tgCircleBtn" onClick={() => setShowRightPanel((v) => !v)} title="Сведения о чате">
                 ℹ️
-              </button>
-              <button type="button" className="tgCircleBtn" title="Журнал / отладка" onClick={() => setShowLogs((v) => !v)}>
-                🛈
-              </button>
-              <button type="button" className="tgCircleBtn tgCircleBtn--danger" onClick={() => void logout()} title="Выйти">
-                ⎋
               </button>
             </div>
           </div>
@@ -3951,7 +3977,7 @@ export default function App() {
                   </div>
                 </div>
                 <div>
-                  <div style={{ opacity: 0.85, marginBottom: 6 }}>DM</div>
+                  <div style={{ opacity: 0.85, marginBottom: 6 }}>Личка</div>
                   <div className="list">
                     {directChats.map((d) => {
                       const otherId = d.userIds.find((id) => id !== userId) ?? d.userIds[0] ?? "";
@@ -3959,7 +3985,7 @@ export default function App() {
                       const p = otherId ? presenceByUserId[otherId] : undefined;
                       const st = p?.status ?? u?.status ?? "unknown";
                       const dot = st === "online" ? "●" : st === "away" ? "◐" : st === "dnd" ? "◍" : "○";
-                      const title = `DM ${dot} ${u?.email ?? (otherId || d.id)}`;
+                      const title = `Личка ${dot} ${displayUserName(u, otherId || d.id)}`;
                       return (
                         <button key={d.id} onClick={() => void forwardSelectedTo({ directChatId: d.id })} disabled={!token}>
                           {title}
@@ -4429,7 +4455,12 @@ export default function App() {
                     {profileAvatarUrl ? <img src={profileAvatarUrl} alt="avatar" /> : <span>{initials(myProfileEmail || email)}</span>}
                   </div>
                   <div style={{ minWidth: 0 }}>
-                    <div style={{ fontWeight: 700 }}>{myProfileEmail || email}</div>
+                    <div style={{ fontWeight: 700 }}>
+                      {[profileFirstName, profileLastName].filter(Boolean).join(" ").trim() || myProfileEmail || email}
+                    </div>
+                    <div className="empty" style={{ fontSize: 12, opacity: 0.85 }}>
+                      {myProfileEmail || email}
+                    </div>
                     <div className="empty">
                       Уровень доступа: <b>{viewerRole || "unknown"}</b>
                     </div>
@@ -4903,7 +4934,7 @@ export default function App() {
                     : (() => {
                         const otherId = activeDirectChat?.userIds.find((id) => id !== userId) ?? activeDirectChat?.userIds[0] ?? "";
                         const u = users.find((x) => x.id === otherId);
-                        return initials(u?.email ?? otherId ?? "DM");
+                        return initials(displayUserName(u, otherId || "Л"));
                       })()}
               </div>
               <div className="infoPanelHeroTitle">
@@ -4920,7 +4951,7 @@ export default function App() {
                           const otherId =
                             activeDirectChat.userIds.find((id) => id !== userId) ?? activeDirectChat.userIds[0] ?? "";
                           const u = users.find((x) => x.id === otherId);
-                          return u?.email ?? otherId ?? activeDirectChat.id;
+                          return displayUserName(u, otherId || activeDirectChat.id);
                         })()
                       : "Личка не выбрана"}
               </div>
