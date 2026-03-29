@@ -63,7 +63,15 @@ export const typeDefs = /* GraphQL */ `
 
     messages(channelId: ID!, cursor: ID, limit: Int = 50): MessageConnection!
     thread(parentMessageId: ID!, limit: Int = 50): [Message!]!
-    searchMessages(query: String!, limit: Int = 50): [Message!]!
+    searchMessages(
+      query: String!
+      limit: Int = 50
+      channelId: ID
+      groupChatId: ID
+      directChatId: ID
+    ): [Message!]!
+    threadReadStates(channelId: ID, groupChatId: ID, directChatId: ID): [ThreadReadStateEntry!]!
+    messageReaders(messageId: ID!): [User!]!
     pinnedMessages(channelId: ID!, limit: Int = 10): [Message!]!
     savedMessages(limit: Int = 50): [Message!]!
     savedMessageIds(limit: Int = 200): [ID!]!
@@ -125,6 +133,8 @@ export const typeDefs = /* GraphQL */ `
     deleteMessage(input: DeleteMessageInput!): Boolean!
     toggleReaction(input: ToggleReactionInput!): [Reaction!]!
 
+    markThreadRead(input: MarkThreadReadInput!): Boolean!
+
     forwardMessages(input: ForwardMessagesInput!): Boolean!
     pinMessage(input: PinMessageInput!): Boolean!
     unpinMessage(input: UnpinMessageInput!): Boolean!
@@ -181,6 +191,17 @@ export const typeDefs = /* GraphQL */ `
     userId: ID!
     organizationId: ID!
     role: OrgRole!
+  }
+
+  type ThreadReadStateEntry {
+    userId: ID!
+    lastReadAt: DateTime!
+  }
+
+  input MarkThreadReadInput {
+    channelId: ID
+    groupChatId: ID
+    directChatId: ID
   }
 
   type User {
