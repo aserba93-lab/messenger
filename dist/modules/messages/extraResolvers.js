@@ -5,10 +5,6 @@ function requireViewer(ctx) {
 }
 export const messagesExtraResolvers = {
     Mutation: {
-        markThreadRead: async (_p, args, ctx) => {
-            const viewer = requireViewer(ctx);
-            return ctx.messagesService.markThreadRead(viewer, args.input ?? {});
-        },
         forwardMessages: async (_p, args, ctx) => {
             const viewer = requireViewer(ctx);
             return ctx.messagesService.forwardMessages(viewer, args.input);
@@ -31,18 +27,6 @@ export const messagesExtraResolvers = {
         },
     },
     Query: {
-        threadReadStates: async (_p, args, ctx) => {
-            const viewer = requireViewer(ctx);
-            return ctx.messagesService.threadReadStates(viewer, {
-                channelId: args.channelId ? String(args.channelId) : null,
-                groupChatId: args.groupChatId ? String(args.groupChatId) : null,
-                directChatId: args.directChatId ? String(args.directChatId) : null,
-            });
-        },
-        messageReaders: async (_p, args, ctx) => {
-            const viewer = requireViewer(ctx);
-            return ctx.messagesService.messageReaders(viewer, String(args.messageId ?? ""));
-        },
         pinnedMessages: async (_p, args, ctx) => {
             const viewer = requireViewer(ctx);
             return ctx.messagesService.pinnedMessages(viewer, { channelId: String(args.channelId), limit: Number(args.limit ?? 10) });
