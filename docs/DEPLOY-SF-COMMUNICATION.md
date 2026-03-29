@@ -4,17 +4,18 @@
 
 ---
 
-## Функции в текущей `main`
+## Текущая ветка `main` и опциональные фичи
 
-В **`main`** включены:
+**Сейчас в `main` после отката** нет набора ниже (прочтения, WebRTC в DM, поиск в чате из шапки и т.д.) — это отдельные коммиты (например `190ff18`). Чтобы снова включить их, можно `git cherry-pick 190ff18` в отдельной ветке или восстановить из истории.
 
+**Если эти коммиты в вашей сборке**, в приложении есть:
 
 1. **Прочитано / галочки / ошибка отправки** — `ThreadReadState`, API `markThreadRead`, `threadReadStates`, `messageReaders`, расширенный `searchMessages`, сокет `thread:read`, UI в `web/src/App.tsx`.
 2. **Поиск в текущем чате** — поле в шапке чата, вызов `searchMessages` с ID канала/группы/DM.
 3. **Звонки WebRTC (без Jitsi)** — `dist/server.js`: `call:signal`, `call:end`; клиент `web/src/webrtcDm.ts`; только DM.
 4. **Оптимистичная отправка** — `_sendState`, индикаторы и красный `!` при ошибке.
 
-Миграция БД: `prisma/migrations/20260329190000_thread_read_states/migration.sql` — обязательно `npx prisma migrate deploy` на сервере.
+Миграция БД (только при наличии фич): `prisma/migrations/20260329190000_thread_read_states/migration.sql`.
 
 ---
 
