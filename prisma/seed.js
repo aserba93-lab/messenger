@@ -5,11 +5,11 @@ async function main() {
     const org = await prisma.organization.upsert({
         where: { domain: "seed.local" },
         create: {
-            name: "Seed Org",
+            name: "Демо-организация",
             domain: "seed.local",
             settings: {},
         },
-        update: {},
+        update: { name: "Демо-организация" },
     });
     const email = "admin@seed.local";
     const password = "SeedPass123!";
@@ -20,7 +20,7 @@ async function main() {
             email,
             passwordHash,
             firstName: "Admin",
-            lastName: "Seed",
+            lastName: "Администратор",
             emailVerifiedAt: new Date(),
         },
         update: {

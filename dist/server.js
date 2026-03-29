@@ -23,7 +23,7 @@ import { setupFileStatusBridge } from "./socket/fileStatusBridge.js";
 import { renderPlaygroundRuHtml } from "./web/playgroundRu.js";
 import { createAuthRoutes } from "./http/authRoutes.js";
 import { GroupChatsService } from "./modules/groupChats/service.js";
-import { FilesService } from "./modules/files/service.js";
+import { FilesService, inferMimeFromName } from "./modules/files/service.js";
 import { DirectChatsService } from "./modules/directChats/service.js";
 import { NotificationsService } from "./modules/notifications/service.js";
 import fs from "node:fs/promises";
@@ -116,7 +116,15 @@ app.get("/files/local/:fileId", async (req, res) => {
             return res.status(404).json({ error: "Not found" });
         const diskPath = path.resolve(process.cwd(), ".local_uploads", fileId);
         const body = await fs.readFile(diskPath);
-        res.setHeader("content-type", file.mimeType || "application/octet-stream");
+        const storedMime = (file.mimeType || "").trim();
+        const inferred = inferMimeFromName(file.originalName);
+        const contentType =
+            storedMime && storedMime !== "application/octet-stream"
+                ? storedMime
+                : inferred !== "application/octet-stream"
+                  ? inferred
+                  : storedMime || "application/octet-stream";
+        res.setHeader("content-type", contentType);
         return res.status(200).send(body);
     }
     catch (e) {

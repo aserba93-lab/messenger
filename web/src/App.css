@@ -251,13 +251,14 @@ body {
   max-width: 100%;
 }
 .tgBrandSales {
-  color: var(--tg-accent);
+  color: var(--tg-text);
   font-weight: 900;
+  opacity: 0.98;
 }
 .tgBrandFactory {
   color: var(--tg-text);
   font-weight: 700;
-  opacity: 0.92;
+  opacity: 0.72;
 }
 .tgBrandOrg {
   font-size: 11px;

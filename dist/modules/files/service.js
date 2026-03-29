@@ -24,14 +24,36 @@ function parsePolicy(settings) {
         allowedMimeTypes: allowed ? allowed.map((x) => String(x).toLowerCase()).filter(Boolean) : null,
     };
 }
-function inferMimeFromName(name) {
+export function inferMimeFromName(name) {
     const n = String(name ?? "").toLowerCase();
     if (n.endsWith(".torrent"))
         return "application/x-bittorrent";
+    if (n.endsWith(".jpg") || n.endsWith(".jpeg"))
+        return "image/jpeg";
+    if (n.endsWith(".png"))
+        return "image/png";
+    if (n.endsWith(".gif"))
+        return "image/gif";
+    if (n.endsWith(".webp"))
+        return "image/webp";
+    if (n.endsWith(".bmp"))
+        return "image/bmp";
+    if (n.endsWith(".svg"))
+        return "image/svg+xml";
+    if (n.endsWith(".heic") || n.endsWith(".heif"))
+        return "image/heic";
+    if (n.endsWith(".avif"))
+        return "image/avif";
     if (n.endsWith(".webm"))
         return "audio/webm";
     if (n.endsWith(".m4a") || n.endsWith(".mp4"))
         return "audio/mp4";
+    if (n.endsWith(".mp3"))
+        return "audio/mpeg";
+    if (n.endsWith(".ogg") || n.endsWith(".opus"))
+        return "audio/ogg";
+    if (n.endsWith(".wav"))
+        return "audio/wav";
     return "application/octet-stream";
 }
 function s3Credentials() {

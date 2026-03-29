@@ -166,6 +166,53 @@ function fileFormatLabel(originalName: string | null | undefined, mimeType: stri
   return part ? part.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 12) : "FILE";
 }
 
+/** Расширение файла — фото в чате, даже если на сервере mime application/octet-stream */
+const IMAGE_FILENAME_RE = /\.(jpe?g|png|gif|webp|bmp|svg|avif|heic|heif)$/i;
+
+function looksLikeImageAttachment(originalName: string | null | undefined, mimeType: string | null | undefined): boolean {
+  if ((mimeType || "").startsWith("image/")) return true;
+  return IMAGE_FILENAME_RE.test(originalName || "");
+}
+
+/** Подсказка браузеру для декодирования голосовых с «обрезанным» MIME */
+function effectiveAudioMimeForElement(
+  messageType: string | undefined,
+  mimeType: string | null | undefined,
+  originalName: string | null | undefined,
+): string | undefined {
+  const m0 = (mimeType || "").trim().toLowerCase();
+  if (m0.startsWith("audio/")) return m0;
+  const name = (originalName || "").toLowerCase();
+  if (name.endsWith(".webm")) return "audio/webm";
+  if (name.endsWith(".m4a") || name.endsWith(".mp4")) return "audio/mp4";
+  if (name.endsWith(".mp3")) return "audio/mpeg";
+  if (name.endsWith(".ogg") || name.endsWith(".opus")) return "audio/ogg";
+  if (name.endsWith(".wav")) return "audio/wav";
+  if (m0 === "video/webm" || m0 === "application/octet-stream" || !m0) {
+    if (messageType === "voice") return "audio/webm";
+  }
+  return m0 || undefined;
+}
+
+function guessMimeFromOriginalNameForUpload(name: string): string | null {
+  const n = name.toLowerCase();
+  if (/\.(jpe?g)$/.test(n)) return "image/jpeg";
+  if (n.endsWith(".png")) return "image/png";
+  if (n.endsWith(".gif")) return "image/gif";
+  if (n.endsWith(".webp")) return "image/webp";
+  if (n.endsWith(".bmp")) return "image/bmp";
+  if (n.endsWith(".svg")) return "image/svg+xml";
+  if (n.endsWith(".avif")) return "image/avif";
+  if (n.endsWith(".heic") || n.endsWith(".heif")) return "image/heic";
+  if (n.endsWith(".webm")) return "audio/webm";
+  if (n.endsWith(".m4a")) return "audio/mp4";
+  if (n.endsWith(".mp3")) return "audio/mpeg";
+  if (n.endsWith(".ogg") || n.endsWith(".opus")) return "audio/ogg";
+  if (n.endsWith(".wav")) return "audio/wav";
+  if (n.endsWith(".torrent")) return "application/x-bittorrent";
+  return null;
+}
+
 /** Имя для списка чатов и заголовков — фамилия, имя, отчество (если есть); без email */
 function displayUserNameForSidebar(
   u: { email: string; firstName?: string | null; middleName?: string | null; lastName?: string | null } | undefined,
@@ -870,7 +917,7 @@ export default function App() {
       messages.filter(
         (m) =>
           m.type === "file" &&
-          (m.file?.mimeType || "").startsWith("image/") &&
+          looksLikeImageAttachment(m.file?.originalName, m.file?.mimeType) &&
           m.file?.downloadUrl &&
           !m.isDeleted,
       ),
@@ -881,7 +928,7 @@ export default function App() {
       messages.filter(
         (m) =>
           m.type === "file" &&
-          !(m.file?.mimeType || "").startsWith("image/") &&
+          !looksLikeImageAttachment(m.file?.originalName, m.file?.mimeType) &&
           m.file?.downloadUrl &&
           !m.isDeleted,
       ),
@@ -3354,14 +3401,7 @@ export default function App() {
     if (!targetId) return;
     const nameLower = (originalName || "").toLowerCase();
     const effectiveMime =
-      blob.type ||
-      (nameLower.endsWith(".torrent")
-        ? "application/x-bittorrent"
-        : nameLower.endsWith(".webm")
-          ? "audio/webm"
-          : nameLower.endsWith(".m4a") || nameLower.endsWith(".mp4")
-            ? "audio/mp4"
-            : "application/octet-stream");
+      blob.type || guessMimeFromOriginalNameForUpload(nameLower) || "application/octet-stream";
 
     async function sleep(ms: number) {
       await new Promise((r) => setTimeout(r, ms));
@@ -3806,8 +3846,7 @@ export default function App() {
     if (key === chatDragPreviewKeyRef.current) return;
     chatDragPreviewKeyRef.current = key;
     const mime = file.type || "";
-    const looksLikeImage =
-      mime.startsWith("image/") || /\.(jpe?g|png|gif|webp|bmp|svg|avif|heic|heif)$/i.test(file.name);
+    const looksLikeImage = looksLikeImageAttachment(file.name, mime);
     setChatDragPreview((prev) => {
       if (prev?.kind === "image") URL.revokeObjectURL(prev.url);
       if (looksLikeImage) {
@@ -5737,8 +5776,15 @@ export default function App() {
                               controls
                               preload="metadata"
                               playsInline
-                              src={normalizeDownloadUrl(m.file.downloadUrl)}
-                            />
+                            >
+                              <source
+                                src={normalizeDownloadUrl(m.file.downloadUrl)}
+                                type={
+                                  effectiveAudioMimeForElement(m.type, m.file.mimeType, m.file.originalName) ||
+                                  "audio/webm"
+                                }
+                              />
+                            </audio>
                             <a
                               className="fileDownloadIconBtn"
                               href={normalizeDownloadUrl(m.file.downloadUrl)}
@@ -5752,7 +5798,7 @@ export default function App() {
                             </a>
                           </div>
                         </div>
-                      ) : (m.file.mimeType || "").startsWith("image/") ? (
+                      ) : looksLikeImageAttachment(m.file.originalName, m.file.mimeType) ? (
                         <div className="chatImageWrap" onClick={(e) => e.stopPropagation()} onPointerDown={(e) => e.stopPropagation()}>
                           <div className="fileLineWithBadge">
                             <span className="fileFormatBadge">{fileFormatLabel(m.file.originalName, m.file.mimeType)}</span>
@@ -5810,7 +5856,7 @@ export default function App() {
                         <div>
                           <div className="fileLineWithBadge">
                             <span className="fileFormatBadge">{fileFormatLabel(m.file.originalName, m.file.mimeType)}</span>
-                            <span>{(m.file.mimeType || "").startsWith("image/") ? "Изображение" : "Файл"}: {m.file.originalName ?? m.file.id}</span>
+                            <span>{looksLikeImageAttachment(m.file.originalName, m.file.mimeType) ? "Изображение" : "Файл"}: {m.file.originalName ?? m.file.id}</span>
                           </div>
                           <div className="fileState">Получение ссылки…</div>
                         </div>
@@ -6543,7 +6589,18 @@ export default function App() {
                     <ul className="infoPanelVoiceList">
                       {infoPanelVoice.map((m) => (
                         <li key={m.id} className="infoPanelVoiceRow">
-                          <audio controls src={normalizeDownloadUrl(m.file?.downloadUrl)} preload="metadata" />
+                          <audio controls preload="metadata">
+                            <source
+                              src={normalizeDownloadUrl(m.file?.downloadUrl)}
+                              type={
+                                effectiveAudioMimeForElement(
+                                  m.type,
+                                  m.file?.mimeType,
+                                  m.file?.originalName,
+                                ) || "audio/webm"
+                              }
+                            />
+                          </audio>
                           <div className="infoPanelMediaRowMeta">{timeHHMM(m.createdAt)}</div>
                         </li>
                       ))}
