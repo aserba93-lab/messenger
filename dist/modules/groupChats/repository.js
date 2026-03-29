@@ -113,4 +113,37 @@ export class GroupChatsRepository {
             data.avatarUrl = params.avatarUrl || null;
         return prisma.groupChat.update({ where: { id: g.id }, data, include: { members: true } });
     }
+    async addGroupChatMembers(params) {
+        const g = await prisma.groupChat.findFirst({
+            where: { id: params.groupChatId, organizationId: params.organizationId },
+            include: { members: true },
+        });
+        if (!g)
+            throw new Error("Not found");
+        const existing = new Set(g.members.map((m) => m.userId));
+        const incoming = Array.from(new Set(params.userIds.map((id) => String(id)))).filter((id) => id && !existing.has(id)).slice(0, 100);
+        if (!incoming.length) {
+            return g;
+        }
+        const orgMembers = await prisma.organizationMember.findMany({
+            where: { organizationId: params.organizationId, userId: { in: incoming } },
+            select: { userId: true },
+        });
+        const allowed = new Set(orgMembers.map((m) => m.userId));
+        const toCreate = incoming.filter((uid) => allowed.has(uid));
+        if (toCreate.length) {
+            await prisma.groupChatMember.createMany({
+                data: toCreate.map((userId) => ({
+                    groupChatId: params.groupChatId,
+                    userId,
+                    role: "member",
+                })),
+                skipDuplicates: true,
+            });
+        }
+        const full = await prisma.groupChat.findUnique({ where: { id: params.groupChatId }, include: { members: true } });
+        if (!full)
+            throw new Error("Group chat not found");
+        return full;
+    }
 }

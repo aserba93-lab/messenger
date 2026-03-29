@@ -69,5 +69,15 @@ export const groupChatsResolvers = {
                 .parse(args.input);
             return ctx.groupChatsService.updateGroupChat(viewer, input);
         },
+        groupChatAddMembers: async (_p, args, ctx) => {
+            const viewer = requireViewer(ctx);
+            const input = z
+                .object({
+                groupChatId: z.string().min(1),
+                userIds: z.array(z.string().min(1)).min(1).max(100),
+            })
+                .parse(args.input);
+            return ctx.groupChatsService.addGroupChatMembers(viewer, input);
+        },
     },
 };

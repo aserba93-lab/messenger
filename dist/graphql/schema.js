@@ -153,6 +153,7 @@ export const typeDefs = /* GraphQL */ `
     editGroupChatMessage(groupChatId: ID!, messageId: ID!, content: String!): Message!
     deleteGroupChatMessage(groupChatId: ID!, messageId: ID!): Boolean!
     updateGroupChat(input: UpdateGroupChatInput!): GroupChat!
+    groupChatAddMembers(input: GroupChatAddMembersInput!): GroupChat!
 
     # Module 5 stubs
     uploadFileStub: Boolean!
@@ -459,6 +460,11 @@ export const typeDefs = /* GraphQL */ `
     groupChatId: ID!
     name: String
     avatarUrl: String
+  }
+
+  input GroupChatAddMembersInput {
+    groupChatId: ID!
+    userIds: [ID!]!
   }
 
   input UpdateChannelInput {

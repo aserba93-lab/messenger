@@ -132,6 +132,48 @@ export class GroupChatsService {
             avatarUrl: updated.avatarUrl ?? null,
         };
     }
+    async addGroupChatMembers(viewer, input) {
+        if (!viewer.emailVerified)
+            throw new Error("Email not verified");
+        const g = await this.repo.getGroupChatById(input.groupChatId);
+        if (!g || g.organizationId !== viewer.organizationId)
+            throw new Error("Not found");
+        const isOrgAdmin = viewer.role === "owner" || viewer.role === "admin";
+        const member = await this.repo.isGroupMember({ groupChatId: input.groupChatId, userId: viewer.userId });
+        if (!member && !isOrgAdmin)
+            throw new Error("Forbidden");
+        const isCreator = g.createdByUserId === viewer.userId;
+        if (!isCreator && !isOrgAdmin)
+            throw new Error("Forbidden");
+        const ids = Array.isArray(input.userIds) ? input.userIds.map((x) => String(x)).filter(Boolean) : [];
+        if (!ids.length)
+            throw new Error("userIds required");
+        const beforeIds = new Set(g.members.map((m) => m.userId));
+        const updated = await this.repo.addGroupChatMembers({
+            organizationId: viewer.organizationId,
+            groupChatId: input.groupChatId,
+            userIds: ids,
+        });
+        const afterIds = new Set(updated.members.map((m) => m.userId));
+        for (const uid of ids) {
+            if (uid === viewer.userId || beforeIds.has(uid) || !afterIds.has(uid))
+                continue;
+            await this.notifications.createSystem({
+                organizationId: viewer.organizationId,
+                userId: uid,
+                type: "groupchat:added",
+                payload: { groupChatId: updated.id, addedByUserId: viewer.userId, name: updated.name },
+                groupChatId: updated.id,
+            });
+        }
+        return {
+            id: updated.id,
+            name: updated.name,
+            memberIds: updated.members.map((m) => m.userId),
+            createdByUserId: updated.createdByUserId,
+            avatarUrl: updated.avatarUrl ?? null,
+        };
+    }
     async listMessages(viewer, input) {
         const member = await this.repo.isGroupMember({ groupChatId: input.groupChatId, userId: viewer.userId });
         if (!member)

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { FormEvent, MouseEvent } from "react";
+import type { CSSProperties, FormEvent, MouseEvent } from "react";
 import { io, Socket } from "socket.io-client";
 import * as XLSX from "xlsx";
 import { acceptIncomingOffer, startOutgoingCall, type ActiveCall } from "./webrtcDm";
@@ -221,6 +221,11 @@ function isSingleStickerContent(content: string): boolean {
 export default function App() {
   const [organizationId, setOrganizationId] = useState(() => initialSession?.organizationId ?? "");
   const [organizationCode, setOrganizationCode] = useState("");
+  const [orgBrandName, setOrgBrandName] = useState("");
+  const [orgBrandLogoUrl, setOrgBrandLogoUrl] = useState("");
+  const [infoPanelGroupPickUserId, setInfoPanelGroupPickUserId] = useState("");
+  const [infoPanelChannelPickUserId, setInfoPanelChannelPickUserId] = useState("");
+  const [infoPanelMembersMsg, setInfoPanelMembersMsg] = useState("");
   const [loginIdentifier, setLoginIdentifier] = useState("admin@seed.local");
   const [password, setPassword] = useState("SeedPass123!");
   const [otpCode, setOtpCode] = useState("");
@@ -362,7 +367,7 @@ export default function App() {
   const [chatMetaAvatarData, setChatMetaAvatarData] = useState("");
   const [chatMetaMsg, setChatMetaMsg] = useState("");
   const [infoPanelChannelMembers, setInfoPanelChannelMembers] = useState<
-    { id: string; email: string; firstName?: string | null; lastName?: string | null }[]
+    { id: string; email: string; firstName?: string | null; middleName?: string | null; lastName?: string | null }[]
   >([]);
   const [stickerCatalog, setStickerCatalog] = useState(defaultStickerCatalog);
   const [installedStickerPackIds, setInstalledStickerPackIds] = useState<string[]>([]);
@@ -479,6 +484,13 @@ export default function App() {
       setShowDev(false);
     }
   }, [isCompanyAdmin]);
+  const orgChatLogoCss = useMemo(() => {
+    if (!orgBrandLogoUrl?.trim()) return "";
+    const u = normalizeDownloadUrl(orgBrandLogoUrl.trim());
+    if (!u) return "";
+    return `url(${JSON.stringify(u)})`;
+  }, [orgBrandLogoUrl]);
+
   const displayOrganizationId = useMemo(() => {
     const code = organizationCode.trim().toUpperCase();
     if (/^ID\d{6}$/.test(code)) return code;
@@ -596,9 +608,9 @@ export default function App() {
     void (async () => {
       try {
         const data = await gql<{
-          channelMembers: { id: string; email: string; firstName?: string | null; lastName?: string | null }[];
+          channelMembers: { id: string; email: string; firstName?: string | null; middleName?: string | null; lastName?: string | null }[];
         }>(
-          `query($id: ID!) { channelMembers(channelId: $id) { id email firstName lastName } }`,
+          `query($id: ID!) { channelMembers(channelId: $id) { id email firstName middleName lastName } }`,
           { id: activeChannelId },
           token,
         );
@@ -611,6 +623,10 @@ export default function App() {
       cancelled = true;
     };
   }, [showRightPanel, mode, activeChannelId, token]);
+
+  useEffect(() => {
+    setInfoPanelMembersMsg("");
+  }, [mode, activeGroupChatId, activeChannelId]);
 
   function initials(s: string) {
     const v = (s || "").trim();
@@ -1607,7 +1623,7 @@ export default function App() {
                     : msg.type === "file"
                       ? "Файл"
                       : (msg.content || "Новое сообщение").slice(0, 160);
-                new Notification("sf-communication", { body, tag: key || "dm" });
+                new Notification("Sales factory", { body, tag: key || "dm" });
               } catch {
                 /* ignore */
               }
@@ -1625,7 +1641,7 @@ export default function App() {
         next[key] = 0;
         return next;
       });
-      setMessages((prev) => [...prev, msg]);
+      setMessages((prev) => (prev.some((x) => x.id === msg.id) ? prev : [...prev, msg]));
       if (msg.file?.id && !msg.file.downloadUrl) void hydrateDownloadUrl(String(msg.file.id));
     });
     s.on("message:update", (m: any) => {
@@ -2264,6 +2280,36 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- bootstrap runs when session/workspace is ready; chat loaders are stable enough for this app
   }, [token, organizationId, workspaceId]);
 
+  useEffect(() => {
+    if (!token || !organizationId) {
+      setOrgBrandName("");
+      setOrgBrandLogoUrl("");
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const data = await gql<{ organization: { name: string; logoUrl?: string | null } }>(
+          `query($id: ID!) { organization(organizationId: $id) { name logoUrl } }`,
+          { id: organizationId },
+          token,
+        );
+        if (!cancelled) {
+          setOrgBrandName(data.organization.name ?? "");
+          setOrgBrandLogoUrl(data.organization.logoUrl?.trim() ?? "");
+        }
+      } catch {
+        if (!cancelled) {
+          setOrgBrandName("");
+          setOrgBrandLogoUrl("");
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [token, organizationId]);
+
   async function loadMyProfile() {
     if (!token) return;
     const data = await gql<{
@@ -2413,6 +2459,45 @@ export default function App() {
       }
     } catch (e: unknown) {
       setChatMetaMsg(String((e as Error)?.message ?? e ?? "Ошибка"));
+    }
+  }
+
+  async function addMembersToActiveGroup(userIds: string[]) {
+    if (!token || !activeGroupChatId || !userIds.length) return;
+    setInfoPanelMembersMsg("");
+    try {
+      const data = await gql<{ groupChatAddMembers: { id: string; memberIds: string[] } }>(
+        `mutation($input: GroupChatAddMembersInput!) {
+          groupChatAddMembers(input: $input) { id memberIds }
+        }`,
+        { input: { groupChatId: activeGroupChatId, userIds } },
+        token,
+      );
+      setGroupChats((prev) =>
+        prev.map((g) => (g.id === data.groupChatAddMembers.id ? { ...g, memberIds: data.groupChatAddMembers.memberIds } : g)),
+      );
+      setInfoPanelGroupPickUserId("");
+    } catch (e: unknown) {
+      setInfoPanelMembersMsg(String((e as Error)?.message ?? e ?? "Не удалось добавить"));
+    }
+  }
+
+  async function addUserToActiveChannel(userIdToAdd: string) {
+    if (!token || !activeChannelId || !userIdToAdd) return;
+    setInfoPanelMembersMsg("");
+    try {
+      await gql<{ channelAddMember: boolean }>(
+        `mutation($input: ChannelAddMemberInput!) { channelAddMember(input: $input) }`,
+        { input: { channelId: activeChannelId, userId: userIdToAdd } },
+        token,
+      );
+      const data = await gql<{
+        channelMembers: { id: string; email: string; firstName?: string | null; lastName?: string | null; middleName?: string | null }[];
+      }>(`query($id: ID!) { channelMembers(channelId: $id) { id email firstName middleName lastName } }`, { id: activeChannelId }, token);
+      setInfoPanelChannelMembers(data.channelMembers ?? []);
+      setInfoPanelChannelPickUserId("");
+    } catch (e: unknown) {
+      setInfoPanelMembersMsg(String((e as Error)?.message ?? e ?? "Не удалось добавить"));
     }
   }
 
@@ -3924,7 +4009,10 @@ export default function App() {
   }
 
   return (
-    <div className={`layout ${showRightPanel ? "layout--info" : ""} ${viewportW < 800 && mobileSidebarOpen ? "layout--sidebarOpen" : ""}`}>
+    <div
+      className={`layout ${showRightPanel ? "layout--info" : ""} ${viewportW < 800 && mobileSidebarOpen ? "layout--sidebarOpen" : ""}`}
+      style={orgChatLogoCss ? ({ ["--org-chat-logo" as string]: orgChatLogoCss } as CSSProperties) : undefined}
+    >
       {viewportW < 800 && mobileSidebarOpen ? (
         <button type="button" className="sidebarBackdrop" aria-label="Закрыть список чатов" onClick={() => setMobileSidebarOpen(false)} />
       ) : null}
@@ -3938,7 +4026,7 @@ export default function App() {
           >
             ☰
           </button>
-          <div className="tgLogoMark" aria-hidden>
+          <div className="tgLogoMark tgLogoMark--brand" aria-hidden title="Sales factory">
             <span className="tgLogoPlane">SF</span>
             {totalUnread > 0 ? (
               <span className="tgLogoBadge" aria-hidden>
@@ -3946,7 +4034,13 @@ export default function App() {
               </span>
             ) : null}
           </div>
-          <div className="tgTopBarTitle">Messenger</div>
+          <div className="tgTopBarTitle" title={orgBrandName || "Sales factory"}>
+            <span className="tgBrandLine">
+              <span className="tgBrandSales">Sales</span>{" "}
+              <span className="tgBrandFactory">factory</span>
+            </span>
+            {orgBrandName ? <span className="tgBrandOrg">{orgBrandName}</span> : null}
+          </div>
           <div className="tgTopBarActions">
             <div className="tgMenuAnchor">
               <button
@@ -6083,6 +6177,46 @@ export default function App() {
                           );
                         })}
                       </ul>
+                      {canEditActiveGroupMeta ? (
+                        <>
+                          <div className="infoPanelSectionTitle" style={{ marginTop: 12 }}>
+                            Добавить участников
+                          </div>
+                          {infoPanelMembersMsg ? (
+                            <div className="empty" style={{ marginBottom: 8 }}>
+                              {infoPanelMembersMsg}
+                            </div>
+                          ) : null}
+                          <p className="infoPanelHint">Выберите сотрудника организации, которого ещё нет в группе.</p>
+                          <div className="infoPanelAddMemberRow">
+                            <select
+                              className="infoPanelSelect"
+                              value={infoPanelGroupPickUserId}
+                              onChange={(e) => {
+                                setInfoPanelGroupPickUserId(e.target.value);
+                                setInfoPanelMembersMsg("");
+                              }}
+                            >
+                              <option value="">— Кого добавить —</option>
+                              {users
+                                .filter((u) => !activeGroupChat.memberIds.includes(u.id))
+                                .map((u) => (
+                                  <option key={u.id} value={u.id}>
+                                    {displayUserNameForSidebar(u, u.id)}
+                                  </option>
+                                ))}
+                            </select>
+                            <button
+                              type="button"
+                              className="chip"
+                              disabled={!infoPanelGroupPickUserId || !token}
+                              onClick={() => void addMembersToActiveGroup([infoPanelGroupPickUserId])}
+                            >
+                              Добавить
+                            </button>
+                          </div>
+                        </>
+                      ) : null}
                     </div>
                   ) : null}
 
@@ -6095,17 +6229,59 @@ export default function App() {
                           : null}
                       </div>
                       {activeChannel?.type === "private" ? (
-                        <ul className="infoPanelMemberList">
-                          {infoPanelChannelMembers.map((u) => (
-                            <li key={u.id}>
-                              {displayUserNameForSidebar(u, u.id)}
-                              <span className="infoPanelMemberEmail">{u.email}</span>
-                            </li>
-                          ))}
-                        </ul>
+                        <>
+                          <ul className="infoPanelMemberList">
+                            {infoPanelChannelMembers.map((u) => (
+                              <li key={u.id}>
+                                {displayUserNameForSidebar(u, u.id)}
+                                <span className="infoPanelMemberEmail">{u.email}</span>
+                              </li>
+                            ))}
+                          </ul>
+                          <div className="infoPanelSectionTitle" style={{ marginTop: 12 }}>
+                            Добавить участника
+                          </div>
+                          {infoPanelMembersMsg ? (
+                            <div className="empty" style={{ marginBottom: 8 }}>
+                              {infoPanelMembersMsg}
+                            </div>
+                          ) : null}
+                          <p className="infoPanelHint">
+                            Доступно для закрытого канала. Нужна роль администратора в workspace (участник должен быть в
+                            workspace).
+                          </p>
+                          <div className="infoPanelAddMemberRow">
+                            <select
+                              className="infoPanelSelect"
+                              value={infoPanelChannelPickUserId}
+                              onChange={(e) => {
+                                setInfoPanelChannelPickUserId(e.target.value);
+                                setInfoPanelMembersMsg("");
+                              }}
+                            >
+                              <option value="">— Кого добавить —</option>
+                              {users
+                                .filter((u) => !infoPanelChannelMembers.some((m) => m.id === u.id))
+                                .map((u) => (
+                                  <option key={u.id} value={u.id}>
+                                    {displayUserNameForSidebar(u, u.id)}
+                                  </option>
+                                ))}
+                            </select>
+                            <button
+                              type="button"
+                              className="chip"
+                              disabled={!infoPanelChannelPickUserId || !token}
+                              onClick={() => void addUserToActiveChannel(infoPanelChannelPickUserId)}
+                            >
+                              Добавить
+                            </button>
+                          </div>
+                        </>
                       ) : (
                         <p className="infoPanelHint">
-                          Публичный и broadcast-канал виден участникам workspace; список подписчиков не хранится отдельно.
+                          Публичный и broadcast-канал виден участникам workspace; список подписчиков не хранится отдельно. Для
+                          приватного канала здесь же можно добавлять участников (права админа workspace).
                         </p>
                       )}
                     </div>
