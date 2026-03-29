@@ -21,7 +21,13 @@ export const messagesResolvers = {
             const viewer = requireViewer(ctx);
             const query = String(args.query ?? "");
             const limit = Number(args.limit ?? 50);
-            return ctx.messagesService.searchMessages(viewer, { query, limit });
+            return ctx.messagesService.searchMessages(viewer, {
+                query,
+                limit,
+                scopeChannelId: args.channelId ? String(args.channelId) : undefined,
+                scopeGroupChatId: args.groupChatId ? String(args.groupChatId) : undefined,
+                scopeDirectChatId: args.directChatId ? String(args.directChatId) : undefined,
+            });
         },
     },
     Mutation: {

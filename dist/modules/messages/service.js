@@ -350,6 +350,30 @@ export class MessagesService {
         const queryText = rest.join(" ").trim();
         if (!queryText)
             return [];
+        const scopeChannelId = input.scopeChannelId ? String(input.scopeChannelId) : null;
+        const scopeGroupChatId = input.scopeGroupChatId ? String(input.scopeGroupChatId) : null;
+        const scopeDirectChatId = input.scopeDirectChatId ? String(input.scopeDirectChatId) : null;
+        const nScopes = [scopeChannelId, scopeGroupChatId, scopeDirectChatId].filter(Boolean).length;
+        if (nScopes > 1)
+            throw new Error("Invalid search scope");
+        if (scopeChannelId)
+            await this.requireCanAccessChannel(viewer, scopeChannelId);
+        if (scopeGroupChatId) {
+            const m = await prisma.groupChatMember.findUnique({
+                where: { groupChatId_userId: { groupChatId: scopeGroupChatId, userId: viewer.userId } },
+                include: { groupChat: { select: { organizationId: true } } },
+            });
+            if (!m || m.groupChat.organizationId !== viewer.organizationId)
+                throw new Error("Forbidden");
+        }
+        if (scopeDirectChatId) {
+            const m = await prisma.directChatMember.findUnique({
+                where: { directChatId_userId: { directChatId: scopeDirectChatId, userId: viewer.userId } },
+                include: { directChat: { select: { organizationId: true } } },
+            });
+            if (!m || m.directChat.organizationId !== viewer.organizationId)
+                throw new Error("Forbidden");
+        }
         const rows = await this.repo.searchAllMessages({
             organizationId: viewer.organizationId,
             viewerUserId: viewer.userId,
@@ -359,6 +383,9 @@ export class MessagesService {
             before,
             hasFile,
             limit: input.limit,
+            scopeChannelId,
+            scopeGroupChatId,
+            scopeDirectChatId,
         });
         // Hydrate with author/reactions for GraphQL Message type mapping
         const ids = rows.map((r) => r.id);
@@ -598,5 +625,142 @@ export class MessagesService {
             }
         }
         return true;
+    }
+    async requireCanAccessMessageThread(viewer, msg) {
+        if (msg.channelId) {
+            await this.requireCanAccessChannel(viewer, msg.channelId);
+            return;
+        }
+        if (msg.groupChatId) {
+            const m = await prisma.groupChatMember.findUnique({
+                where: { groupChatId_userId: { groupChatId: msg.groupChatId, userId: viewer.userId } },
+                include: { groupChat: { select: { organizationId: true } } },
+            });
+            if (!m || m.groupChat.organizationId !== viewer.organizationId)
+                throw new Error("Forbidden");
+            return;
+        }
+        if (msg.directChatId) {
+            const m = await prisma.directChatMember.findUnique({
+                where: { directChatId_userId: { directChatId: msg.directChatId, userId: viewer.userId } },
+                include: { directChat: { select: { organizationId: true } } },
+            });
+            if (!m || m.directChat.organizationId !== viewer.organizationId)
+                throw new Error("Forbidden");
+            return;
+        }
+        throw new Error("Not found");
+    }
+    async mapUsersForOrg(users, organizationId) {
+        if (!users.length)
+            return [];
+        return Promise.all(users.map(async (u) => {
+            const org = await prisma.organizationMember.findUnique({
+                where: { organizationId_userId: { organizationId, userId: u.id } },
+                select: { role: true, department: true, title: true, status: true },
+            });
+            return {
+                id: u.id,
+                email: u.email,
+                firstName: u.firstName,
+                lastName: u.lastName,
+                middleName: u.middleName,
+                birthDate: u.birthDate,
+                avatarUrl: u.avatarUrl,
+                phone: null,
+                status: (org?.status ?? u.status),
+                statusEmoji: null,
+                statusText: null,
+                title: org?.title ?? null,
+                department: org?.department ?? null,
+                role: (org?.role ?? "employee"),
+                lastSeen: u.lastSeen,
+            };
+        }));
+    }
+    async markThreadRead(viewer, input) {
+        const channelId = input.channelId ? String(input.channelId) : null;
+        const groupChatId = input.groupChatId ? String(input.groupChatId) : null;
+        const directChatId = input.directChatId ? String(input.directChatId) : null;
+        const n = [channelId, groupChatId, directChatId].filter(Boolean).length;
+        if (n !== 1)
+            throw new Error("Specify exactly one of channelId, groupChatId, directChatId");
+        const threadKey = channelId ? `c:${channelId}` : groupChatId ? `g:${groupChatId}` : `d:${directChatId}`;
+        if (channelId)
+            await this.requireCanAccessChannel(viewer, channelId);
+        if (groupChatId) {
+            const m = await prisma.groupChatMember.findUnique({
+                where: { groupChatId_userId: { groupChatId, userId: viewer.userId } },
+                include: { groupChat: { select: { organizationId: true } } },
+            });
+            if (!m || m.groupChat.organizationId !== viewer.organizationId)
+                throw new Error("Forbidden");
+        }
+        if (directChatId) {
+            const m = await prisma.directChatMember.findUnique({
+                where: { directChatId_userId: { directChatId, userId: viewer.userId } },
+                include: { directChat: { select: { organizationId: true } } },
+            });
+            if (!m || m.directChat.organizationId !== viewer.organizationId)
+                throw new Error("Forbidden");
+        }
+        const row = await this.repo.upsertThreadRead({
+            organizationId: viewer.organizationId,
+            userId: viewer.userId,
+            threadKey,
+            lastReadAt: new Date(),
+        });
+        const payload = {
+            channelId,
+            groupChatId,
+            directChatId,
+            readerUserId: viewer.userId,
+            lastReadAt: row.lastReadAt.toISOString(),
+        };
+        if (channelId)
+            emitToChannel(channelId, "thread:read", payload);
+        else if (groupChatId)
+            emitToRoom(`group:${groupChatId}`, "thread:read", payload);
+        else if (directChatId)
+            emitToRoom(`dm:${directChatId}`, "thread:read", payload);
+        return true;
+    }
+    async threadReadStates(viewer, input) {
+        const channelId = input.channelId ? String(input.channelId) : null;
+        const groupChatId = input.groupChatId ? String(input.groupChatId) : null;
+        const directChatId = input.directChatId ? String(input.directChatId) : null;
+        const n = [channelId, groupChatId, directChatId].filter(Boolean).length;
+        if (n !== 1)
+            throw new Error("Specify exactly one of channelId, groupChatId, directChatId");
+        const threadKey = channelId ? `c:${channelId}` : groupChatId ? `g:${groupChatId}` : `d:${directChatId}`;
+        if (channelId)
+            await this.requireCanAccessChannel(viewer, channelId);
+        if (groupChatId) {
+            const m = await prisma.groupChatMember.findUnique({
+                where: { groupChatId_userId: { groupChatId, userId: viewer.userId } },
+                include: { groupChat: { select: { organizationId: true } } },
+            });
+            if (!m || m.groupChat.organizationId !== viewer.organizationId)
+                throw new Error("Forbidden");
+        }
+        if (directChatId) {
+            const m = await prisma.directChatMember.findUnique({
+                where: { directChatId_userId: { directChatId, userId: viewer.userId } },
+                include: { directChat: { select: { organizationId: true } } },
+            });
+            if (!m || m.directChat.organizationId !== viewer.organizationId)
+                throw new Error("Forbidden");
+        }
+        return this.repo.listThreadReadStatesByThreadKey(threadKey);
+    }
+    async messageReaders(viewer, messageId) {
+        const msg = await this.repo.getMessageById(messageId);
+        if (!msg)
+            throw new Error("Not found");
+        if (msg.authorId !== viewer.userId)
+            return [];
+        await this.requireCanAccessMessageThread(viewer, msg);
+        const users = await this.repo.listUsersWhoReadMessage(messageId);
+        return await this.mapUsersForOrg(users, viewer.organizationId);
     }
 }
