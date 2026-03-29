@@ -2,11 +2,22 @@ import { Router } from "express";
 import { z } from "zod";
 import { getCookieValue } from "../web/cookies.js";
 import { env } from "../config/env.js";
-const LoginBodySchema = z.object({
-    email: z.string().email(),
+const LoginBodySchema = z
+    .object({
+    email: z.string().email().optional(),
+    identifier: z.string().min(3).max(200).optional(),
     password: z.string().min(1),
     organizationId: z.string().min(1),
     twoFactorCode: z.string().regex(/^[0-9]{6}$/).optional(),
+    backupCode: z.string().min(6).max(64).optional(),
+})
+    .refine((d) => !!(String(d.email ?? "").trim() || String(d.identifier ?? "").trim()), {
+    message: "email or identifier required",
+});
+const ConfirmEmailBodySchema = z.object({
+    challengeId: z.string().min(10),
+    code: z.string().regex(/^[0-9]{6}$/),
+    organizationId: z.string().min(1),
 });
 const RefreshBodySchema = z.object({
     organizationId: z.string().min(1),
@@ -17,6 +28,41 @@ export function createAuthRoutes(authService) {
         try {
             const body = LoginBodySchema.parse(req.body);
             const loginRes = await authService.login(body);
+            if (loginRes.kind === "email_otp") {
+                return res.status(200).json({
+                    needsEmailOtp: true,
+                    challengeId: loginRes.challengeId,
+                    emailMasked: loginRes.emailMasked,
+                });
+            }
+            const out = await authService.finalizeLogin({
+                userId: loginRes.user.id,
+                organizationId: body.organizationId,
+                role: loginRes.membership.role,
+                refreshToken: loginRes.refresh.refreshToken,
+                refreshTokenHash: loginRes.refresh.refreshTokenHash,
+                sessionId: loginRes.refresh.sessionId,
+                expiresAt: loginRes.refresh.expiresAt,
+                userAgent: req.headers["user-agent"],
+                ip: req.headers["x-forwarded-for"] ?? req.socket.remoteAddress ?? undefined,
+                response: res,
+            });
+            return res.status(200).json(out);
+        }
+        catch (e) {
+            return res.status(400).json({
+                error: e?.message ?? "Bad request",
+            });
+        }
+    });
+    router.post("/login/confirm-email", async (req, res) => {
+        try {
+            const body = ConfirmEmailBodySchema.parse(req.body);
+            const loginRes = await authService.confirmLoginEmailOtp({
+                challengeId: body.challengeId,
+                code: body.code,
+                organizationId: body.organizationId,
+            });
             const out = await authService.finalizeLogin({
                 userId: loginRes.user.id,
                 organizationId: body.organizationId,

@@ -8,12 +8,17 @@ export const RegisterOrganizationInput = z.object({
     firstName: z.string().max(80).optional(),
     lastName: z.string().max(80).optional(),
 });
-export const LoginInput = z.object({
-    email: z.string().email(),
+export const LoginInput = z
+    .object({
+    email: z.string().email().optional(),
+    identifier: z.string().min(3).max(200).optional(),
     password: z.string().min(1).max(200),
     organizationId: z.string().min(1),
     twoFactorCode: z.string().regex(/^[0-9]{6}$/).optional(),
     backupCode: z.string().min(6).max(64).optional(),
+})
+    .refine((d) => !!(String(d.email ?? "").trim() || String(d.identifier ?? "").trim()), {
+    message: "email or identifier required",
 });
 export const RefreshInput = z.object({
     organizationId: z.string().min(1),
@@ -29,7 +34,7 @@ export const UpdateUserInput = z.object({
     middleName: z.string().max(120).nullish(),
     birthDate: z.union([z.coerce.date(), z.null()]).optional(),
     avatarUrl: z.union([z.string().url(), z.string().refine((s) => s.startsWith("data:"), "data URL"), z.literal("")]).optional(),
-    phone: z.string().max(40).optional(),
+    phone: z.union([z.string().max(40), z.null()]).optional(),
     status: z.enum(["online", "offline", "away", "dnd"]).optional(),
     statusEmoji: z.string().max(16).optional(),
     statusText: z.string().max(80).optional(),

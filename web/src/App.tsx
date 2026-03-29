@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, MouseEvent } from "react";
 import { io, Socket } from "socket.io-client";
 import * as XLSX from "xlsx";
-import { acceptIncomingOffer, startOutgoingCall } from "./webrtcDm";
+import { acceptIncomingOffer, startOutgoingCall, type ActiveCall } from "./webrtcDm";
 import "./App.css";
 
 const TG_SESSION_KEY = "tg:session";
@@ -14,6 +14,7 @@ type StoredSession = {
   viewerRole?: string;
   organizationId?: string;
   workspaceId?: string;
+  systemAccessLevel?: string;
 };
 
 function readStoredSession(): StoredSession | null {
@@ -30,6 +31,7 @@ function readStoredSession(): StoredSession | null {
         viewerRole: typeof s.viewerRole === "string" ? s.viewerRole : undefined,
         organizationId: typeof s.organizationId === "string" ? s.organizationId : undefined,
         workspaceId: typeof s.workspaceId === "string" ? s.workspaceId : undefined,
+        systemAccessLevel: typeof s.systemAccessLevel === "string" ? s.systemAccessLevel : undefined,
       };
     }
   } catch {
@@ -41,8 +43,11 @@ function readStoredSession(): StoredSession | null {
 const initialSession = readStoredSession();
 
 type LoginResult = {
-  accessToken: string;
-  viewer: { userId: string; organizationId: string; role: string };
+  accessToken?: string;
+  viewer?: { userId: string; organizationId: string; role: string; systemAccessLevel?: string };
+  needsEmailOtp?: boolean;
+  challengeId?: string;
+  emailMasked?: string;
 };
 
 type Channel = {
@@ -193,17 +198,21 @@ function isSingleStickerContent(content: string): boolean {
 }
 
 export default function App() {
-  const [authMode, setAuthMode] = useState<"admin" | "user">("user");
   const [organizationId, setOrganizationId] = useState(() => initialSession?.organizationId ?? "");
   const [organizationCode, setOrganizationCode] = useState("");
-  const [email, setEmail] = useState("admin@seed.local");
+  const [loginIdentifier, setLoginIdentifier] = useState("admin@seed.local");
   const [password, setPassword] = useState("SeedPass123!");
+  const [otpCode, setOtpCode] = useState("");
+  const [pendingEmailOtp, setPendingEmailOtp] = useState<{ challengeId: string; emailMasked?: string } | null>(null);
   const [workspaceId, setWorkspaceId] = useState(() => initialSession?.workspaceId ?? "");
 
   const [token, setToken] = useState(() => initialSession?.token ?? "");
   const [userId, setUserId] = useState(() => initialSession?.userId ?? "");
   const [viewerRole, setViewerRole] = useState<"owner" | "admin" | "manager" | "employee" | "guest" | "">(
     () => (initialSession?.viewerRole as any) ?? "",
+  );
+  const [systemAccessLevel, setSystemAccessLevel] = useState<"platform" | "organization" | "basic" | "">(
+    () => (initialSession?.systemAccessLevel as any) ?? "",
   );
 
   const [mode, setMode] = useState<"channels" | "groups" | "dms">("channels");
@@ -242,6 +251,9 @@ export default function App() {
   const [wizardBusy, setWizardBusy] = useState(false);
   const [wizardError, setWizardError] = useState("");
   const [showRightPanel, setShowRightPanel] = useState(false);
+  const [infoPanelSection, setInfoPanelSection] = useState<
+    "about" | "photos" | "saved" | "files" | "voice" | "links" | "notify"
+  >("about");
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [viewportW, setViewportW] = useState(() => (typeof window !== "undefined" ? window.innerWidth : 1280));
   const [authError, setAuthError] = useState("");
@@ -255,45 +267,27 @@ export default function App() {
   const [adminNewFullName, setAdminNewFullName] = useState("");
   const [adminNewRole, setAdminNewRole] = useState<"owner" | "admin" | "manager" | "employee" | "guest">("employee");
   const [showUserCabinet, setShowUserCabinet] = useState(false);
-  const [companyTab, setCompanyTab] = useState<"employees" | "invites" | "settings" | "admin">("employees");
   const [companyUserQuery, setCompanyUserQuery] = useState("");
   const [companyRoleFilter, setCompanyRoleFilter] = useState<"all" | "owner" | "admin" | "manager" | "employee" | "guest">("all");
-  const [inviteEmail, setInviteEmail] = useState("");
-  const [inviteRole, setInviteRole] = useState<"owner" | "admin" | "manager" | "employee" | "guest">("employee");
-  const [inviteDepartment, setInviteDepartment] = useState("");
-  const [inviteHistory, setInviteHistory] = useState<
-    { id: string; email: string; role: "owner" | "admin" | "manager" | "employee" | "guest"; inviteToken?: string | null }[]
-  >([]);
-  const [organizationInvites, setOrganizationInvites] = useState<
-    {
-      id: string;
-      email: string;
-      role: "owner" | "admin" | "manager" | "employee" | "guest";
-      department?: string | null;
-      createdAt?: string | null;
-      expiresAt?: string | null;
-      acceptedAt?: string | null;
-      revokedAt?: string | null;
-    }[]
-  >([]);
-  const [inviteDbQuery, setInviteDbQuery] = useState("");
-  const [inviteDbRoleFilter, setInviteDbRoleFilter] = useState<"all" | "owner" | "admin" | "manager" | "employee" | "guest">("all");
-  const [inviteDbStatusFilter, setInviteDbStatusFilter] = useState<"all" | "active" | "accepted" | "revoked" | "expired">("all");
-  const [inviteDbPage, setInviteDbPage] = useState(0);
-  const [inviteDbPageSize, setInviteDbPageSize] = useState(20);
   const [companyActionMsg, setCompanyActionMsg] = useState("");
   const [adminCreateEmail, setAdminCreateEmail] = useState("");
   const [adminCreateFullName, setAdminCreateFullName] = useState("");
   const [adminCreatePassword, setAdminCreatePassword] = useState("");
   const [adminCreateRole, setAdminCreateRole] = useState<"owner" | "admin" | "manager" | "employee" | "guest">("employee");
-  const [orgNameInput, setOrgNameInput] = useState("");
-  const [orgLogoInput, setOrgLogoInput] = useState("");
-  const [orgRetentionDaysInput, setOrgRetentionDaysInput] = useState("");
-  const [orgMaxFileSizeMbInput, setOrgMaxFileSizeMbInput] = useState("");
   const [chatPreviewByKey, setChatPreviewByKey] = useState<Record<string, { text: string; at: string }>>({});
   const [chatError, setChatError] = useState("");
   const [myProfileId, setMyProfileId] = useState("");
   const [myProfileEmail, setMyProfileEmail] = useState("");
+  /** Email текущего пользователя для оптимистичных сообщений (после загрузки профиля — из API). */
+  const selfAuthorEmail = useMemo(
+    () => myProfileEmail.trim() || (loginIdentifier.includes("@") ? loginIdentifier.trim() : ""),
+    [myProfileEmail, loginIdentifier],
+  );
+  /** Сравнение «моё сообщение» в ленте — по email из профиля после загрузки. */
+  const myAccountEmailForMessages = useMemo(
+    () => myProfileEmail.trim() || selfAuthorEmail,
+    [myProfileEmail, selfAuthorEmail],
+  );
   const [profileFirstName, setProfileFirstName] = useState("");
   const [profileLastName, setProfileLastName] = useState("");
   const [profileMiddleName, setProfileMiddleName] = useState("");
@@ -302,6 +296,7 @@ export default function App() {
   const [profileStatusText, setProfileStatusText] = useState("");
   const [profileTitle, setProfileTitle] = useState("");
   const [profileDepartment, setProfileDepartment] = useState("");
+  const [profilePhone, setProfilePhone] = useState("");
   const [profileMsg, setProfileMsg] = useState("");
   const [showStickerPicker, setShowStickerPicker] = useState(false);
   const [chatMetaNameDraft, setChatMetaNameDraft] = useState("");
@@ -318,7 +313,12 @@ export default function App() {
   const [pinnedOrderByKey, setPinnedOrderByKey] = useState<Record<string, number>>({});
   const [dragPinnedKey, setDragPinnedKey] = useState<string>("");
   const [dragOverPinnedKey, setDragOverPinnedKey] = useState<string>("");
-  const [mutedChatByKey, setMutedChatByKey] = useState<Record<string, boolean>>({});
+  /** Ключ чата → ISO до какого времени без уведомлений, либо `"forever"` */
+  const [chatMuteMap, setChatMuteMap] = useState<Record<string, string>>({});
+  const chatMuteMapRef = useRef<Record<string, string>>({});
+  useEffect(() => {
+    chatMuteMapRef.current = chatMuteMap;
+  }, [chatMuteMap]);
   const [archivedChatByKey, setArchivedChatByKey] = useState<Record<string, boolean>>({});
   const [chatFolder, setChatFolder] = useState<"all" | "unread" | "archived">("all");
   const [chatMenu, setChatMenu] = useState<null | { x: number; y: number; key: string }>(null);
@@ -338,13 +338,28 @@ export default function App() {
     localStream: MediaStream;
     hangup: () => void;
     audioOnly: boolean;
+    activeCall: ActiveCall;
+    callPeerId: string;
   }>(null);
+  const [webrtcMicOn, setWebrtcMicOn] = useState(true);
+  const [webrtcCamOn, setWebrtcCamOn] = useState(true);
+  const [webrtcScreenSharing, setWebrtcScreenSharing] = useState(false);
+  const [webrtcPeerHandRaised, setWebrtcPeerHandRaised] = useState(false);
+  const [webrtcLocalHandRaised, setWebrtcLocalHandRaised] = useState(false);
   const [incomingCall, setIncomingCall] = useState<null | { fromUserId: string; offerSdp: string; audioOnly: boolean }>(
     null,
   );
+  useEffect(() => {
+    if (!webrtcUi || webrtcUi.audioOnly) return;
+    const tick = () => setWebrtcScreenSharing(webrtcUi.activeCall.isScreenSharing());
+    const id = window.setInterval(tick, 400);
+    tick();
+    return () => window.clearInterval(id);
+  }, [webrtcUi]);
   const userIdRef = useRef("");
   const directChatsRef = useRef<DirectChat[]>([]);
   const webrtcBusyRef = useRef(false);
+  const webrtcPeerRef = useRef("");
   const [reactionPopover, setReactionPopover] = useState<null | { messageId: string; top: number; left: number }>(null);
   const reactionPopoverRef = useRef<HTMLDivElement | null>(null);
   const [isRecordingVoice, setIsRecordingVoice] = useState(false);
@@ -365,6 +380,7 @@ export default function App() {
       role?: "owner" | "admin" | "manager" | "employee" | "guest" | null;
       department?: string | null;
       status?: string | null;
+      phone?: string | null;
       lastSeen?: string | null;
     }[]
   >([]);
@@ -374,7 +390,7 @@ export default function App() {
       const roleOk = companyRoleFilter === "all" ? true : (u.role ?? "employee") === companyRoleFilter;
       const textOk = !q
         ? true
-        : `${u.email} ${u.firstName ?? ""} ${u.lastName ?? ""} ${u.department ?? ""}`.toLowerCase().includes(q);
+        : `${u.email} ${u.phone ?? ""} ${u.firstName ?? ""} ${u.lastName ?? ""} ${u.department ?? ""}`.toLowerCase().includes(q);
       return roleOk && textOk;
     });
   }, [users, companyUserQuery, companyRoleFilter]);
@@ -394,7 +410,6 @@ export default function App() {
 
   const [presenceByUserId, setPresenceByUserId] = useState<Record<string, { status: string; lastSeen?: string }>>({});
   const isCompanyAdmin = viewerRole === "owner" || viewerRole === "admin";
-  const canEditOrgFields = viewerRole === "owner" || viewerRole === "admin" || viewerRole === "manager";
   const displayOrganizationId = useMemo(() => {
     const code = organizationCode.trim().toUpperCase();
     if (/^ID\d{6}$/.test(code)) return code;
@@ -415,10 +430,14 @@ export default function App() {
     employee: ["Чаты и каналы", "Создание групп/каналов", "Личные сообщения", "Созвоны и видео встречи"],
     guest: ["Ограниченный доступ к чатам"],
   };
+  const isBasicSystemAccess = systemAccessLevel === "basic";
   const canReadChats = ["owner", "admin", "manager", "employee", "guest"].includes(viewerRole);
-  const canWriteChats = ["owner", "admin", "manager", "employee"].includes(viewerRole);
-  const canCreateChannelsAndGroups = ["owner", "admin", "manager", "employee"].includes(viewerRole);
-  const canStartCalls = ["owner", "admin", "manager", "employee"].includes(viewerRole);
+  const canWriteChats =
+    !isBasicSystemAccess && ["owner", "admin", "manager", "employee"].includes(viewerRole);
+  const canCreateChannelsAndGroups =
+    !isBasicSystemAccess && ["owner", "admin", "manager", "employee"].includes(viewerRole);
+  const canStartCalls =
+    !isBasicSystemAccess && ["owner", "admin", "manager", "employee"].includes(viewerRole);
 
   const messagesRef = useRef<Message[]>([]);
   messagesRef.current = messages;
@@ -605,7 +624,39 @@ export default function App() {
     return !!pinnedChatByKey[key];
   }
   function isMuted(key: string) {
-    return !!mutedChatByKey[key];
+    const v = chatMuteMap[key];
+    if (!v) return false;
+    if (v === "forever") return true;
+    const t = Date.parse(v);
+    if (Number.isNaN(t)) return false;
+    return Date.now() < t;
+  }
+  function setChatMute(key: string, mode: "off" | "forever" | 1 | 2 | 4 | 8 | 24) {
+    setChatMuteMap((prev) => {
+      const next = { ...prev };
+      if (mode === "off") {
+        delete next[key];
+        return next;
+      }
+      if (mode === "forever") {
+        next[key] = "forever";
+        return next;
+      }
+      next[key] = new Date(Date.now() + mode * 3600 * 1000).toISOString();
+      return next;
+    });
+  }
+  function muteStatusLabel(key: string): string {
+    const v = chatMuteMap[key];
+    if (!v) return "Оповещения включены";
+    if (v === "forever") return "Без звука навсегда";
+    const t = Date.parse(v);
+    if (Number.isNaN(t) || Date.now() >= t) return "Оповещения включены";
+    try {
+      return `Без звука до ${new Date(t).toLocaleString()}`;
+    } catch {
+      return "Без звука";
+    }
   }
   function togglePin(key: string) {
     setPinnedChatByKey((prev) => {
@@ -618,9 +669,6 @@ export default function App() {
       }
       return { ...prev, [key]: nextPinned };
     });
-  }
-  function toggleMute(key: string) {
-    setMutedChatByKey((prev) => ({ ...prev, [key]: !prev[key] }));
   }
   function isArchived(key: string) {
     return !!archivedChatByKey[key];
@@ -709,6 +757,68 @@ export default function App() {
       }).filter((d) => includeByFolder(chatKeyFor("d", d.id))),
     [filteredDMs, pinnedChatByKey, pinnedOrderByKey, archivedChatByKey, unreadByKey, chatFolder],
   );
+
+  const activeChatKeyForPanel = useMemo(() => {
+    if (mode === "channels" && activeChannelId) return chatKeyFor("c", activeChannelId);
+    if (mode === "groups" && activeGroupChatId) return chatKeyFor("g", activeGroupChatId);
+    if (mode === "dms" && activeDirectChatId) return chatKeyFor("d", activeDirectChatId);
+    return "";
+  }, [mode, activeChannelId, activeGroupChatId, activeDirectChatId]);
+
+  const isSelfNotesActiveDm = useMemo(
+    () =>
+      mode === "dms" &&
+      !!userId &&
+      !!activeDirectChat &&
+      activeDirectChat.userIds.length === 1 &&
+      activeDirectChat.userIds[0] === userId,
+    [mode, userId, activeDirectChat],
+  );
+
+  const infoPanelPhotos = useMemo(
+    () =>
+      messages.filter(
+        (m) =>
+          m.type === "file" &&
+          (m.file?.mimeType || "").startsWith("image/") &&
+          m.file?.downloadUrl &&
+          !m.isDeleted,
+      ),
+    [messages],
+  );
+  const infoPanelFiles = useMemo(
+    () =>
+      messages.filter(
+        (m) =>
+          m.type === "file" &&
+          !(m.file?.mimeType || "").startsWith("image/") &&
+          m.file?.downloadUrl &&
+          !m.isDeleted,
+      ),
+    [messages],
+  );
+  const infoPanelVoice = useMemo(
+    () => messages.filter((m) => m.type === "voice" && m.file?.downloadUrl && !m.isDeleted),
+    [messages],
+  );
+  const infoPanelSavedHere = useMemo(
+    () => messages.filter((m) => savedIds.has(m.id) && !m.isDeleted),
+    [messages, savedIds],
+  );
+  const infoPanelLinks = useMemo(() => {
+    const out: { id: string; url: string; preview: string }[] = [];
+    const re = /https?:\/\/[^\s<>"{}|\\^`[\]]+/gi;
+    for (const m of messages) {
+      if (m.isDeleted || !m.content) continue;
+      const ms = m.content.match(re);
+      if (ms) {
+        for (const url of ms) {
+          out.push({ id: `${m.id}-${url.slice(0, 48)}`, url, preview: (m.content || "").slice(0, 100) });
+        }
+      }
+    }
+    return out;
+  }, [messages]);
 
   function previewForMessages(arr: Message[]) {
     const last = [...arr].reverse().find((m) => !m._localFileState); // skip placeholders if possible
@@ -1077,12 +1187,13 @@ export default function App() {
           viewerRole,
           organizationId,
           workspaceId,
+          systemAccessLevel,
         }),
       );
     } catch {
       /* ignore */
     }
-  }, [token, userId, viewerRole, organizationId, workspaceId]);
+  }, [token, userId, viewerRole, organizationId, workspaceId, systemAccessLevel]);
 
   useEffect(() => {
     if (!token) return;
@@ -1099,14 +1210,28 @@ export default function App() {
   }, [token, mode, activeChannelId, activeGroupChatId, activeDirectChatId]);
 
   useEffect(() => {
+    if (showRightPanel) setInfoPanelSection("about");
+  }, [showRightPanel]);
+
+  useEffect(() => {
     try {
       const p = localStorage.getItem("tg:pinnedChats");
       const po = localStorage.getItem("tg:pinnedOrder");
-      const m = localStorage.getItem("tg:mutedChats");
+      const mm = localStorage.getItem("tg:chatMuteUntil");
+      const mOld = localStorage.getItem("tg:mutedChats");
       const a = localStorage.getItem("tg:archivedChats");
       if (p) setPinnedChatByKey(JSON.parse(p));
       if (po) setPinnedOrderByKey(JSON.parse(po));
-      if (m) setMutedChatByKey(JSON.parse(m));
+      if (mm) {
+        setChatMuteMap(JSON.parse(mm));
+      } else if (mOld) {
+        const o = JSON.parse(mOld) as Record<string, boolean>;
+        const next: Record<string, string> = {};
+        for (const [k, v] of Object.entries(o)) {
+          if (v) next[k] = "forever";
+        }
+        setChatMuteMap(next);
+      }
       if (a) setArchivedChatByKey(JSON.parse(a));
     } catch {
       // ignore
@@ -1116,20 +1241,20 @@ export default function App() {
     try {
       localStorage.setItem("tg:pinnedChats", JSON.stringify(pinnedChatByKey));
       localStorage.setItem("tg:pinnedOrder", JSON.stringify(pinnedOrderByKey));
-      localStorage.setItem("tg:mutedChats", JSON.stringify(mutedChatByKey));
+      localStorage.setItem("tg:chatMuteUntil", JSON.stringify(chatMuteMap));
       localStorage.setItem("tg:archivedChats", JSON.stringify(archivedChatByKey));
     } catch {
       // ignore
     }
-  }, [pinnedChatByKey, pinnedOrderByKey, mutedChatByKey, archivedChatByKey]);
+  }, [pinnedChatByKey, pinnedOrderByKey, chatMuteMap, archivedChatByKey]);
 
   useEffect(() => {
-    if (authMode !== "user") return;
+    if (!loginIdentifier.includes("@")) return;
     const t = window.setTimeout(() => {
-      void resolveSeedOrgForEmail(email);
+      void resolveSeedOrgForEmail(loginIdentifier);
     }, 250);
     return () => window.clearTimeout(t);
-  }, [authMode, email]);
+  }, [loginIdentifier]);
 
   async function loadSavedMessages() {
     if (!token) return;
@@ -1236,25 +1361,10 @@ export default function App() {
     e?.preventDefault();
     try {
       setAuthError("");
+      setPendingEmailOtp(null);
+      setOtpCode("");
       let orgId = organizationId.trim();
-      if (authMode === "admin") {
-        const code = organizationCode.trim().toUpperCase();
-        if (!/^ID\d{6}$/.test(code)) {
-          throw new Error("Organization ID должен быть в формате: ID000015");
-        }
-        try {
-          const rawCodeMap = localStorage.getItem("tg:orgCodeBindings");
-          const codeMap = rawCodeMap ? (JSON.parse(rawCodeMap) as Record<string, string>) : {};
-          orgId = String(codeMap[code] || "");
-        } catch {
-          orgId = "";
-        }
-        if (!orgId) {
-          throw new Error("Organization ID не найден по коду. Нажмите 'Заполнить seed ID' для привязки.");
-        }
-      }
-      // User mode hides Organization ID: try to reuse existing value or fetch seed org in dev.
-      if (!orgId && authMode === "user") {
+      if (!orgId) {
         try {
           const seedRes = await fetch(`${API_BASE}/playground-ru/seed-info`);
           const seedData = await seedRes.json();
@@ -1264,21 +1374,35 @@ export default function App() {
             if (seedData?.workspaceId) setWorkspaceId(String(seedData.workspaceId));
           }
         } catch {
-          // ignore and fail below with explicit message
+          /* ignore */
         }
       }
-      if (!orgId) throw new Error("Organization ID не указан. Для пользователя привязка к seed не найдена, проверьте email.");
+      if (!orgId) {
+        throw new Error(
+          "Не указана организация. Нажмите «Заполнить из seed (dev)» или задайте привязку по email.",
+        );
+      }
+      const ident = loginIdentifier.trim();
+      if (!ident || !password) throw new Error("Укажите почту или телефон и пароль.");
       const res = await fetch(`${API_BASE}/auth/login`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ email, password, organizationId: orgId }),
+        credentials: "include",
+        body: JSON.stringify({ identifier: ident, password, organizationId: orgId }),
       });
-      const data = (await res.json()) as LoginResult | { error: string };
-      if (!res.ok || "error" in data) throw new Error((data as any).error || "Login failed");
+      const data = (await res.json()) as LoginResult & { error?: string };
+      if (!res.ok || data.error) throw new Error(data.error || "Login failed");
+      if (data.needsEmailOtp && data.challengeId) {
+        setPendingEmailOtp({ challengeId: data.challengeId, emailMasked: data.emailMasked });
+        pushLog("Введите код из письма для подтверждения входа.");
+        return;
+      }
+      if (!data.accessToken || !data.viewer) throw new Error("Неверный ответ сервера");
       setOrganizationId(orgId);
       setToken(data.accessToken);
       setUserId(data.viewer.userId);
       setViewerRole((data.viewer.role as any) ?? "");
+      setSystemAccessLevel((data.viewer.systemAccessLevel as any) ?? "organization");
       pushLog("Успешный вход.");
     } catch (e: any) {
       let msg = String(e?.message ?? e ?? "Login failed");
@@ -1287,6 +1411,41 @@ export default function App() {
           "Не удалось связаться с сервером (сеть / CORS / прокси). Проверьте, что backend запущен, в .env CLIENT_URL совпадает с адресом сайта (можно несколько через запятую), а Nginx проксирует /auth/ и /graphql.";
       }
       setAuthError(`Ошибка входа: ${msg}`);
+    }
+  }
+
+  async function confirmLoginEmailOtp(e?: FormEvent) {
+    e?.preventDefault();
+    try {
+      setAuthError("");
+      if (!pendingEmailOtp) throw new Error("Сначала выполните вход с паролем.");
+      const orgId = organizationId.trim();
+      if (!orgId) throw new Error("Organization ID не указан");
+      const code = otpCode.replace(/\D/g, "").slice(0, 6);
+      if (code.length !== 6) throw new Error("Введите 6 цифр кода из письма");
+      const res = await fetch(`${API_BASE}/auth/login/confirm-email`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ challengeId: pendingEmailOtp.challengeId, code, organizationId: orgId }),
+      });
+      const data = (await res.json()) as LoginResult & { error?: string };
+      if (!res.ok || data.error) throw new Error(data.error || "Ошибка подтверждения");
+      if (!data.accessToken || !data.viewer) throw new Error("Неверный ответ сервера");
+      setPendingEmailOtp(null);
+      setOtpCode("");
+      setToken(data.accessToken);
+      setUserId(data.viewer.userId);
+      setViewerRole((data.viewer.role as any) ?? "");
+      setSystemAccessLevel((data.viewer.systemAccessLevel as any) ?? "organization");
+      pushLog("Вход подтверждён по коду из письма.");
+    } catch (e: any) {
+      let msg = String(e?.message ?? e ?? "Ошибка");
+      if (msg === "Failed to fetch") {
+        msg =
+          "Не удалось связаться с сервером. Проверьте сеть и что backend доступен по тому же домену (CORS / прокси).";
+      }
+      setAuthError(`Подтверждение: ${msg}`);
     }
   }
 
@@ -1305,6 +1464,9 @@ export default function App() {
     setToken("");
     setUserId("");
     setViewerRole("");
+    setSystemAccessLevel("");
+    setPendingEmailOtp(null);
+    setOtpCode("");
     try {
       localStorage.removeItem(TG_SESSION_KEY);
       localStorage.removeItem(TG_LAST_OPEN_CHAT_KEY);
@@ -1377,7 +1539,13 @@ export default function App() {
 
       if (!isActive) {
         if (key) {
-          setUnreadByKey((prev) => ({ ...prev, [key]: (prev[key] ?? 0) + 1 }));
+          const v = chatMuteMapRef.current[key];
+          const muted =
+            v === "forever" ||
+            (v && v !== "forever" && !Number.isNaN(Date.parse(v)) && Date.now() < Date.parse(v));
+          if (!muted) {
+            setUnreadByKey((prev) => ({ ...prev, [key]: (prev[key] ?? 0) + 1 }));
+          }
         }
         return;
       }
@@ -1495,6 +1663,11 @@ export default function App() {
       if (webrtcBusyRef.current) return;
       const audioOnly = !String(p.sdp).includes("m=video");
       setIncomingCall({ fromUserId: from, offerSdp: p.sdp, audioOnly });
+    });
+    s.on("call:hand", (data: any) => {
+      const from = String(data?.fromUserId ?? "");
+      if (!from || from !== webrtcPeerRef.current) return;
+      setWebrtcPeerHandRaised(!!data?.raised);
     });
     setSocket(s);
   }
@@ -1671,6 +1844,15 @@ export default function App() {
     }
   }
 
+  function scrollToMessageInChat(messageId: string) {
+    const safe = messageId.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+    const el = document.querySelector(`[data-message-id="${safe}"]`);
+    if (!el || !(el instanceof HTMLElement)) return;
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    el.classList.add("msg--searchHit");
+    window.setTimeout(() => el.classList.remove("msg--searchHit"), 2200);
+  }
+
   async function runThreadSearch() {
     const q = threadSearchQ.trim();
     if (!token || !q) return;
@@ -1733,10 +1915,32 @@ export default function App() {
         },
         onClose: () => {
           webrtcBusyRef.current = false;
+          webrtcPeerRef.current = "";
+          setWebrtcPeerHandRaised(false);
+          setWebrtcLocalHandRaised(false);
+          setWebrtcScreenSharing(false);
           setWebrtcUi(null);
         },
       });
-      setWebrtcUi({ localStream: ac.localStream, remoteStream: null, hangup: ac.hangup, audioOnly });
+      webrtcPeerRef.current = fromUserId;
+      setWebrtcMicOn(true);
+      setWebrtcCamOn(!audioOnly);
+      setWebrtcPeerHandRaised(false);
+      setWebrtcLocalHandRaised(false);
+      setWebrtcUi({
+        localStream: ac.localStream,
+        remoteStream: null,
+        hangup: () => {
+          webrtcPeerRef.current = "";
+          setWebrtcPeerHandRaised(false);
+          setWebrtcLocalHandRaised(false);
+          setWebrtcScreenSharing(false);
+          ac.hangup();
+        },
+        audioOnly,
+        activeCall: ac,
+        callPeerId: fromUserId,
+      });
     } catch (e: any) {
       webrtcBusyRef.current = false;
       setChatError(String(e?.message ?? e));
@@ -1774,10 +1978,32 @@ export default function App() {
         },
         onClose: () => {
           webrtcBusyRef.current = false;
+          webrtcPeerRef.current = "";
+          setWebrtcPeerHandRaised(false);
+          setWebrtcLocalHandRaised(false);
+          setWebrtcScreenSharing(false);
           setWebrtcUi(null);
         },
       });
-      setWebrtcUi({ localStream: ac.localStream, remoteStream: null, hangup: ac.hangup, audioOnly: true });
+      webrtcPeerRef.current = other;
+      setWebrtcMicOn(true);
+      setWebrtcCamOn(false);
+      setWebrtcPeerHandRaised(false);
+      setWebrtcLocalHandRaised(false);
+      setWebrtcUi({
+        localStream: ac.localStream,
+        remoteStream: null,
+        hangup: () => {
+          webrtcPeerRef.current = "";
+          setWebrtcPeerHandRaised(false);
+          setWebrtcLocalHandRaised(false);
+          setWebrtcScreenSharing(false);
+          ac.hangup();
+        },
+        audioOnly: true,
+        activeCall: ac,
+        callPeerId: other,
+      });
       void sendServiceMessageToCurrentChat(`📞 Созвон (WebRTC)`);
       pushLog("Созвон: WebRTC");
     } catch (e: any) {
@@ -1811,16 +2037,86 @@ export default function App() {
         },
         onClose: () => {
           webrtcBusyRef.current = false;
+          webrtcPeerRef.current = "";
+          setWebrtcPeerHandRaised(false);
+          setWebrtcLocalHandRaised(false);
+          setWebrtcScreenSharing(false);
           setWebrtcUi(null);
         },
       });
-      setWebrtcUi({ localStream: ac.localStream, remoteStream: null, hangup: ac.hangup, audioOnly: false });
+      webrtcPeerRef.current = other;
+      setWebrtcMicOn(true);
+      setWebrtcCamOn(true);
+      setWebrtcPeerHandRaised(false);
+      setWebrtcLocalHandRaised(false);
+      setWebrtcUi({
+        localStream: ac.localStream,
+        remoteStream: null,
+        hangup: () => {
+          webrtcPeerRef.current = "";
+          setWebrtcPeerHandRaised(false);
+          setWebrtcLocalHandRaised(false);
+          setWebrtcScreenSharing(false);
+          ac.hangup();
+        },
+        audioOnly: false,
+        activeCall: ac,
+        callPeerId: other,
+      });
       void sendServiceMessageToCurrentChat(`🎥 Видеовстреча (WebRTC)`);
       pushLog("Видеовстреча: WebRTC");
     } catch (e: any) {
       webrtcBusyRef.current = false;
       setChatError(String(e?.message ?? e));
     }
+  }
+
+  function copyCallInviteLink() {
+    if (mode !== "dms" || !activeDirectChatId) {
+      setChatError("Ссылка на созвон: откройте личный чат с собеседником");
+      return;
+    }
+    const base = `${window.location.origin}${window.location.pathname}`;
+    const link = `${base}#dm=${encodeURIComponent(activeDirectChatId)}&call=1`;
+    const text = `${link}\n\nОткройте ссылку, войдите в аккаунт и этот личный чат — затем можно начать звонок из меню чата.`;
+    void navigator.clipboard.writeText(text);
+    pushLog("Ссылка на чат для созвона скопирована в буфер");
+  }
+
+  function toggleWebrtcMic() {
+    if (!webrtcUi) return;
+    const next = !webrtcMicOn;
+    webrtcUi.activeCall.setMicEnabled(next);
+    setWebrtcMicOn(next);
+  }
+
+  function toggleWebrtcCam() {
+    if (!webrtcUi || webrtcUi.audioOnly) return;
+    const next = !webrtcCamOn;
+    webrtcUi.activeCall.setCamEnabled(next);
+    setWebrtcCamOn(next);
+  }
+
+  async function toggleWebrtcScreenShare() {
+    if (!webrtcUi || webrtcUi.audioOnly) return;
+    try {
+      if (webrtcScreenSharing || webrtcUi.activeCall.isScreenSharing()) {
+        await webrtcUi.activeCall.stopScreenShare();
+        setWebrtcScreenSharing(false);
+      } else {
+        await webrtcUi.activeCall.startScreenShare();
+        setWebrtcScreenSharing(true);
+      }
+    } catch (e: any) {
+      setChatError(String(e?.message ?? e));
+    }
+  }
+
+  function toggleLocalRaiseHand() {
+    if (!socket || !webrtcUi) return;
+    const next = !webrtcLocalHandRaised;
+    setWebrtcLocalHandRaised(next);
+    socket.emit("call:hand", { targetUserId: webrtcUi.callPeerId, raised: next });
   }
 
   async function loadUsers(tokenOverride?: string, orgIdOverride?: string) {
@@ -1841,7 +2137,7 @@ export default function App() {
         lastSeen?: string | null;
       }[];
     }>(
-      `query($organizationId: ID!) { users(organizationId: $organizationId) { id email firstName middleName lastName birthDate role department status lastSeen } }`,
+      `query($organizationId: ID!) { users(organizationId: $organizationId) { id email phone firstName middleName lastName birthDate role department status lastSeen } }`,
       { organizationId: orgId },
       t,
     );
@@ -1902,12 +2198,14 @@ export default function App() {
         title?: string | null;
         department?: string | null;
         role?: string | null;
+        phone?: string | null;
       };
     }>(
       `query {
         me {
           id
           email
+          phone
           firstName
           lastName
           middleName
@@ -1932,6 +2230,7 @@ export default function App() {
     setProfileStatusText(data.me.statusText || "");
     setProfileTitle(data.me.title || "");
     setProfileDepartment(data.me.department || "");
+    setProfilePhone(data.me.phone || "");
     setViewerRole((data.me.role as any) ?? viewerRole);
   }
 
@@ -1960,8 +2259,7 @@ export default function App() {
       : null;
     if (profileAvatarUrl.trim()) input.avatarUrl = profileAvatarUrl.trim();
     if (profileStatusText.trim()) input.statusText = profileStatusText.trim();
-    if (canEditOrgFields && profileTitle.trim()) input.title = profileTitle.trim();
-    if (canEditOrgFields && profileDepartment.trim()) input.department = profileDepartment.trim();
+    input.phone = profilePhone.trim() ? profilePhone.trim() : null;
     await gql<{ updateUser: { id: string } }>(
       `mutation($input: UpdateUserInput!) {
         updateUser(input: $input) { id }
@@ -2073,6 +2371,13 @@ export default function App() {
     setActiveDirectChatId(data.ensureDirectChat.id);
     await loadDirectChats();
     await loadDirectMessages(data.ensureDirectChat.id);
+  }
+
+  async function openSavedVaultChat() {
+    if (!token || !userId) return;
+    setChatListScope("dms");
+    setShowSaved(false);
+    await ensureDmWithUser(userId);
   }
 
   function closeNewThingWizard() {
@@ -2234,34 +2539,6 @@ export default function App() {
     }
   }
 
-  async function inviteCompanyUser() {
-    if (!token || !organizationId || !inviteEmail.trim()) return;
-    setCompanyActionMsg("");
-    const data = await gql<{ inviteUser: { id: string; email: string; role: string; inviteToken?: string | null } }>(
-      `mutation($input: InviteUserInput!) {
-        inviteUser(input: $input) { id email role inviteToken }
-      }`,
-      {
-        input: {
-          organizationId,
-          email: inviteEmail.trim().toLowerCase(),
-          role: inviteRole,
-          department: inviteDepartment.trim() || null,
-        },
-      },
-      token,
-    );
-    setCompanyActionMsg(
-      `Приглашение отправлено: ${data.inviteUser.email} (${data.inviteUser.role})` +
-        (data.inviteUser.inviteToken ? `, token: ${data.inviteUser.inviteToken}` : ""),
-    );
-    setInviteHistory((prev) => [{ ...data.inviteUser, role: data.inviteUser.role as "owner" | "admin" | "manager" | "employee" | "guest" }, ...prev].slice(0, 20));
-    setInviteEmail("");
-    setInviteDepartment("");
-    await loadUsers();
-    await loadOrganizationInvites();
-  }
-
   async function createCompanyUser(input: {
     email: string;
     fullName: string;
@@ -2360,97 +2637,6 @@ export default function App() {
     await loadUsers();
   }
 
-  async function revokeCompanyInvite(inviteId: string) {
-    if (!token || !organizationId || !inviteId) return;
-    await gql<{ revokeInvite: boolean }>(
-      `mutation($input: RevokeInviteInput!) { revokeInvite(input: $input) }`,
-      { input: { organizationId, inviteId } },
-      token,
-    );
-    setInviteHistory((prev) => prev.filter((x) => x.id !== inviteId));
-    setCompanyActionMsg("Инвайт отозван");
-    await loadOrganizationInvites();
-  }
-
-  async function loadOrganizationInvites(pageOverride?: number, pageSizeOverride?: number) {
-    if (!token || !organizationId) return;
-    const page = pageOverride ?? inviteDbPage;
-    const pageSize = pageSizeOverride ?? inviteDbPageSize;
-    const data = await gql<{
-      organizationInvites: {
-        id: string;
-        email: string;
-        role: "owner" | "admin" | "manager" | "employee" | "guest";
-        department?: string | null;
-        createdAt?: string | null;
-        expiresAt?: string | null;
-        acceptedAt?: string | null;
-        revokedAt?: string | null;
-      }[];
-    }>(
-      `query($organizationId: ID!, $role: OrgRole, $status: InviteStatus, $query: String, $limit: Int, $offset: Int) {
-        organizationInvites(organizationId: $organizationId, role: $role, status: $status, query: $query, limit: $limit, offset: $offset) {
-          id
-          email
-          role
-          department
-          createdAt
-          expiresAt
-          acceptedAt
-          revokedAt
-        }
-      }`,
-      {
-        organizationId,
-        role: inviteDbRoleFilter === "all" ? null : inviteDbRoleFilter,
-        status: inviteDbStatusFilter === "all" ? null : inviteDbStatusFilter,
-        query: inviteDbQuery.trim() || null,
-        limit: pageSize,
-        offset: page * pageSize,
-      },
-      token,
-    );
-    setOrganizationInvites(data.organizationInvites);
-  }
-
-  function exportOrganizationInvitesCsv() {
-    const rows = organizationInvites;
-    const header = ["id", "email", "role", "department", "createdAt", "expiresAt", "acceptedAt", "revokedAt", "status"];
-    const now = Date.now();
-    const statusOf = (inv: (typeof rows)[number]) => {
-      if (inv.acceptedAt) return "accepted";
-      if (inv.revokedAt) return "revoked";
-      if (inv.expiresAt && new Date(inv.expiresAt).getTime() < now) return "expired";
-      return "active";
-    };
-    const esc = (v: unknown) => {
-      const s = String(v ?? "");
-      return `"${s.replace(/"/g, '""')}"`;
-    };
-    const lines = [header.join(",")].concat(
-      rows.map((inv) =>
-        [
-          esc(inv.id),
-          esc(inv.email),
-          esc(inv.role),
-          esc(inv.department ?? ""),
-          esc(inv.createdAt ?? ""),
-          esc(inv.expiresAt ?? ""),
-          esc(inv.acceptedAt ?? ""),
-          esc(inv.revokedAt ?? ""),
-          esc(statusOf(inv)),
-        ].join(","),
-      ),
-    );
-    const blob = new Blob([`\uFEFF${lines.join("\n")}`], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `organization-invites-page-${inviteDbPage + 1}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
-  }
-
   async function setCompanyUserRole(targetUserId: string, role: "owner" | "admin" | "manager" | "employee" | "guest") {
     if (!token || !organizationId || !targetUserId) return;
     await gql<{ setUserRole: { id: string; role?: string | null } }>(
@@ -2460,59 +2646,6 @@ export default function App() {
     );
     setCompanyActionMsg(`Роль обновлена: ${role}`);
     await loadUsers();
-  }
-
-  async function saveCompanySettings() {
-    if (!token || !organizationId) return;
-    const retentionDays = orgRetentionDaysInput.trim() ? Number(orgRetentionDaysInput.trim()) : null;
-    const maxFileSizeMb = orgMaxFileSizeMbInput.trim() ? Number(orgMaxFileSizeMbInput.trim()) : null;
-    if (retentionDays !== null && (!Number.isFinite(retentionDays) || retentionDays < 1)) {
-      setCompanyActionMsg("retentionDays должен быть положительным числом");
-      return;
-    }
-    if (maxFileSizeMb !== null && (!Number.isFinite(maxFileSizeMb) || maxFileSizeMb < 1)) {
-      setCompanyActionMsg("maxFileSizeMb должен быть положительным числом");
-      return;
-    }
-    const data = await gql<{
-      updateOrganizationSettings: {
-        id: string;
-        name: string;
-        logoUrl?: string | null;
-        settings?: { retentionDays?: number; maxFileSizeMb?: number } | null;
-      };
-    }>(
-      `mutation($input: UpdateOrganizationSettingsInput!) {
-        updateOrganizationSettings(input: $input) {
-          id
-          name
-          logoUrl
-          settings
-        }
-      }`,
-      {
-        input: {
-          organizationId,
-          name: orgNameInput.trim() || null,
-          logoUrl: orgLogoInput.trim() || null,
-          settings: {
-            retentionDays: retentionDays ?? undefined,
-            maxFileSizeMb: maxFileSizeMb ?? undefined,
-          },
-        },
-      },
-      token,
-    );
-    const org = data.updateOrganizationSettings;
-    setOrgNameInput(org.name || "");
-    setOrgLogoInput(org.logoUrl || "");
-    setOrgRetentionDaysInput(
-      org.settings?.retentionDays !== undefined && org.settings?.retentionDays !== null ? String(org.settings.retentionDays) : "",
-    );
-    setOrgMaxFileSizeMbInput(
-      org.settings?.maxFileSizeMb !== undefined && org.settings?.maxFileSizeMb !== null ? String(org.settings.maxFileSizeMb) : "",
-    );
-    setCompanyActionMsg("Настройки компании сохранены");
   }
 
   async function deactivateCompanyUser(targetUserId: string) {
@@ -2801,7 +2934,7 @@ export default function App() {
       content,
       createdAt: new Date().toISOString(),
       author: {
-        email,
+        email: selfAuthorEmail || "user",
         firstName: profileFirstName || null,
         lastName: profileLastName || null,
       },
@@ -3016,7 +3149,7 @@ export default function App() {
       {
         id: localId,
         createdAt: new Date().toISOString(),
-        author: { email },
+        author: { email: selfAuthorEmail || "user" },
         type: kind,
         content: "",
         file: { id: fileId, originalName: originalName || null, mimeType: effectiveMime, size: blob.size },
@@ -3490,49 +3623,62 @@ export default function App() {
       <div className="authPage">
         <div className="authCard">
           <div className="authTitle">sf-communication</div>
-          <div className="authSub">Вход (dev seed)</div>
+          <div className="authSub">Вход</div>
 
           <div className="authRow" style={{ marginTop: 4 }}>
-            <button className={authMode === "user" ? "active" : ""} onClick={() => setAuthMode("user")}>
-              Пользователь
-            </button>
-            <button className={authMode === "admin" ? "active" : ""} onClick={() => setAuthMode("admin")}>
-              Админ
+            <button type="button" onClick={() => void fillSeedInfo()}>
+              Заполнить из seed (dev)
             </button>
           </div>
 
-          {authMode === "admin" ? (
-            <div className="authRow">
-              <button onClick={() => void fillSeedInfo()}>Заполнить seed ID</button>
-            </div>
-          ) : null}
-
-          {authMode === "admin" ? (
-            <>
-              <label>Organization ID</label>
-              <input
-                value={organizationCode}
-                onChange={(e) => setOrganizationCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 8))}
-                placeholder="ID000015"
-              />
-            </>
-          ) : null}
-
-          <label>Email</label>
-          <input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="email" />
+          <label>Почта или телефон</label>
+          <input
+            value={loginIdentifier}
+            onChange={(e) => setLoginIdentifier(e.target.value)}
+            placeholder="+79991234567 или email@company.ru"
+            autoComplete="username"
+          />
 
           <label>Пароль</label>
-          <input value={password} onChange={(e) => setPassword(e.target.value)} placeholder="password" />
+          <input
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            placeholder="Пароль"
+            autoComplete="current-password"
+          />
 
-          <div className="authRow">
-            <button onClick={(e) => void login(e as any)} disabled={(authMode === "admin" ? !organizationCode : false) || !email || !password}>
-              Войти
-            </button>
-          </div>
+          {pendingEmailOtp ? (
+            <>
+              <label>Код из письма {pendingEmailOtp.emailMasked ? `(${pendingEmailOtp.emailMasked})` : ""}</label>
+              <input
+                value={otpCode}
+                onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                placeholder="000000"
+                inputMode="numeric"
+              />
+              <div className="authRow">
+                <button type="button" onClick={(e) => void confirmLoginEmailOtp(e as any)} disabled={otpCode.length !== 6}>
+                  Подтвердить вход
+                </button>
+              </div>
+            </>
+          ) : (
+            <div className="authRow">
+              <button
+                type="button"
+                onClick={(e) => void login(e as any)}
+                disabled={!loginIdentifier.trim() || !password}
+              >
+                Войти
+              </button>
+            </div>
+          )}
           {authError ? <div style={{ color: "#ff9ea6", fontSize: 12, marginTop: 6 }}>{authError}</div> : null}
 
           <div style={{ opacity: 0.75, fontSize: 12, marginTop: 10 }}>
-            После входа можно подключить Socket и загрузить данные (каналы/группы/DM).
+            Уровни доступа: платформа / организация / базовый (задаются в учётной записи). Двухфакторный вход по коду на
+            почте включается на сервере (LOGIN_EMAIL_OTP=on). После входа подключается Socket и загружаются чаты.
           </div>
         </div>
       </div>
@@ -3595,6 +3741,7 @@ export default function App() {
             <thead>
               <tr>
                 <th>Email (логин)</th>
+                <th>Телефон</th>
                 <th>Роль</th>
                 <th>Отдел</th>
                 <th>Компания</th>
@@ -3610,6 +3757,7 @@ export default function App() {
                 return (
                   <tr key={u.id}>
                     <td>{u.email}</td>
+                    <td>{u.phone?.trim() || "—"}</td>
                     <td>{u.role ?? "—"}</td>
                     <td>{u.department ?? "—"}</td>
                     <td>{adminOrgName || "—"}</td>
@@ -4113,12 +4261,13 @@ export default function App() {
                     </button>
                   ))
                 : orderedDMs.map((d) => {
+                    const isSelfNotesDm = d.userIds.length === 1 && d.userIds[0] === userId;
                     const otherId = d.userIds.find((id) => id !== userId) ?? d.userIds[0] ?? "";
                     const u = users.find((x) => x.id === otherId);
                     const p = otherId ? presenceByUserId[otherId] : undefined;
                     const st = p?.status ?? u?.status ?? "unknown";
-                    const dot = st === "online" ? "●" : st === "away" ? "◐" : st === "dnd" ? "◍" : "○";
-                    const title = displayUserNameForSidebar(u, otherId || d.id);
+                    const dot = isSelfNotesDm ? "⭐" : st === "online" ? "●" : st === "away" ? "◐" : st === "dnd" ? "◍" : "○";
+                    const title = isSelfNotesDm ? "Избранное" : displayUserNameForSidebar(u, otherId || d.id);
                     return (
                       <button
                         key={d.id}
@@ -4214,7 +4363,6 @@ export default function App() {
                     className="moreMenuWideBtn"
                     onClick={() => {
                       setShowCompanyCabinet(true);
-                      setCompanyTab("employees");
                       void loadUsers();
                       setMoreMenuOpen(false);
                     }}
@@ -4245,6 +4393,18 @@ export default function App() {
                     disabled={!token}
                   >
                     Сохранённые сообщения
+                  </button>
+                  <button
+                    type="button"
+                    className="moreMenuWideBtn subtle"
+                    onClick={() => {
+                      void openSavedVaultChat();
+                      setMoreMenuOpen(false);
+                      setMobileSidebarOpen(false);
+                    }}
+                    disabled={!token || !userId}
+                  >
+                    Избранное — заметки для себя
                   </button>
                   <button
                     type="button"
@@ -4335,12 +4495,32 @@ export default function App() {
         ) : null}
 
         {chatMenu ? (
-          <div className="chatMenu" style={{ top: chatMenu.y, left: chatMenu.x }} role="menu">
+          <div className="chatMenu chatMenu--wide" style={{ top: chatMenu.y, left: chatMenu.x }} role="menu">
             <button type="button" className="msgMenuItem" onClick={() => { togglePin(chatMenu.key); setChatMenu(null); }}>
               {isPinned(chatMenu.key) ? "Открепить чат" : "Закрепить чат"}
             </button>
-            <button type="button" className="msgMenuItem" onClick={() => { toggleMute(chatMenu.key); setChatMenu(null); }}>
-              {isMuted(chatMenu.key) ? "Включить уведомления" : "Выключить уведомления"}
+            <div className="msgMenuSep" />
+            <div className="msgMenuSub">🔕 Без уведомлений</div>
+            <button type="button" className="msgMenuItem" onClick={() => { setChatMute(chatMenu.key, 1); setChatMenu(null); }}>
+              1 ч
+            </button>
+            <button type="button" className="msgMenuItem" onClick={() => { setChatMute(chatMenu.key, 2); setChatMenu(null); }}>
+              2 ч
+            </button>
+            <button type="button" className="msgMenuItem" onClick={() => { setChatMute(chatMenu.key, 4); setChatMenu(null); }}>
+              4 ч
+            </button>
+            <button type="button" className="msgMenuItem" onClick={() => { setChatMute(chatMenu.key, 8); setChatMenu(null); }}>
+              8 ч
+            </button>
+            <button type="button" className="msgMenuItem" onClick={() => { setChatMute(chatMenu.key, 24); setChatMenu(null); }}>
+              24 ч
+            </button>
+            <button type="button" className="msgMenuItem" onClick={() => { setChatMute(chatMenu.key, "forever"); setChatMenu(null); }}>
+              Навсегда
+            </button>
+            <button type="button" className="msgMenuItem" onClick={() => { setChatMute(chatMenu.key, "off"); setChatMenu(null); }}>
+              Включить уведомления
             </button>
             <button type="button" className="msgMenuItem" onClick={() => { toggleArchive(chatMenu.key); setChatMenu(null); }}>
               {isArchived(chatMenu.key) ? "Вернуть из архива" : "В архив"}
@@ -4563,10 +4743,16 @@ export default function App() {
             >
               <div style={{ opacity: 0.85, marginBottom: 6 }}>Совпадений: {threadSearchHits.length}</div>
               {threadSearchHits.map((hm) => (
-                <div key={hm.id} style={{ marginBottom: 6 }}>
+                <button
+                  key={hm.id}
+                  type="button"
+                  className="threadSearchHitBtn"
+                  onClick={() => scrollToMessageInChat(hm.id)}
+                >
                   <span style={{ opacity: 0.75 }}>{new Date(hm.createdAt).toLocaleString()}</span> · {messageAuthorLabel(hm)} —{" "}
                   {(hm.content || "").slice(0, 120)}
-                </div>
+                  {(hm.content || "").length > 120 ? "…" : ""}
+                </button>
               ))}
             </div>
           ) : null}
@@ -4632,12 +4818,15 @@ export default function App() {
                   <div style={{ opacity: 0.85, marginBottom: 6 }}>Личка</div>
                   <div className="list">
                     {directChats.map((d) => {
+                      const isSelfNotesDm = d.userIds.length === 1 && d.userIds[0] === userId;
                       const otherId = d.userIds.find((id) => id !== userId) ?? d.userIds[0] ?? "";
                       const u = users.find((x) => x.id === otherId);
                       const p = otherId ? presenceByUserId[otherId] : undefined;
                       const st = p?.status ?? u?.status ?? "unknown";
-                      const dot = st === "online" ? "●" : st === "away" ? "◐" : st === "dnd" ? "◍" : "○";
-                      const title = `Личка ${dot} ${displayUserNameForSidebar(u, otherId || d.id)}`;
+                      const dot = isSelfNotesDm ? "⭐" : st === "online" ? "●" : st === "away" ? "◐" : st === "dnd" ? "◍" : "○";
+                      const title = isSelfNotesDm
+                        ? `Избранное ${dot}`
+                        : `Личка ${dot} ${displayUserNameForSidebar(u, otherId || d.id)}`;
                       return (
                         <button key={d.id} onClick={() => void forwardSelectedTo({ directChatId: d.id })} disabled={!token}>
                           {title}
@@ -4672,421 +4861,174 @@ export default function App() {
                   Закрыть
                 </button>
               </div>
-              <div className="companyTabs">
-                <button className={companyTab === "employees" ? "active" : ""} onClick={() => setCompanyTab("employees")}>
-                  Сотрудники
-                </button>
-                <button
-                  className={companyTab === "invites" ? "active" : ""}
-                  onClick={() => {
-                    setCompanyTab("invites");
-                    setInviteDbPage(0);
-                    void loadOrganizationInvites();
-                  }}
-                >
-                  Инвайты
-                </button>
-                <button className={companyTab === "settings" ? "active" : ""} onClick={() => setCompanyTab("settings")}>
-                  Настройки
-                </button>
-                {isCompanyAdmin ? (
-                  <button className={companyTab === "admin" ? "active" : ""} onClick={() => setCompanyTab("admin")}>
-                    Админ
-                  </button>
-                ) : null}
-              </div>
+              <div className="companyModalSubhead">Сотрудники</div>
               {companyActionMsg ? <div className="empty">{companyActionMsg}</div> : null}
 
-              {companyTab === "employees" ? (
-                <div className="companyBody">
-                  {isCompanyAdmin ? (
-                    <div
-                      className="row"
-                      style={{
-                        marginBottom: 12,
-                        padding: "12px 14px",
-                        borderRadius: 12,
-                        background: "rgba(100, 160, 255, 0.1)",
-                        border: "1px solid rgba(100, 160, 255, 0.22)",
-                        flexWrap: "wrap",
-                        gap: 10,
-                        alignItems: "center",
+              <div className="companyBody">
+                {isCompanyAdmin ? (
+                  <div
+                    className="row"
+                    style={{
+                      marginBottom: 12,
+                      padding: "12px 14px",
+                      borderRadius: 12,
+                      background: "rgba(100, 160, 255, 0.1)",
+                      border: "1px solid rgba(100, 160, 255, 0.22)",
+                      flexWrap: "wrap",
+                      gap: 10,
+                      alignItems: "center",
+                    }}
+                  >
+                    <div style={{ flex: 1, minWidth: 200, fontSize: 13, lineHeight: 1.4 }}>
+                      <strong>Админ: пользователи</strong> — отдельная страница: таблица, создание учётной записи, сброс пароля, деактивация.
+                    </div>
+                    <button
+                      type="button"
+                      className="chip"
+                      onClick={() => {
+                        setShowCompanyCabinet(false);
+                        openAdminUsersPanel();
                       }}
                     >
-                      <div style={{ flex: 1, minWidth: 200, fontSize: 13, lineHeight: 1.4 }}>
-                        <strong>Админ: пользователи</strong> — отдельная страница: таблица, создание учётной записи, сброс пароля, деактивация.
+                      Открыть страницу
+                    </button>
+                  </div>
+                ) : (
+                  <p style={{ fontSize: 12, opacity: 0.75, margin: "0 0 12px" }}>
+                    Раздел «Админ: пользователи» доступен только ролям <strong>owner</strong> и <strong>admin</strong>. Ваша роль:{" "}
+                    <strong>{viewerRole || "—"}</strong>.
+                  </p>
+                )}
+                <div className="row">
+                  <input
+                    value={companyUserQuery}
+                    onChange={(e) => setCompanyUserQuery(e.target.value)}
+                    placeholder="Поиск сотрудника"
+                  />
+                  <select
+                    value={companyRoleFilter}
+                    onChange={(e) => setCompanyRoleFilter(e.target.value as "all" | "owner" | "admin" | "manager" | "employee" | "guest")}
+                    style={{
+                      boxSizing: "border-box",
+                      padding: "8px 10px",
+                      borderRadius: 10,
+                      border: "1px solid rgba(255,255,255,0.12)",
+                      background: "rgba(0,0,0,0.25)",
+                      color: "inherit",
+                    }}
+                  >
+                    <option value="all">all roles</option>
+                    <option value="owner">owner</option>
+                    <option value="admin">admin</option>
+                    <option value="manager">manager</option>
+                    <option value="employee">employee</option>
+                    <option value="guest">guest</option>
+                  </select>
+                  <button onClick={() => void loadUsers()} disabled={!token || !organizationId}>
+                    Обновить
+                  </button>
+                </div>
+                <div className="list companyList">
+                  {companyUsersFiltered.map((u) => (
+                    <div key={`cab-modal-${u.id}`} className="companyRow">
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ fontSize: 13, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{u.email}</div>
+                        {u.phone?.trim() ? (
+                          <div style={{ fontSize: 11, opacity: 0.75 }}>тел.: {u.phone.trim()}</div>
+                        ) : null}
+                        <div style={{ fontSize: 11, opacity: 0.7 }}>
+                          role: {u.role ?? "employee"} · dept: {u.department || "—"} · status: {u.status ?? "unknown"}
+                        </div>
                       </div>
-                      <button
-                        type="button"
-                        className="chip"
-                        onClick={() => {
-                          setShowCompanyCabinet(false);
-                          openAdminUsersPanel();
+                      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                        <select
+                          value={u.role ?? "employee"}
+                          onChange={(e) => void setCompanyUserRole(u.id, e.target.value as "owner" | "admin" | "manager" | "employee" | "guest")}
+                          disabled={!token || !organizationId || u.id === userId}
+                          style={{
+                            boxSizing: "border-box",
+                            padding: "6px 8px",
+                            borderRadius: 10,
+                            border: "1px solid rgba(255,255,255,0.12)",
+                            background: "rgba(0,0,0,0.25)",
+                            color: "inherit",
+                          }}
+                          title={u.id === userId ? "Свою роль менять нельзя" : "Сменить роль"}
+                        >
+                          <option value="owner">owner</option>
+                          <option value="admin">admin</option>
+                          <option value="manager">manager</option>
+                          <option value="employee">employee</option>
+                          <option value="guest">guest</option>
+                        </select>
+                        <button
+                          className="chip"
+                          onClick={() => void deactivateCompanyUser(u.id)}
+                          disabled={!token || u.id === userId}
+                          title={u.id === userId ? "Себя деактивировать нельзя" : "Деактивировать"}
+                        >
+                          Удалить
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                {isCompanyAdmin ? (
+                  <>
+                    <div className="title" style={{ marginTop: 16 }}>
+                      Администрирование
+                    </div>
+                    <div className="title" style={{ marginTop: 4, fontSize: 13 }}>
+                      Добавить сотрудника (по одному)
+                    </div>
+                    <input value={adminCreateEmail} onChange={(e) => setAdminCreateEmail(e.target.value)} placeholder="email сотрудника" />
+                    <input value={adminCreateFullName} onChange={(e) => setAdminCreateFullName(e.target.value)} placeholder="ФИО" />
+                    <div className="row">
+                      <input
+                        value={adminCreatePassword}
+                        onChange={(e) => setAdminCreatePassword(e.target.value)}
+                        placeholder="Временный пароль"
+                        type="password"
+                      />
+                      <select
+                        value={adminCreateRole}
+                        onChange={(e) => setAdminCreateRole(e.target.value as "owner" | "admin" | "manager" | "employee" | "guest")}
+                        style={{
+                          boxSizing: "border-box",
+                          padding: "8px 10px",
+                          borderRadius: 10,
+                          border: "1px solid rgba(255,255,255,0.12)",
+                          background: "rgba(0,0,0,0.25)",
+                          color: "inherit",
                         }}
                       >
-                        Открыть страницу
+                        <option value="owner">owner</option>
+                        <option value="admin">admin</option>
+                        <option value="manager">manager</option>
+                        <option value="employee">employee</option>
+                        <option value="guest">guest</option>
+                      </select>
+                      <button onClick={() => void createCompanyUserSingle()} disabled={!token || !organizationId}>
+                        Создать
                       </button>
                     </div>
-                  ) : (
-                    <p style={{ fontSize: 12, opacity: 0.75, margin: "0 0 12px" }}>
-                      Раздел «Админ: пользователи» доступен только ролям <strong>owner</strong> и <strong>admin</strong>. Ваша роль:{" "}
-                      <strong>{viewerRole || "—"}</strong>.
-                    </p>
-                  )}
-                  <div className="row">
+                    <div className="title" style={{ marginTop: 8 }}>Массовый импорт из Excel/CSV</div>
+                    <div className="empty" style={{ textAlign: "left" }}>
+                      Колонки: <code>email</code>, <code>fio</code> (или <code>fullName</code>), <code>password</code>, <code>role</code> (опционально)
+                    </div>
                     <input
-                      value={companyUserQuery}
-                      onChange={(e) => setCompanyUserQuery(e.target.value)}
-                      placeholder="Поиск сотрудника"
-                    />
-                    <select
-                      value={companyRoleFilter}
-                      onChange={(e) => setCompanyRoleFilter(e.target.value as "all" | "owner" | "admin" | "manager" | "employee" | "guest")}
-                      style={{
-                        boxSizing: "border-box",
-                        padding: "8px 10px",
-                        borderRadius: 10,
-                        border: "1px solid rgba(255,255,255,0.12)",
-                        background: "rgba(0,0,0,0.25)",
-                        color: "inherit",
-                      }}
-                    >
-                      <option value="all">all roles</option>
-                      <option value="owner">owner</option>
-                      <option value="admin">admin</option>
-                      <option value="manager">manager</option>
-                      <option value="employee">employee</option>
-                      <option value="guest">guest</option>
-                    </select>
-                    <button onClick={() => void loadUsers()} disabled={!token || !organizationId}>
-                      Обновить
-                    </button>
-                  </div>
-                  <div className="list companyList">
-                    {companyUsersFiltered.map((u) => (
-                      <div key={`cab-modal-${u.id}`} className="companyRow">
-                        <div style={{ minWidth: 0 }}>
-                          <div style={{ fontSize: 13, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{u.email}</div>
-                          <div style={{ fontSize: 11, opacity: 0.7 }}>
-                            role: {u.role ?? "employee"} · dept: {u.department || "—"} · status: {u.status ?? "unknown"}
-                          </div>
-                        </div>
-                        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                          <select
-                            value={u.role ?? "employee"}
-                            onChange={(e) => void setCompanyUserRole(u.id, e.target.value as "owner" | "admin" | "manager" | "employee" | "guest")}
-                            disabled={!token || !organizationId || u.id === userId}
-                            style={{
-                              boxSizing: "border-box",
-                              padding: "6px 8px",
-                              borderRadius: 10,
-                              border: "1px solid rgba(255,255,255,0.12)",
-                              background: "rgba(0,0,0,0.25)",
-                              color: "inherit",
-                            }}
-                            title={u.id === userId ? "Свою роль менять нельзя" : "Сменить роль"}
-                          >
-                            <option value="owner">owner</option>
-                            <option value="admin">admin</option>
-                            <option value="manager">manager</option>
-                            <option value="employee">employee</option>
-                            <option value="guest">guest</option>
-                          </select>
-                          <button
-                            className="chip"
-                            onClick={() => void deactivateCompanyUser(u.id)}
-                            disabled={!token || u.id === userId}
-                            title={u.id === userId ? "Себя деактивировать нельзя" : "Деактивировать"}
-                          >
-                            Удалить
-                          </button>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              ) : null}
-
-              {companyTab === "invites" ? (
-                <div className="companyBody">
-                  <label>Email сотрудника</label>
-                  <input value={inviteEmail} onChange={(e) => setInviteEmail(e.target.value)} placeholder="user@company.com" />
-                  <div className="row">
-                    <select
-                      value={inviteRole}
-                      onChange={(e) => setInviteRole(e.target.value as "owner" | "admin" | "manager" | "employee" | "guest")}
-                      style={{
-                        width: "100%",
-                        boxSizing: "border-box",
-                        padding: "8px 10px",
-                        borderRadius: 10,
-                        border: "1px solid rgba(255,255,255,0.12)",
-                        background: "rgba(0,0,0,0.25)",
-                        color: "inherit",
-                      }}
-                    >
-                      <option value="owner">owner</option>
-                      <option value="admin">admin</option>
-                      <option value="manager">manager</option>
-                      <option value="employee">employee</option>
-                      <option value="guest">guest</option>
-                    </select>
-                    <input value={inviteDepartment} onChange={(e) => setInviteDepartment(e.target.value)} placeholder="Отдел (опционально)" />
-                    <button onClick={() => void inviteCompanyUser()} disabled={!token || !organizationId || !inviteEmail.trim()}>
-                      Добавить
-                    </button>
-                  </div>
-                  <div className="title" style={{ marginTop: 8 }}>Последние инвайты (эта сессия)</div>
-                  <div className="list companyList">
-                    {inviteHistory.length === 0 ? (
-                      <div className="empty">Пока пусто</div>
-                    ) : (
-                      inviteHistory.map((inv) => (
-                        <div key={`inv-modal-${inv.id}`} className="companyRow">
-                          <div style={{ minWidth: 0 }}>
-                            <div style={{ fontSize: 13, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{inv.email}</div>
-                            <div style={{ fontSize: 11, opacity: 0.7 }}>role: {inv.role}</div>
-                          </div>
-                          <button className="chip" onClick={() => void revokeCompanyInvite(inv.id)} disabled={!token || !organizationId}>
-                            Отозвать
-                          </button>
-                        </div>
-                      ))
-                    )}
-                  </div>
-                  <div className="row">
-                    <div className="title" style={{ margin: 0 }}>Инвайты из базы</div>
-                    <button onClick={() => void loadOrganizationInvites()} disabled={!token || !organizationId}>
-                      Обновить
-                    </button>
-                  </div>
-                  <div className="row">
-                    <input
-                      value={inviteDbQuery}
-                      onChange={(e) => setInviteDbQuery(e.target.value)}
-                      placeholder="Поиск по email"
-                    />
-                    <select
-                      value={inviteDbRoleFilter}
-                      onChange={(e) => setInviteDbRoleFilter(e.target.value as "all" | "owner" | "admin" | "manager" | "employee" | "guest")}
-                      style={{
-                        boxSizing: "border-box",
-                        padding: "8px 10px",
-                        borderRadius: 10,
-                        border: "1px solid rgba(255,255,255,0.12)",
-                        background: "rgba(0,0,0,0.25)",
-                        color: "inherit",
-                      }}
-                    >
-                      <option value="all">all roles</option>
-                      <option value="owner">owner</option>
-                      <option value="admin">admin</option>
-                      <option value="manager">manager</option>
-                      <option value="employee">employee</option>
-                      <option value="guest">guest</option>
-                    </select>
-                    <select
-                      value={inviteDbStatusFilter}
-                      onChange={(e) => setInviteDbStatusFilter(e.target.value as "all" | "active" | "accepted" | "revoked" | "expired")}
-                      style={{
-                        boxSizing: "border-box",
-                        padding: "8px 10px",
-                        borderRadius: 10,
-                        border: "1px solid rgba(255,255,255,0.12)",
-                        background: "rgba(0,0,0,0.25)",
-                        color: "inherit",
-                      }}
-                    >
-                      <option value="all">all status</option>
-                      <option value="active">active</option>
-                      <option value="accepted">accepted</option>
-                      <option value="revoked">revoked</option>
-                      <option value="expired">expired</option>
-                    </select>
-                    <button
-                      onClick={() => {
-                        setInviteDbPage(0);
-                        void loadOrganizationInvites(0, inviteDbPageSize);
-                      }}
-                      disabled={!token || !organizationId}
-                    >
-                      Применить
-                    </button>
-                  </div>
-                  <div className="row">
-                    <select
-                      value={String(inviteDbPageSize)}
+                      type="file"
+                      accept=".xlsx,.xls,.csv"
                       onChange={(e) => {
-                        const next = Number(e.target.value);
-                        setInviteDbPageSize(next);
-                        setInviteDbPage(0);
-                        void loadOrganizationInvites(0, next);
+                        const file = e.target.files?.[0];
+                        if (file) void importCompanyUsersFromExcel(file);
+                        e.currentTarget.value = "";
                       }}
-                      style={{
-                        boxSizing: "border-box",
-                        padding: "8px 10px",
-                        borderRadius: 10,
-                        border: "1px solid rgba(255,255,255,0.12)",
-                        background: "rgba(0,0,0,0.25)",
-                        color: "inherit",
-                      }}
-                    >
-                      <option value="10">10 / page</option>
-                      <option value="20">20 / page</option>
-                      <option value="50">50 / page</option>
-                    </select>
-                    <button
-                      onClick={() => {
-                        const next = Math.max(0, inviteDbPage - 1);
-                        setInviteDbPage(next);
-                        void loadOrganizationInvites(next, inviteDbPageSize);
-                      }}
-                      disabled={!token || !organizationId || inviteDbPage === 0}
-                    >
-                      ← Prev
-                    </button>
-                    <button
-                      onClick={() => {
-                        const next = inviteDbPage + 1;
-                        setInviteDbPage(next);
-                        void loadOrganizationInvites(next, inviteDbPageSize);
-                      }}
-                      disabled={!token || !organizationId || organizationInvites.length < inviteDbPageSize}
-                    >
-                      Next →
-                    </button>
-                    <button onClick={exportOrganizationInvitesCsv} disabled={!organizationInvites.length}>
-                      Export CSV
-                    </button>
-                    <div className="empty">Page: {inviteDbPage + 1}</div>
-                  </div>
-                  <div className="list companyList">
-                    {organizationInvites.length === 0 ? (
-                      <div className="empty">Пока пусто</div>
-                    ) : (
-                      organizationInvites.map((inv) => {
-                        const now = Date.now();
-                        const isAccepted = !!inv.acceptedAt;
-                        const isRevoked = !!inv.revokedAt;
-                        const isExpired = !isAccepted && !isRevoked && !!inv.expiresAt && new Date(inv.expiresAt).getTime() < now;
-                        const status = isAccepted ? "accepted" : isRevoked ? "revoked" : isExpired ? "expired" : "active";
-                        return (
-                          <div key={`inv-db-${inv.id}`} className="companyRow">
-                            <div style={{ minWidth: 0 }}>
-                              <div style={{ fontSize: 13, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                                {inv.email}
-                              </div>
-                              <div style={{ fontSize: 11, opacity: 0.7 }}>
-                                role: {inv.role} · dept: {inv.department || "—"} · status: {status}
-                              </div>
-                            </div>
-                            <button
-                              className="chip"
-                              onClick={() => void revokeCompanyInvite(inv.id)}
-                              disabled={!token || !organizationId || status !== "active"}
-                              title={status !== "active" ? "Отозвать можно только active инвайт" : "Отозвать инвайт"}
-                            >
-                              Отозвать
-                            </button>
-                          </div>
-                        );
-                      })
-                    )}
-                  </div>
-                </div>
-              ) : null}
-
-              {companyTab === "settings" ? (
-                <div className="companyBody">
-                  <label>Название компании</label>
-                  <input value={orgNameInput} onChange={(e) => setOrgNameInput(e.target.value)} placeholder="sf-communication" />
-                  <label>Logo URL</label>
-                  <input value={orgLogoInput} onChange={(e) => setOrgLogoInput(e.target.value)} placeholder="https://..." />
-                  <div className="row">
-                    <div style={{ flex: 1 }}>
-                      <label>Retention days</label>
-                      <input value={orgRetentionDaysInput} onChange={(e) => setOrgRetentionDaysInput(e.target.value)} placeholder="30" />
-                    </div>
-                    <div style={{ flex: 1 }}>
-                      <label>Max file size MB</label>
-                      <input value={orgMaxFileSizeMbInput} onChange={(e) => setOrgMaxFileSizeMbInput(e.target.value)} placeholder="25" />
-                    </div>
-                  </div>
-                  <div className="empty" style={{ textAlign: "left" }}>
-                    <div>Organization ID: {displayOrganizationId}</div>
-                    <div style={{ marginTop: 6 }}>Текущий пользователь: {email || "—"}</div>
-                  </div>
-                  <div className="row">
-                    <button onClick={() => void saveCompanySettings()} disabled={!token || !organizationId}>
-                      Сохранить настройки
-                    </button>
-                    <button onClick={() => void loadUsers()} disabled={!token || !organizationId}>
-                      Синхронизировать сотрудников
-                    </button>
-                    <button
-                      onClick={() => {
-                        setCompanyUserQuery("");
-                        setCompanyRoleFilter("all");
-                        setCompanyActionMsg("Фильтры сброшены");
-                      }}
-                    >
-                      Сбросить фильтры
-                    </button>
-                  </div>
-                  <div className="empty" style={{ marginTop: 8 }}>
-                    Для смены роли существующего сотрудника потребуется отдельная backend-мутация.
-                  </div>
-                </div>
-              ) : null}
-              {companyTab === "admin" ? (
-                <div className="companyBody">
-                  <div className="title">Добавить сотрудника (по одному)</div>
-                  <input value={adminCreateEmail} onChange={(e) => setAdminCreateEmail(e.target.value)} placeholder="email сотрудника" />
-                  <input value={adminCreateFullName} onChange={(e) => setAdminCreateFullName(e.target.value)} placeholder="ФИО" />
-                  <div className="row">
-                    <input
-                      value={adminCreatePassword}
-                      onChange={(e) => setAdminCreatePassword(e.target.value)}
-                      placeholder="Временный пароль"
-                      type="password"
                     />
-                    <select
-                      value={adminCreateRole}
-                      onChange={(e) => setAdminCreateRole(e.target.value as "owner" | "admin" | "manager" | "employee" | "guest")}
-                      style={{
-                        boxSizing: "border-box",
-                        padding: "8px 10px",
-                        borderRadius: 10,
-                        border: "1px solid rgba(255,255,255,0.12)",
-                        background: "rgba(0,0,0,0.25)",
-                        color: "inherit",
-                      }}
-                    >
-                      <option value="owner">owner</option>
-                      <option value="admin">admin</option>
-                      <option value="manager">manager</option>
-                      <option value="employee">employee</option>
-                      <option value="guest">guest</option>
-                    </select>
-                    <button onClick={() => void createCompanyUserSingle()} disabled={!token || !organizationId}>
-                      Создать
-                    </button>
-                  </div>
-                  <div className="title" style={{ marginTop: 8 }}>Массовый импорт из Excel/CSV</div>
-                  <div className="empty" style={{ textAlign: "left" }}>
-                    Колонки: <code>email</code>, <code>fio</code> (или <code>fullName</code>), <code>password</code>, <code>role</code> (опционально)
-                  </div>
-                  <input
-                    type="file"
-                    accept=".xlsx,.xls,.csv"
-                    onChange={(e) => {
-                      const file = e.target.files?.[0];
-                      if (file) void importCompanyUsersFromExcel(file);
-                      e.currentTarget.value = "";
-                    }}
-                  />
-                </div>
-              ) : null}
+                  </>
+                ) : null}
+              </div>
             </section>
           </div>
         ) : null}
@@ -5104,15 +5046,20 @@ export default function App() {
               <div className="companyBody">
                 <div className="profileHeaderRow">
                   <div className="profileAvatarPreview">
-                    {profileAvatarUrl ? <img src={profileAvatarUrl} alt="avatar" /> : <span>{initials(myProfileEmail || email)}</span>}
+                    {profileAvatarUrl ? <img src={profileAvatarUrl} alt="avatar" /> : <span>{initials(myProfileEmail || loginIdentifier)}</span>}
                   </div>
                   <div style={{ minWidth: 0 }}>
                     <div style={{ fontWeight: 700 }}>
-                      {[profileFirstName, profileMiddleName, profileLastName].filter(Boolean).join(" ").trim() || myProfileEmail || email}
+                      {[profileFirstName, profileMiddleName, profileLastName].filter(Boolean).join(" ").trim() || myProfileEmail || loginIdentifier}
                     </div>
                     <div className="empty" style={{ fontSize: 12, opacity: 0.85 }}>
-                      {myProfileEmail || email}
+                      {myProfileEmail || loginIdentifier}
                     </div>
+                    {profilePhone.trim() ? (
+                      <div className="empty" style={{ fontSize: 12, opacity: 0.85 }}>
+                        Тел.: {profilePhone.trim()}
+                      </div>
+                    ) : null}
                     <div className="empty">
                       Уровень доступа: <b>{viewerRole || "unknown"}</b>
                     </div>
@@ -5122,6 +5069,14 @@ export default function App() {
                   </div>
                 </div>
 
+                <label>Телефон</label>
+                <input
+                  value={profilePhone}
+                  onChange={(e) => setProfilePhone(e.target.value)}
+                  placeholder="+7…"
+                  inputMode="tel"
+                  autoComplete="tel"
+                />
                 <label>Имя</label>
                 <input value={profileFirstName} onChange={(e) => setProfileFirstName(e.target.value)} placeholder="Имя" />
                 <label>Отчество</label>
@@ -5143,29 +5098,23 @@ export default function App() {
                     e.currentTarget.value = "";
                   }}
                 />
-                <div className="row">
-                  <div style={{ flex: 1 }}>
-                    <label>Должность</label>
-                    <input
-                      value={profileTitle}
-                      onChange={(e) => setProfileTitle(e.target.value)}
-                      placeholder="Должность"
-                      disabled={!canEditOrgFields}
-                    />
+                {(profileTitle.trim() || profileDepartment.trim()) ? (
+                  <div className="empty" style={{ textAlign: "left", marginBottom: 8 }}>
+                    <div>
+                      <strong>Должность:</strong> {profileTitle.trim() || "—"}
+                    </div>
+                    <div>
+                      <strong>Отдел:</strong> {profileDepartment.trim() || "—"}
+                    </div>
+                    <div style={{ fontSize: 11, opacity: 0.75, marginTop: 4 }}>
+                      Назначаются администратором организации (в кабинете компании).
+                    </div>
                   </div>
-                  <div style={{ flex: 1 }}>
-                    <label>Отдел</label>
-                    <input
-                      value={profileDepartment}
-                      onChange={(e) => setProfileDepartment(e.target.value)}
-                      placeholder="Отдел"
-                      disabled={!canEditOrgFields}
-                    />
+                ) : (
+                  <div className="empty" style={{ fontSize: 12, opacity: 0.8 }}>
+                    Должность и отдел назначает администратор компании.
                   </div>
-                </div>
-                {!canEditOrgFields ? (
-                  <div className="empty">Изменение отдела/должности доступно только для manager/admin/owner.</div>
-                ) : null}
+                )}
                 <div className="row">
                   <button onClick={() => void saveMyProfile()} disabled={!token || !myProfileId}>
                     Сохранить профиль
@@ -5241,7 +5190,8 @@ export default function App() {
             return (
             <div
               key={m.id}
-              className={`msg ${m.author?.email === email ? "mine" : "other"} ${showMeta ? "" : "compact"} ${forwardSelecting ? "selecting" : ""} ${forwardSelectedIds.has(m.id) ? "selected" : ""}`}
+              data-message-id={m.id}
+              className={`msg ${m.author?.email === myAccountEmailForMessages ? "mine" : "other"} ${showMeta ? "" : "compact"} ${forwardSelecting ? "selecting" : ""} ${forwardSelectedIds.has(m.id) ? "selected" : ""}`}
             >
               {showDay ? (
                 <div className="daySep">
@@ -5249,10 +5199,10 @@ export default function App() {
                 </div>
               ) : null}
               <div className="actions">
-                <button className="chip" onClick={() => void editMessageInChat(m.id)} disabled={!token || m.author?.email !== email}>
+                <button className="chip" onClick={() => void editMessageInChat(m.id)} disabled={!token || m.author?.email !== myAccountEmailForMessages}>
                   ✎
                 </button>
-                <button className="chip" onClick={() => void deleteMessageInChat(m.id)} disabled={!token || m.author?.email !== email}>
+                <button className="chip" onClick={() => void deleteMessageInChat(m.id)} disabled={!token || m.author?.email !== myAccountEmailForMessages}>
                   🗑
                 </button>
                 {forwardSelecting ? (
@@ -5329,8 +5279,16 @@ export default function App() {
                     toggleForwardSelected(m.id);
                     return;
                   }
+                  const el = e.target as HTMLElement;
                   if (
-                    m.author?.email === email &&
+                    el.closest(
+                      "audio, video, a, button, input, textarea, select, label, .voiceMsgBlock, .chatImageWrap, .fileAttachmentRow",
+                    )
+                  ) {
+                    return;
+                  }
+                  if (
+                    m.author?.email === myAccountEmailForMessages &&
                     m._sendState !== "failed" &&
                     m._sendState !== "sending" &&
                     !String(m.id).startsWith("tmp-")
@@ -5351,7 +5309,7 @@ export default function App() {
                   setMsgMenu({ x, y, messageId: m.id });
                 }}
               >
-                {(mode === "groups" || mode === "channels") && showMeta && m.author?.email !== email ? (
+                {(mode === "groups" || mode === "channels") && showMeta && m.author?.email !== myAccountEmailForMessages ? (
                   <div className="bubbleAuthor">{messageAuthorLabel(m)}</div>
                 ) : null}
                 {m.type === "file" || m.type === "voice" ? (
@@ -5371,7 +5329,7 @@ export default function App() {
                       </div>
                     ) : m.file.downloadUrl ? (
                       m.type === "voice" ? (
-                        <div className="voiceMsgBlock">
+                        <div className="voiceMsgBlock" onClick={(e) => e.stopPropagation()} onPointerDown={(e) => e.stopPropagation()}>
                           <div className="voiceMsgRow">
                             <audio
                               key={`${m.id}-audio`}
@@ -5395,7 +5353,7 @@ export default function App() {
                           </div>
                         </div>
                       ) : (m.file.mimeType || "").startsWith("image/") ? (
-                        <div>
+                        <div className="chatImageWrap" onClick={(e) => e.stopPropagation()} onPointerDown={(e) => e.stopPropagation()}>
                           <div className="fileLineWithBadge">
                             <span className="fileFormatBadge">{fileFormatLabel(m.file.originalName, m.file.mimeType)}</span>
                             <span style={{ fontSize: 12, opacity: 0.9 }}>Изображение</span>
@@ -5415,7 +5373,11 @@ export default function App() {
                           </a>
                         </div>
                       ) : (
-                        <div className="fileAttachmentRow">
+                        <div
+                          className="fileAttachmentRow"
+                          onClick={(e) => e.stopPropagation()}
+                          onPointerDown={(e) => e.stopPropagation()}
+                        >
                           <span className="fileFormatBadge" title={m.file.mimeType}>
                             {fileFormatLabel(m.file.originalName, m.file.mimeType)}
                           </span>
@@ -5458,7 +5420,7 @@ export default function App() {
                   m.content ? m.content : "(удалено)"
                 )}
                 <span className="bubbleTime">
-                  {m.author?.email === email ? (
+                  {m.author?.email === myAccountEmailForMessages ? (
                     m._sendState === "failed" ? (
                       <span className="msgSendFail" title="Не удалось отправить">
                         !
@@ -5467,7 +5429,7 @@ export default function App() {
                       <span className="msgTick msgTick--pending" title="Отправка">
                         …
                       </span>
-                    ) : messageReadByOthers(m, email, userId, peerReadMapForCurrentChat()) ? (
+                    ) : messageReadByOthers(m, selfAuthorEmail || myProfileEmail, userId, peerReadMapForCurrentChat()) ? (
                       <span className="msgTick msgTick--read" title="Прочитано">
                         ✓✓
                       </span>
@@ -5493,10 +5455,10 @@ export default function App() {
                     {savedIds.has(m.id) ? "Убрать из сохранённых" : "Сохранить"}
                   </button>
                   <div className="msgMenuSep" />
-                  <button className="msgMenuItem" onClick={() => void editMessageInChat(m.id)} disabled={m.author?.email !== email}>
+                  <button className="msgMenuItem" onClick={() => void editMessageInChat(m.id)} disabled={m.author?.email !== myAccountEmailForMessages}>
                     Редактировать
                   </button>
-                  <button className="msgMenuItem danger" onClick={() => void deleteMessageInChat(m.id)} disabled={m.author?.email !== email}>
+                  <button className="msgMenuItem danger" onClick={() => void deleteMessageInChat(m.id)} disabled={m.author?.email !== myAccountEmailForMessages}>
                     Удалить
                   </button>
                 </div>
@@ -5666,6 +5628,14 @@ export default function App() {
         {webrtcUi ? (
           <div className="webrtcOverlay" role="dialog" aria-label="Звонок">
             <div className="webrtcPanel">
+              <div className="webrtcHint">
+                Звонок 1:1 (WebRTC). До ~100 человек в одной комнате нужен отдельный сервер конференций (SFU), не этот пиринг.
+              </div>
+              {webrtcPeerHandRaised ? (
+                <div className="webrtcHandBanner" role="status">
+                  Собеседник поднял руку ✋
+                </div>
+              ) : null}
               <div className="webrtcVideos">
                 <video
                   ref={(el) => {
@@ -5685,9 +5655,45 @@ export default function App() {
                   className="webrtcLocal"
                 />
               </div>
-              <button type="button" className="chip" onClick={() => webrtcUi.hangup()}>
-                Завершить
-              </button>
+              <div className="webrtcToolbar">
+                <button type="button" className={`webrtcToolBtn ${webrtcMicOn ? "webrtcToolBtn--on" : "webrtcToolBtn--off"}`} onClick={toggleWebrtcMic} title="Микрофон">
+                  {webrtcMicOn ? "🎤 Мик" : "🎤 Выкл"}
+                </button>
+                {!webrtcUi.audioOnly ? (
+                  <>
+                    <button
+                      type="button"
+                      className={`webrtcToolBtn ${webrtcCamOn ? "webrtcToolBtn--on" : "webrtcToolBtn--off"}`}
+                      onClick={toggleWebrtcCam}
+                      title="Камера"
+                    >
+                      {webrtcCamOn ? "📷 Кам" : "📷 Выкл"}
+                    </button>
+                    <button
+                      type="button"
+                      className={`webrtcToolBtn ${webrtcScreenSharing ? "webrtcToolBtn--accent" : ""}`}
+                      onClick={() => void toggleWebrtcScreenShare()}
+                      title="Демонстрация экрана: в диалоге браузера можно выбрать окно, вкладку или весь экран"
+                    >
+                      {webrtcScreenSharing ? "🖥 Стоп" : "🖥 Экран"}
+                    </button>
+                  </>
+                ) : null}
+                <button type="button" className="webrtcToolBtn" onClick={copyCallInviteLink} title="Скопировать ссылку на этот личный чат для созвона">
+                  🔗 Ссылка
+                </button>
+                <button
+                  type="button"
+                  className={`webrtcToolBtn ${webrtcLocalHandRaised ? "webrtcToolBtn--accent" : ""}`}
+                  onClick={toggleLocalRaiseHand}
+                  title="Поднять руку"
+                >
+                  ✋ {webrtcLocalHandRaised ? "Опустить" : "Рука"}
+                </button>
+                <button type="button" className="webrtcToolBtn webrtcToolBtn--danger" onClick={() => webrtcUi.hangup()}>
+                  Завершить
+                </button>
+              </div>
             </div>
           </div>
         ) : null}
@@ -5744,7 +5750,9 @@ export default function App() {
               </button>
             </div>
             <div className="infoPanelBody">
-              <div className={`infoPanelHeroAvatar ${mode === "channels" && activeChannel?.avatarUrl ? "infoPanelHeroAvatar--img" : ""} ${mode === "groups" && activeGroupChat?.avatarUrl ? "infoPanelHeroAvatar--img" : ""}`}>
+              <div
+                className={`infoPanelHeroAvatar ${mode === "channels" && activeChannel?.avatarUrl ? "infoPanelHeroAvatar--img" : ""} ${mode === "groups" && activeGroupChat?.avatarUrl ? "infoPanelHeroAvatar--img" : ""}`}
+              >
                 {mode === "channels" ? (
                   activeChannel?.avatarUrl ? (
                     <img src={activeChannel.avatarUrl} alt="" className="infoPanelHeroAvatarImg" />
@@ -5757,6 +5765,8 @@ export default function App() {
                   ) : (
                     initials(activeGroupChat?.name ?? "G")
                   )
+                ) : isSelfNotesActiveDm ? (
+                  "⭐"
                 ) : (
                   (() => {
                     const otherId = activeDirectChat?.userIds.find((id) => id !== userId) ?? activeDirectChat?.userIds[0] ?? "";
@@ -5775,141 +5785,354 @@ export default function App() {
                       ? activeGroupChat.name
                       : "Группа не выбрана"
                     : activeDirectChat
-                      ? (() => {
-                          const otherId =
-                            activeDirectChat.userIds.find((id) => id !== userId) ?? activeDirectChat.userIds[0] ?? "";
-                          const u = users.find((x) => x.id === otherId);
-                          return displayUserNameForSidebar(u, otherId || activeDirectChat.id);
-                        })()
+                      ? isSelfNotesActiveDm
+                        ? "Избранное"
+                        : (() => {
+                            const otherId =
+                              activeDirectChat.userIds.find((id) => id !== userId) ?? activeDirectChat.userIds[0] ?? "";
+                            const u = users.find((x) => x.id === otherId);
+                            return displayUserNameForSidebar(u, otherId || activeDirectChat.id);
+                          })()
                       : "Личка не выбрана"}
               </div>
               <p className="infoPanelHeroSub">
-                {organizationId ? `Организация: ${displayOrganizationId}` : "—"} · {myProfileEmail || email}
+                {organizationId ? `Организация: ${displayOrganizationId}` : "—"} · {myProfileEmail || loginIdentifier}
+                {systemAccessLevel ? (
+                  <>
+                    {" "}
+                    · доступ: {systemAccessLevel === "platform" ? "платформа" : systemAccessLevel === "basic" ? "базовый" : "организация"}
+                  </>
+                ) : null}
               </p>
 
-              {mode === "groups" && activeGroupChat ? (
-                <div className="infoPanelSection">
-                  <div className="infoPanelSectionTitle">Участники ({activeGroupChat.memberIds.length})</div>
-                  <ul className="infoPanelMemberList">
-                    {activeGroupChat.memberIds.map((mid) => {
-                      const u = users.find((x) => x.id === mid);
-                      return (
-                        <li key={mid}>
-                          {displayUserNameForSidebar(u, mid)}
-                          <span className="infoPanelMemberEmail">{u?.email ?? mid}</span>
-                        </li>
-                      );
-                    })}
-                  </ul>
-                </div>
-              ) : null}
+              <div className="infoPanelTabs" role="tablist" aria-label="Разделы сведений о чате">
+                {(
+                  [
+                    ["about", "Об чате"],
+                    ["photos", "Фото"],
+                    ["saved", "Избранное"],
+                    ["files", "Файлы"],
+                    ["voice", "Голосовые"],
+                    ["links", "Ссылки"],
+                    ["notify", "Уведомления"],
+                  ] as const
+                ).map(([id, label]) => (
+                  <button
+                    key={id}
+                    type="button"
+                    role="tab"
+                    className={`infoPanelTab ${infoPanelSection === id ? "infoPanelTab--active" : ""}`}
+                    aria-selected={infoPanelSection === id}
+                    onClick={() => setInfoPanelSection(id)}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
 
-              {mode === "channels" && activeChannelId ? (
-                <div className="infoPanelSection">
-                  <div className="infoPanelSectionTitle">
-                    Участники канала
-                    {activeChannel?.type === "public" || activeChannel?.type === "broadcast"
-                      ? " (все в workspace)"
-                      : null}
+              {infoPanelSection === "about" ? (
+                <>
+                  {mode === "groups" && activeGroupChat ? (
+                    <div className="infoPanelSection">
+                      <div className="infoPanelSectionTitle">Участники ({activeGroupChat.memberIds.length})</div>
+                      <ul className="infoPanelMemberList">
+                        {activeGroupChat.memberIds.map((mid) => {
+                          const u = users.find((x) => x.id === mid);
+                          return (
+                            <li key={mid}>
+                              {displayUserNameForSidebar(u, mid)}
+                              <span className="infoPanelMemberEmail">{u?.email ?? mid}</span>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    </div>
+                  ) : null}
+
+                  {mode === "channels" && activeChannelId ? (
+                    <div className="infoPanelSection">
+                      <div className="infoPanelSectionTitle">
+                        Участники канала
+                        {activeChannel?.type === "public" || activeChannel?.type === "broadcast"
+                          ? " (все в workspace)"
+                          : null}
+                      </div>
+                      {activeChannel?.type === "private" ? (
+                        <ul className="infoPanelMemberList">
+                          {infoPanelChannelMembers.map((u) => (
+                            <li key={u.id}>
+                              {displayUserNameForSidebar(u, u.id)}
+                              <span className="infoPanelMemberEmail">{u.email}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <p className="infoPanelHint">
+                          Публичный и broadcast-канал виден участникам workspace; список подписчиков не хранится отдельно.
+                        </p>
+                      )}
+                    </div>
+                  ) : null}
+
+                  {(mode === "groups" && canEditActiveGroupMeta) || (mode === "channels" && canEditActiveChannelMeta) ? (
+                    <div className="infoPanelSection">
+                      <div className="infoPanelSectionTitle">Название и аватар</div>
+                      {chatMetaMsg ? <div className="empty">{chatMetaMsg}</div> : null}
+                      <label className="infoPanelLabel">Название</label>
+                      <input
+                        className="infoPanelInput"
+                        value={chatMetaNameDraft}
+                        onChange={(e) => setChatMetaNameDraft(e.target.value)}
+                        placeholder={mode === "channels" ? "Имя канала" : "Имя группы"}
+                      />
+                      <label className="infoPanelLabel">Аватар (файл или data:image)</label>
+                      <input
+                        className="infoPanelInput"
+                        value={chatMetaAvatarData}
+                        onChange={(e) => setChatMetaAvatarData(e.target.value)}
+                        placeholder="https://… или data:image/…"
+                      />
+                      <input
+                        type="file"
+                        accept="image/*"
+                        onChange={(e) => {
+                          const f = e.currentTarget.files?.[0];
+                          if (f) applyChatAvatarFromFile(f);
+                          e.currentTarget.value = "";
+                        }}
+                      />
+                      <button type="button" className="moreMenuWideBtn" onClick={() => void saveChatMeta()} disabled={!token}>
+                        Сохранить
+                      </button>
+                    </div>
+                  ) : null}
+
+                  <div className="infoPanelSection">
+                    <div className="infoPanelSectionTitle">Действия</div>
+                    <button
+                      type="button"
+                      className="moreMenuWideBtn"
+                      onClick={() => {
+                        setShowCompanyCabinet(true);
+                        void loadUsers();
+                      }}
+                      disabled={!token || !organizationId}
+                    >
+                      Кабинет компании
+                    </button>
+                    {isCompanyAdmin ? (
+                      <button
+                        type="button"
+                        className="moreMenuWideBtn"
+                        onClick={() => void openAdminUsersPanel()}
+                        disabled={!token || !organizationId}
+                      >
+                        Админ: пользователи
+                      </button>
+                    ) : null}
+                    <button
+                      type="button"
+                      className="moreMenuWideBtn"
+                      onClick={() => {
+                        setShowUserCabinet(true);
+                        setProfileMsg("");
+                        void loadMyProfile();
+                      }}
+                      disabled={!token}
+                    >
+                      Мой профиль
+                    </button>
+                    {mode === "channels" && activeChannelId ? (
+                      <button
+                        type="button"
+                        className="moreMenuWideBtn subtle"
+                        onClick={() => {
+                          void loadPinnedMessages();
+                          setShowRightPanel(false);
+                        }}
+                        disabled={!token}
+                      >
+                        Открыть закреплённые сообщения
+                      </button>
+                    ) : null}
+                    {userId ? (
+                      <button
+                        type="button"
+                        className="moreMenuWideBtn subtle"
+                        onClick={() => void openSavedVaultChat()}
+                        disabled={!token}
+                      >
+                        Открыть «Избранное» (заметки)
+                      </button>
+                    ) : null}
                   </div>
-                  {activeChannel?.type === "private" ? (
-                    <ul className="infoPanelMemberList">
-                      {infoPanelChannelMembers.map((u) => (
-                        <li key={u.id}>
-                          {displayUserNameForSidebar(u, u.id)}
-                          <span className="infoPanelMemberEmail">{u.email}</span>
+                </>
+              ) : infoPanelSection === "photos" ? (
+                <div className="infoPanelSection">
+                  <div className="infoPanelSectionTitle">Фотографии ({infoPanelPhotos.length})</div>
+                  {infoPanelPhotos.length === 0 ? (
+                    <p className="infoPanelHint">В этом чате пока нет вложенных изображений.</p>
+                  ) : (
+                    <div className="infoPanelPhotoGrid">
+                      {infoPanelPhotos.map((m) => (
+                        <a
+                          key={m.id}
+                          href={normalizeDownloadUrl(m.file?.downloadUrl)}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="infoPanelPhotoCell"
+                        >
+                          <img src={normalizeDownloadUrl(m.file?.downloadUrl)} alt="" />
+                        </a>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ) : infoPanelSection === "saved" ? (
+                <div className="infoPanelSection">
+                  <div className="infoPanelSectionTitle">Сохранённые в этом чате ({infoPanelSavedHere.length})</div>
+                  {infoPanelSavedHere.length === 0 ? (
+                    <p className="infoPanelHint">Помечайте сообщения как сохранённые — они появятся здесь.</p>
+                  ) : (
+                    <ul className="infoPanelMediaList">
+                      {infoPanelSavedHere.map((m) => (
+                        <li key={m.id} className="infoPanelMediaRow">
+                          <div className="infoPanelMediaRowMain">
+                            {m.type === "file"
+                              ? `📎 ${m.file?.originalName ?? "Файл"}`
+                              : m.type === "voice"
+                                ? "🎤 Голосовое"
+                                : String(m.content || "").slice(0, 220)}
+                            {m.type !== "file" && m.type !== "voice" && String(m.content || "").length > 220 ? "…" : ""}
+                          </div>
+                          <div className="infoPanelMediaRowMeta">{timeHHMM(m.createdAt)}</div>
                         </li>
                       ))}
                     </ul>
-                  ) : (
-                    <p className="infoPanelHint">Публичный и broadcast-канал виден участникам workspace; список подписчиков не хранится отдельно.</p>
                   )}
                 </div>
-              ) : null}
-
-              {(mode === "groups" && canEditActiveGroupMeta) || (mode === "channels" && canEditActiveChannelMeta) ? (
+              ) : infoPanelSection === "files" ? (
                 <div className="infoPanelSection">
-                  <div className="infoPanelSectionTitle">Название и аватар</div>
-                  {chatMetaMsg ? <div className="empty">{chatMetaMsg}</div> : null}
-                  <label className="infoPanelLabel">Название</label>
-                  <input
-                    className="infoPanelInput"
-                    value={chatMetaNameDraft}
-                    onChange={(e) => setChatMetaNameDraft(e.target.value)}
-                    placeholder={mode === "channels" ? "Имя канала" : "Имя группы"}
-                  />
-                  <label className="infoPanelLabel">Аватар (файл или data:image)</label>
-                  <input
-                    className="infoPanelInput"
-                    value={chatMetaAvatarData}
-                    onChange={(e) => setChatMetaAvatarData(e.target.value)}
-                    placeholder="https://… или data:image/…"
-                  />
-                  <input
-                    type="file"
-                    accept="image/*"
-                    onChange={(e) => {
-                      const f = e.currentTarget.files?.[0];
-                      if (f) applyChatAvatarFromFile(f);
-                      e.currentTarget.value = "";
-                    }}
-                  />
-                  <button type="button" className="moreMenuWideBtn" onClick={() => void saveChatMeta()} disabled={!token}>
-                    Сохранить
-                  </button>
+                  <div className="infoPanelSectionTitle">Файлы ({infoPanelFiles.length})</div>
+                  {infoPanelFiles.length === 0 ? (
+                    <p className="infoPanelHint">Нет файлов, кроме изображений (см. вкладку «Фото»).</p>
+                  ) : (
+                    <ul className="infoPanelMediaList">
+                      {infoPanelFiles.map((m) => (
+                        <li key={m.id}>
+                          <a
+                            href={normalizeDownloadUrl(m.file?.downloadUrl)}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="infoPanelMediaRow infoPanelMediaRow--link"
+                          >
+                            <span className="infoPanelMediaRowMain">📎 {m.file?.originalName ?? "Файл"}</span>
+                            <span className="infoPanelMediaRowMeta">
+                              {m.file?.size != null ? `${Math.max(1, Math.round(m.file.size / 1024))} КБ` : ""}
+                            </span>
+                          </a>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
                 </div>
-              ) : null}
-
-              <div className="infoPanelSection">
-                <div className="infoPanelSectionTitle">Действия</div>
-                <button
-                  type="button"
-                  className="moreMenuWideBtn"
-                  onClick={() => {
-                    setShowCompanyCabinet(true);
-                    setCompanyTab("employees");
-                    void loadUsers();
-                  }}
-                  disabled={!token || !organizationId}
-                >
-                  Кабинет компании
-                </button>
-                {isCompanyAdmin ? (
-                  <button
-                    type="button"
-                    className="moreMenuWideBtn"
-                    onClick={() => void openAdminUsersPanel()}
-                    disabled={!token || !organizationId}
-                  >
-                    Админ: пользователи
-                  </button>
-                ) : null}
-                <button
-                  type="button"
-                  className="moreMenuWideBtn"
-                  onClick={() => {
-                    setShowUserCabinet(true);
-                    setProfileMsg("");
-                    void loadMyProfile();
-                  }}
-                  disabled={!token}
-                >
-                  Мой профиль
-                </button>
-                {mode === "channels" && activeChannelId ? (
-                  <button
-                    type="button"
-                    className="moreMenuWideBtn subtle"
-                    onClick={() => {
-                      void loadPinnedMessages();
-                      setShowRightPanel(false);
-                    }}
-                    disabled={!token}
-                  >
-                    Открыть закреплённые сообщения
-                  </button>
-                ) : null}
-              </div>
+              ) : infoPanelSection === "voice" ? (
+                <div className="infoPanelSection">
+                  <div className="infoPanelSectionTitle">Голосовые ({infoPanelVoice.length})</div>
+                  {infoPanelVoice.length === 0 ? (
+                    <p className="infoPanelHint">В этом чате нет голосовых сообщений.</p>
+                  ) : (
+                    <ul className="infoPanelVoiceList">
+                      {infoPanelVoice.map((m) => (
+                        <li key={m.id} className="infoPanelVoiceRow">
+                          <audio controls src={normalizeDownloadUrl(m.file?.downloadUrl)} preload="metadata" />
+                          <div className="infoPanelMediaRowMeta">{timeHHMM(m.createdAt)}</div>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              ) : infoPanelSection === "links" ? (
+                <div className="infoPanelSection">
+                  <div className="infoPanelSectionTitle">Ссылки ({infoPanelLinks.length})</div>
+                  {infoPanelLinks.length === 0 ? (
+                    <p className="infoPanelHint">В тексте сообщений пока нет ссылок.</p>
+                  ) : (
+                    <ul className="infoPanelMediaList">
+                      {infoPanelLinks.map((row) => (
+                        <li key={row.id} className="infoPanelMediaRow">
+                          <a href={row.url} target="_blank" rel="noreferrer" className="infoPanelLinkUrl">
+                            {row.url}
+                          </a>
+                          <div className="infoPanelLinkPreview">{row.preview}</div>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              ) : (
+                <div className="infoPanelSection">
+                  <div className="infoPanelSectionTitle">Уведомления</div>
+                  {!activeChatKeyForPanel ? (
+                    <p className="infoPanelHint">Выберите чат слева, чтобы настроить оповещения.</p>
+                  ) : (
+                    <>
+                      <p className="infoPanelHint" style={{ marginBottom: 10 }}>
+                        {muteStatusLabel(activeChatKeyForPanel)}
+                      </p>
+                      <button
+                        type="button"
+                        className="moreMenuWideBtn"
+                        onClick={() => setChatMute(activeChatKeyForPanel, "off")}
+                      >
+                        Включить оповещения
+                      </button>
+                      <button
+                        type="button"
+                        className="moreMenuWideBtn subtle"
+                        onClick={() => setChatMute(activeChatKeyForPanel, 1)}
+                      >
+                        Без звука 1 ч
+                      </button>
+                      <button
+                        type="button"
+                        className="moreMenuWideBtn subtle"
+                        onClick={() => setChatMute(activeChatKeyForPanel, 2)}
+                      >
+                        Без звука 2 ч
+                      </button>
+                      <button
+                        type="button"
+                        className="moreMenuWideBtn subtle"
+                        onClick={() => setChatMute(activeChatKeyForPanel, 4)}
+                      >
+                        Без звука 4 ч
+                      </button>
+                      <button
+                        type="button"
+                        className="moreMenuWideBtn subtle"
+                        onClick={() => setChatMute(activeChatKeyForPanel, 8)}
+                      >
+                        Без звука 8 ч
+                      </button>
+                      <button
+                        type="button"
+                        className="moreMenuWideBtn subtle"
+                        onClick={() => setChatMute(activeChatKeyForPanel, 24)}
+                      >
+                        Без звука 24 ч
+                      </button>
+                      <button
+                        type="button"
+                        className="moreMenuWideBtn subtle"
+                        onClick={() => setChatMute(activeChatKeyForPanel, "forever")}
+                      >
+                        Без звука навсегда
+                      </button>
+                    </>
+                  )}
+                </div>
+              )}
             </div>
           </aside>
         </div>

@@ -56,5 +56,8 @@ const EnvSchema = z.object({
     LOGIN_MAX_FAILED_ATTEMPTS: z.coerce.number().int().positive().default(5),
     LOGIN_LOCKOUT_SECONDS: z.coerce.number().int().positive().default(15 * 60), // 15m
     MESSAGE_EDIT_WINDOW_SECONDS: z.coerce.number().int().positive().default(48 * 60 * 60),
+    /** off — только пароль (+ TOTP если включён); on — после пароля код на email (если нет TOTP). */
+    LOGIN_EMAIL_OTP: z.enum(["off", "on"]).default("off"),
+    LOGIN_EMAIL_OTP_TTL_SECONDS: z.coerce.number().int().positive().default(600),
 });
 export const env = EnvSchema.parse(process.env);

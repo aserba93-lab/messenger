@@ -95,6 +95,15 @@ export const authResolvers = {
         login: async (_p, args, ctx) => {
             const input = LoginInput.parse(args.input);
             const loginRes = await ctx.authService.login(input);
+            if (loginRes.kind === "email_otp") {
+                return {
+                    accessToken: null,
+                    viewer: null,
+                    needsEmailOtp: true,
+                    challengeId: loginRes.challengeId,
+                    emailMasked: loginRes.emailMasked,
+                };
+            }
             return ctx.authService.finalizeLogin({
                 userId: loginRes.user.id,
                 organizationId: input.organizationId,

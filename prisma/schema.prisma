@@ -47,15 +47,29 @@ enum FileAvStatus {
   error
 }
 
+/// Глобальный уровень доступа (поверх роли в организации).
+/// platform — операции над всей системой (зарезервировано);
+/// organization — обычный доступ в рамках одной компании;
+/// basic — минимальный пользовательский доступ (ограничения на стороне API/UI).
+enum SystemAccessLevel {
+  platform
+  organization
+  basic
+}
+
 model User {
   id                 String   @id @default(cuid())
   email              String   @unique
   passwordHash       String
+  systemAccessLevel  SystemAccessLevel @default(organization)
   firstName          String?
   lastName           String?
   middleName         String?
   birthDate          DateTime?
   avatarUrl          String?
+  phone              String?  @unique
+  statusEmoji        String?
+  statusText         String?
   status             PresenceStatus @default(offline)
   lastSeen           DateTime?
 
@@ -79,6 +93,7 @@ model User {
   twoFactor           TwoFactor?
   backupCodes         TwoFactorBackupCode[]
   emailVerifyTokens   EmailVerificationToken[]
+  loginEmailOtpChallenges LoginEmailOtpChallenge[]
 
   createdWorkspaces   Workspace[] @relation("WorkspaceCreatedBy")
   createdChannels     Channel[] @relation("ChannelCreatedBy")
@@ -416,6 +431,22 @@ model EmailVerificationToken {
 
   @@index([organizationId, createdAt])
   @@index([userId, createdAt])
+}
+
+/// Одноразовый код подтверждения входа, отправляемый на email.
+model LoginEmailOtpChallenge {
+  id             String   @id @default(cuid())
+  userId         String
+  organizationId String
+  codeHash       String
+  expiresAt      DateTime
+  usedAt         DateTime?
+  createdAt      DateTime @default(now())
+
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([organizationId, createdAt])
 }
 
 model Invite {

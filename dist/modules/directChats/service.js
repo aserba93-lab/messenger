@@ -85,16 +85,18 @@ export class DirectChatsService {
 
     async ensureDirectChat(viewer, input) {
         requireVerified(viewer);
-        if (input.userId === viewer.userId)
-            throw new Error("Cannot DM yourself");
+        if (input.userId === viewer.userId) {
+            const chat = await this.repo.upsertSelfDirectChat({ organizationId: viewer.organizationId, userId: viewer.userId });
+            return { id: chat.id, userIds: chat.members.map((m) => m.userId) };
+        }
         const chat = await this.repo.upsertDirectChat({ organizationId: viewer.organizationId, userA: viewer.userId, userB: input.userId });
         return { id: chat.id, userIds: chat.members.map((m) => m.userId) };
     }
     async sendDirectMessage(viewer, input) {
         requireVerified(viewer);
-        if (input.userId === viewer.userId)
-            throw new Error("Cannot DM yourself");
-        const chat = await this.repo.upsertDirectChat({ organizationId: viewer.organizationId, userA: viewer.userId, userB: input.userId });
+        const chat = input.userId === viewer.userId
+            ? await this.repo.upsertSelfDirectChat({ organizationId: viewer.organizationId, userId: viewer.userId })
+            : await this.repo.upsertDirectChat({ organizationId: viewer.organizationId, userA: viewer.userId, userB: input.userId });
         if (input.parentMessageId) {
             const parent = await prisma.message.findUnique({
                 where: { id: input.parentMessageId },

@@ -149,6 +149,7 @@ app.put("/files/upload/:fileId", express.raw({ type: "*/*", limit: "200mb" }), a
             userId: payload.sub,
             organizationId: payload.orgId,
             role: membership.role,
+            systemAccessLevel: payload.sal ?? "organization",
             emailVerified: true,
         };
         const fileId = String(req.params.fileId ?? "");
@@ -189,6 +190,7 @@ const yoga = createYoga({
                     userId: payload.sub,
                     organizationId: payload.orgId,
                     role: payload.role,
+                    systemAccessLevel: payload.sal ?? "organization",
                     emailVerified: env.NODE_ENV !== "production" ? true : !!user?.emailVerifiedAt,
                 };
             }
@@ -250,6 +252,7 @@ io.use(async (socket, next) => {
             userId: payload.sub,
             organizationId: payload.orgId,
             role: payload.role,
+            systemAccessLevel: payload.sal ?? "organization",
             emailVerified: env.NODE_ENV !== "production" ? true : !!user?.emailVerifiedAt,
         };
         return next();
@@ -419,6 +422,17 @@ io.on("connection", (socket) => {
         if (!targetUserId)
             return;
         io.to(`user:${targetUserId}`).emit("call:end", { fromUserId: viewer.userId });
+    });
+    /** Поднять руку в созвоне (1:1): пересылаем собеседнику */
+    socket.on("call:hand", (data) => {
+        const targetUserId = String(data?.targetUserId ?? "");
+        if (!targetUserId)
+            return;
+        const raised = Boolean(data?.raised);
+        io.to(`user:${targetUserId}`).emit("call:hand", {
+            fromUserId: viewer.userId,
+            raised,
+        });
     });
 });
 server.listen(env.PORT, () => {

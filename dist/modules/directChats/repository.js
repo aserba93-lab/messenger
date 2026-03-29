@@ -24,6 +24,34 @@ export class DirectChatsRepository {
             orderBy: { createdAt: "desc" },
         });
     }
+    /** Личка «Избранное» — один участник (я). */
+    async findSelfNotesDirectChat(params) {
+        const chats = await prisma.directChat.findMany({
+            where: {
+                organizationId: params.organizationId,
+                members: { some: { userId: params.userId } },
+            },
+            include: { members: true },
+        });
+        return chats.find((c) => c.members.length === 1 && c.members[0].userId === params.userId) ?? null;
+    }
+    async upsertSelfDirectChat(params) {
+        const existing = await this.findSelfNotesDirectChat(params);
+        if (existing)
+            return existing;
+        return prisma.$transaction(async (tx) => {
+            const chat = await tx.directChat.create({
+                data: { organizationId: params.organizationId },
+            });
+            await tx.directChatMember.create({
+                data: { directChatId: chat.id, userId: params.userId },
+            });
+            const full = await tx.directChat.findUnique({ where: { id: chat.id }, include: { members: true } });
+            if (!full)
+                throw new Error("Self notes chat not found after create");
+            return full;
+        });
+    }
     async upsertDirectChat(params) {
         const existing = await this.findDirectChatBetweenUsers(params);
         if (existing)

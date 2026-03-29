@@ -176,11 +176,19 @@ export const typeDefs = /* GraphQL */ `
     lastName: String
   }
 
+  enum SystemAccessLevel {
+    platform
+    organization
+    basic
+  }
+
   input LoginInput {
-    email: String!
+    email: String
+    identifier: String
     password: String!
     organizationId: ID!
     twoFactorCode: String
+    backupCode: String
   }
 
   input RefreshInput {
@@ -191,6 +199,7 @@ export const typeDefs = /* GraphQL */ `
     userId: ID!
     organizationId: ID!
     role: OrgRole!
+    systemAccessLevel: SystemAccessLevel!
   }
 
   type ThreadReadStateEntry {
@@ -414,8 +423,11 @@ export const typeDefs = /* GraphQL */ `
   }
 
   type LoginPayload {
-    accessToken: String!
-    viewer: Viewer!
+    accessToken: String
+    viewer: Viewer
+    needsEmailOtp: Boolean
+    challengeId: String
+    emailMasked: String
   }
 
   type TwoFaSetupPayload {

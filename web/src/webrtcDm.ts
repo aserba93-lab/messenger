@@ -20,7 +20,13 @@ function parseIceFromEnv(): RTCIceServer[] {
 export type ActiveCall = {
   pc: RTCPeerConnection;
   localStream: MediaStream;
+  audioOnly: boolean;
   hangup: () => void;
+  setMicEnabled: (on: boolean) => void;
+  setCamEnabled: (on: boolean) => void;
+  startScreenShare: () => Promise<void>;
+  stopScreenShare: () => Promise<void>;
+  isScreenSharing: () => boolean;
 };
 
 /** Исходящий звонок: создаём offer и шлём targetUserId через сокет */
@@ -92,6 +98,8 @@ export async function startOutgoingCall(
   socket.on("call:signal", onSignal);
   socket.on("call:end", onEnd);
 
+  let screenStop: (() => Promise<void>) | null = null;
+
   function cleanup() {
     socket.off("call:signal", onSignal);
     socket.off("call:end", onEnd);
@@ -104,13 +112,59 @@ export async function startOutgoingCall(
     opts.onClose();
   }
 
+  const startScreenShareWrapped = async () => {
+    if (opts.audioOnly) throw new Error("Демонстрация экрана доступна в видеозвонке");
+    if (screenStop) return;
+    const display = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+    const v = display.getVideoTracks()[0];
+    if (!v) {
+      display.getTracks().forEach((t) => t.stop());
+      throw new Error("Нет видеодорожки экрана");
+    }
+    const sender = pc.getSenders().find((s) => s.track?.kind === "video");
+    const cam = stream.getVideoTracks()[0];
+    if (!sender || !cam) {
+      display.getTracks().forEach((t) => t.stop());
+      throw new Error("Нет видеотрека камеры");
+    }
+    const saved = cam;
+    await sender.replaceTrack(v);
+    v.addEventListener("ended", () => {
+      void stopScreenShareWrapped();
+    });
+    screenStop = async () => {
+      display.getTracks().forEach((t) => t.stop());
+      await sender.replaceTrack(saved);
+      screenStop = null;
+    };
+  };
+  const stopScreenShareWrapped = async () => {
+    if (screenStop) await screenStop();
+  };
+
   return {
     pc,
     localStream: stream,
+    audioOnly: opts.audioOnly,
     hangup: () => {
+      void stopScreenShareWrapped();
       socket.emit("call:end", { targetUserId: target });
       cleanup();
     },
+    setMicEnabled: (on: boolean) => {
+      stream.getAudioTracks().forEach((t) => {
+        t.enabled = on;
+      });
+    },
+    setCamEnabled: (on: boolean) => {
+      if (opts.audioOnly) return;
+      stream.getVideoTracks().forEach((t) => {
+        t.enabled = on;
+      });
+    },
+    startScreenShare: startScreenShareWrapped,
+    stopScreenShare: stopScreenShareWrapped,
+    isScreenSharing: () => screenStop != null,
   };
 }
 
@@ -183,6 +237,8 @@ export async function acceptIncomingOffer(
   socket.on("call:signal", onSignal);
   socket.on("call:end", onEnd);
 
+  let screenStop: (() => Promise<void>) | null = null;
+
   function cleanup() {
     socket.off("call:signal", onSignal);
     socket.off("call:end", onEnd);
@@ -195,12 +251,58 @@ export async function acceptIncomingOffer(
     opts.onClose();
   }
 
+  const startScreenShareWrapped = async () => {
+    if (opts.audioOnly) throw new Error("Демонстрация экрана доступна в видеозвонке");
+    if (screenStop) return;
+    const display = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+    const v = display.getVideoTracks()[0];
+    if (!v) {
+      display.getTracks().forEach((t) => t.stop());
+      throw new Error("Нет видеодорожки экрана");
+    }
+    const sender = pc.getSenders().find((s) => s.track?.kind === "video");
+    const cam = stream.getVideoTracks()[0];
+    if (!sender || !cam) {
+      display.getTracks().forEach((t) => t.stop());
+      throw new Error("Нет видеотрека камеры");
+    }
+    const saved = cam;
+    await sender.replaceTrack(v);
+    v.addEventListener("ended", () => {
+      void stopScreenShareWrapped();
+    });
+    screenStop = async () => {
+      display.getTracks().forEach((t) => t.stop());
+      await sender.replaceTrack(saved);
+      screenStop = null;
+    };
+  };
+  const stopScreenShareWrapped = async () => {
+    if (screenStop) await screenStop();
+  };
+
   return {
     pc,
     localStream: stream,
+    audioOnly: opts.audioOnly,
     hangup: () => {
+      void stopScreenShareWrapped();
       socket.emit("call:end", { targetUserId: peer });
       cleanup();
     },
+    setMicEnabled: (on: boolean) => {
+      stream.getAudioTracks().forEach((t) => {
+        t.enabled = on;
+      });
+    },
+    setCamEnabled: (on: boolean) => {
+      if (opts.audioOnly) return;
+      stream.getVideoTracks().forEach((t) => {
+        t.enabled = on;
+      });
+    },
+    startScreenShare: startScreenShareWrapped,
+    stopScreenShare: stopScreenShareWrapped,
+    isScreenSharing: () => screenStop != null,
   };
 }

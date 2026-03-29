@@ -25,9 +25,11 @@ async function main() {
       firstName: "Admin",
       lastName: "Seed",
       emailVerifiedAt: new Date(),
+      systemAccessLevel: "organization",
     },
     update: {
       emailVerifiedAt: new Date(),
+      systemAccessLevel: "organization",
     },
   });
 

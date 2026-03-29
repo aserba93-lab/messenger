@@ -4,6 +4,25 @@ import { hashPassword } from "../../security/password.js";
 export function sha256Hex(input) {
     return crypto.createHash("sha256").update(input).digest("hex");
 }
+/** Нормализация логина: email или телефон в формате +7… */
+export function normalizeLoginIdentifier(raw) {
+    const s = String(raw ?? "").trim();
+    if (!s)
+        return { kind: "empty", value: "" };
+    if (s.includes("@"))
+        return { kind: "email", value: s.toLowerCase() };
+    const digits = s.replace(/\D/g, "");
+    if (digits.length >= 10) {
+        let d = digits;
+        if (d.length === 11 && d.startsWith("8"))
+            d = "7" + d.slice(1);
+        if (d.length === 10)
+            d = "7" + d;
+        if (d.length === 11 && d.startsWith("7"))
+            return { kind: "phone", value: `+${d}` };
+    }
+    return { kind: "unknown", value: s };
+}
 export class AuthRepository {
     async createOrganizationWithFirstAdmin(params) {
         return prisma.$transaction(async (tx) => {
@@ -278,6 +297,7 @@ export class AuthRepository {
             lastName: m.user.lastName,
             birthDate: m.user.birthDate,
             avatarUrl: m.user.avatarUrl,
+            phone: m.user.phone ?? null,
             status: m.status,
             department: m.department,
             title: m.title,
@@ -567,5 +587,42 @@ export class AuthRepository {
                 },
             });
         });
+    }
+    async findUserByIdentifier(identifier) {
+        const n = normalizeLoginIdentifier(identifier);
+        if (n.kind === "email") {
+            return prisma.user.findUnique({ where: { email: n.value } });
+        }
+        if (n.kind === "phone") {
+            return prisma.user.findFirst({ where: { phone: n.value } });
+        }
+        return prisma.user.findUnique({ where: { email: String(identifier).trim().toLowerCase() } });
+    }
+    async createLoginEmailOtpChallenge(params) {
+        return prisma.loginEmailOtpChallenge.create({
+            data: {
+                id: params.id,
+                userId: params.userId,
+                organizationId: params.organizationId,
+                codeHash: params.codeHash,
+                expiresAt: params.expiresAt,
+            },
+        });
+    }
+    async verifyLoginEmailOtpAndConsume(params) {
+        const row = await prisma.loginEmailOtpChallenge.findUnique({ where: { id: params.challengeId } });
+        if (!row || row.usedAt)
+            throw new Error("Invalid or expired code");
+        if (row.expiresAt.getTime() < Date.now())
+            throw new Error("Code expired");
+        if (row.organizationId !== params.organizationId)
+            throw new Error("Invalid organization");
+        const hash = sha256Hex(params.plainCode);
+        const a = Buffer.from(hash, "hex");
+        const b = Buffer.from(row.codeHash, "hex");
+        if (a.length !== b.length || !crypto.timingSafeEqual(a, b))
+            throw new Error("Invalid code");
+        await prisma.loginEmailOtpChallenge.update({ where: { id: row.id }, data: { usedAt: new Date() } });
+        return row;
     }
 }

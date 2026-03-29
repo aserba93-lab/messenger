@@ -5,6 +5,7 @@ import { decryptTotpSecret, encryptTotpSecret, buildOtpAuthUrl, verifyTotpCode, 
 import { hashPassword, verifyPassword } from "../../security/password.js";
 import { issueAccessToken, issueRefreshToken, verifyRefreshToken } from "../../security/jwt.js";
 import { setRefreshCookie } from "../../web/cookies.js";
+import { maskEmail, sendLoginOtpEmail } from "../../lib/mail.js";
 export class AuthService {
     repo;
     constructor(repo = new AuthRepository()) {
@@ -41,7 +42,12 @@ export class AuthService {
         // We don't auto-verify; unverified users have read-only access until verification.
         return {
             organizationId: organization.id,
-            viewer: { userId: user.id, organizationId: organization.id, role: "owner" },
+            viewer: {
+                userId: user.id,
+                organizationId: organization.id,
+                role: "owner",
+                systemAccessLevel: "organization",
+            },
             workspaceId: workspace.id,
             channelId: generalChannelId,
         };
@@ -226,8 +232,10 @@ export class AuthService {
         });
     }
     async login(params) {
-        const emailLower = params.email.toLowerCase();
-        const user = await this.repo.findUserByEmail(emailLower);
+        const identifier = String(params.identifier ?? params.email ?? "").trim();
+        if (!identifier)
+            throw new Error("Email or phone required");
+        const user = await this.repo.findUserByIdentifier(identifier);
         if (!user)
             throw new Error("Invalid credentials");
         if (user.lockedUntil && user.lockedUntil.getTime() > Date.now()) {
@@ -252,8 +260,8 @@ export class AuthService {
         const twoFactor = await this.repo.getTwoFactorByUserId(user.id);
         if (twoFactor?.enabledAt) {
             if (params.backupCode) {
-                const ok = await this.repo.consumeBackupCode({ userId: user.id, codeHash: sha256Hex(params.backupCode) });
-                if (!ok)
+                const ok2 = await this.repo.consumeBackupCode({ userId: user.id, codeHash: sha256Hex(params.backupCode) });
+                if (!ok2)
                     throw new Error("Invalid backup code");
             }
             else {
@@ -265,7 +273,50 @@ export class AuthService {
                     throw new Error("Invalid 2FA code");
             }
         }
-        // Create refresh session
+        else if (env.LOGIN_EMAIL_OTP === "on") {
+            const code = String(Math.floor(100000 + Math.random() * 900000));
+            const challengeId = crypto.randomBytes(24).toString("hex");
+            const expiresAt = new Date(Date.now() + env.LOGIN_EMAIL_OTP_TTL_SECONDS * 1000);
+            await this.repo.createLoginEmailOtpChallenge({
+                id: challengeId,
+                userId: user.id,
+                organizationId: params.organizationId,
+                codeHash: sha256Hex(code),
+                expiresAt,
+            });
+            await sendLoginOtpEmail(user.email, code);
+            return {
+                kind: "email_otp",
+                challengeId,
+                emailMasked: maskEmail(user.email),
+            };
+        }
+        const sessionId = crypto.randomBytes(24).toString("hex");
+        const expiresAt = new Date(Date.now() + env.JWT_REFRESH_TTL_SECONDS * 1000);
+        const refreshToken = issueRefreshToken({ sub: user.id, sid: sessionId });
+        const refreshTokenHash = sha256Hex(refreshToken);
+        return {
+            kind: "session",
+            user,
+            membership,
+            refresh: { sessionId, refreshToken, refreshTokenHash, expiresAt },
+        };
+    }
+    async confirmLoginEmailOtp(params) {
+        const row = await this.repo.verifyLoginEmailOtpAndConsume({
+            challengeId: params.challengeId,
+            organizationId: params.organizationId,
+            plainCode: params.code,
+        });
+        const user = await this.repo.getUserById(row.userId);
+        if (!user)
+            throw new Error("Invalid credentials");
+        const membership = await this.repo.findActiveMembership({
+            organizationId: params.organizationId,
+            userId: user.id,
+        });
+        if (!membership || membership.deactivatedAt)
+            throw new Error("Not a member of this organization");
         const sessionId = crypto.randomBytes(24).toString("hex");
         const expiresAt = new Date(Date.now() + env.JWT_REFRESH_TTL_SECONDS * 1000);
         const refreshToken = issueRefreshToken({ sub: user.id, sid: sessionId });
@@ -331,17 +382,25 @@ export class AuthService {
             userAgent: params.userAgent,
             ip: params.ip,
         });
+        const userRow = await this.repo.getUserById(params.userId);
+        const sal = userRow?.systemAccessLevel ? String(userRow.systemAccessLevel) : "organization";
         const accessToken = issueAccessToken({
             sub: params.userId,
             orgId: params.organizationId,
             role: params.role,
             sessionId: params.sessionId,
+            sal,
         });
         // Set refresh token cookie (httpOnly)
         setRefreshCookie(params.response, params.refreshToken);
         return {
             accessToken,
-            viewer: { userId: params.userId, organizationId: params.organizationId, role: params.role },
+            viewer: {
+                userId: params.userId,
+                organizationId: params.organizationId,
+                role: params.role,
+                systemAccessLevel: sal,
+            },
         };
     }
     async logout(params) {
@@ -381,16 +440,24 @@ export class AuthService {
             userAgent: params.userAgent,
             ip: params.ip,
         });
+        const userRow = await this.repo.getUserById(payload.sub);
+        const sal = userRow?.systemAccessLevel ? String(userRow.systemAccessLevel) : "organization";
         const accessToken = issueAccessToken({
             sub: payload.sub,
             orgId: params.organizationId,
             role: membership.role,
             sessionId: newSessionId,
+            sal,
         });
         setRefreshCookie(params.response, newRefreshToken);
         return {
             accessToken,
-            viewer: { userId: payload.sub, organizationId: params.organizationId, role: membership.role },
+            viewer: {
+                userId: payload.sub,
+                organizationId: params.organizationId,
+                role: membership.role,
+                systemAccessLevel: sal,
+            },
         };
     }
     async twoFaSetup(params) {
