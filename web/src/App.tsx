@@ -404,7 +404,6 @@ export default function App() {
   const [forwardSelectedIds, setForwardSelectedIds] = useState<Set<string>>(new Set());
   const [showForwardPicker, setShowForwardPicker] = useState(false);
   const [showLogs, setShowLogs] = useState(false);
-  const [showDev, setShowDev] = useState(false);
   const [theme, setTheme] = useState<"dark" | "light">(() => {
     if (typeof window === "undefined") return "dark";
     return localStorage.getItem("tg:theme") === "light" ? "light" : "dark";
@@ -434,13 +433,7 @@ export default function App() {
   const [showForgotPassword, setShowForgotPassword] = useState(false);
   const [chatSearch, setChatSearch] = useState("");
   const [showCompanyCabinet, setShowCompanyCabinet] = useState(false);
-  const [showAdminUsersPage, setShowAdminUsersPage] = useState(false);
-  const [adminOrgName, setAdminOrgName] = useState("");
-  const [adminPanelMsg, setAdminPanelMsg] = useState("");
-  const [adminNewEmail, setAdminNewEmail] = useState("");
-  const [adminNewPassword, setAdminNewPassword] = useState("");
-  const [adminNewFullName, setAdminNewFullName] = useState("");
-  const [adminNewRole, setAdminNewRole] = useState<"owner" | "admin" | "manager" | "employee" | "guest">("employee");
+  // Админ-страница "Пользователи организации" отключена по требованию
   const [showUserCabinet, setShowUserCabinet] = useState(false);
   const [companyUserQuery, setCompanyUserQuery] = useState("");
   const [companyRoleFilter, setCompanyRoleFilter] = useState<"all" | "owner" | "admin" | "manager" | "employee" | "guest">("all");
@@ -582,6 +575,7 @@ export default function App() {
     {
       id: string;
       email: string;
+      avatarUrl?: string | null;
       firstName?: string | null;
       middleName?: string | null;
       lastName?: string | null;
@@ -622,7 +616,6 @@ export default function App() {
   useEffect(() => {
     if (!isCompanyAdmin) {
       setShowLogs(false);
-      setShowDev(false);
     }
   }, [isCompanyAdmin]);
   const orgChatLogoCss = useMemo(() => {
@@ -1693,7 +1686,6 @@ export default function App() {
     setShowPins(false);
     cancelForwardSelect();
     setShowLogs(false);
-    setShowDev(false);
     pushLog("Выход выполнен.");
   }
 
@@ -2398,6 +2390,7 @@ export default function App() {
       users: {
         id: string;
         email: string;
+        avatarUrl?: string | null;
         firstName?: string | null;
         middleName?: string | null;
         lastName?: string | null;
@@ -2408,7 +2401,7 @@ export default function App() {
         lastSeen?: string | null;
       }[];
     }>(
-      `query($organizationId: ID!) { users(organizationId: $organizationId) { id email phone firstName middleName lastName birthDate role department status lastSeen } }`,
+      `query($organizationId: ID!) { users(organizationId: $organizationId) { id email avatarUrl phone firstName middleName lastName birthDate role department status lastSeen } }`,
       { organizationId: orgId },
       t,
     );
@@ -3056,91 +3049,14 @@ export default function App() {
       token,
     );
     setCompanyActionMsg("Пользователь деактивирован");
-    if (showAdminUsersPage) setAdminPanelMsg("Пользователь деактивирован.");
     await loadUsers();
   }
 
-  async function loadAdminOrganizationName() {
-    if (!token || !organizationId) return;
-    const data = await gql<{ organization: { id: string; name: string } }>(
-      `query($organizationId: ID!) { organization(organizationId: $organizationId) { id name } }`,
-      { organizationId },
-      token,
-    );
-    setAdminOrgName(data.organization.name);
-  }
+  // loadAdminOrganizationName скрыт/убран по требованию
 
-  function openAdminUsersPanel() {
-    if (!isCompanyAdmin) return;
-    setShowAdminUsersPage(true);
-    setAdminPanelMsg("");
-    void (async () => {
-      try {
-        await loadAdminOrganizationName();
-        await loadUsers();
-      } catch (e: unknown) {
-        setAdminPanelMsg(e instanceof Error ? e.message : String(e));
-      }
-    })();
-  }
+  // openAdminUsersPanel скрыт/убран по требованию
 
-  async function adminPanelCreateUser(e: FormEvent) {
-    e.preventDefault();
-    if (!isCompanyAdmin || !token || !organizationId) return;
-    const em = adminNewEmail.trim().toLowerCase();
-    const pw = adminNewPassword.trim();
-    if (!em || pw.length < 8) {
-      setAdminPanelMsg("Укажите email и пароль не короче 8 символов.");
-      return;
-    }
-    setAdminPanelMsg("Создание…");
-    try {
-      await gql<{
-        createOrganizationUser: { id: string; email: string; role: string };
-      }>(
-        `mutation($input: CreateOrganizationUserInput!) {
-          createOrganizationUser(input: $input) { id email role department title }
-        }`,
-        {
-          input: {
-            organizationId,
-            email: em,
-            password: pw,
-            fullName: adminNewFullName.trim() || undefined,
-            role: adminNewRole,
-            department: undefined,
-          },
-        },
-        token,
-      );
-      setAdminNewEmail("");
-      setAdminNewPassword("");
-      setAdminNewFullName("");
-      setAdminPanelMsg(`Пользователь создан: ${em}`);
-      await loadUsers();
-    } catch (err: unknown) {
-      setAdminPanelMsg(err instanceof Error ? err.message : String(err));
-    }
-  }
-
-  async function adminPanelSetPassword(targetUserId: string) {
-    if (!isCompanyAdmin || !token || !organizationId) return;
-    const pw = window.prompt("Новый пароль пользователя (минимум 8 символов)?");
-    if (!pw || pw.length < 8) {
-      if (pw) setAdminPanelMsg("Пароль слишком короткий.");
-      return;
-    }
-    try {
-      await gql<{ setUserPassword: boolean }>(
-        `mutation($input: SetUserPasswordInput!) { setUserPassword(input: $input) }`,
-        { input: { organizationId, userId: targetUserId, password: pw } },
-        token,
-      );
-      setAdminPanelMsg("Пароль обновлён.");
-    } catch (err: unknown) {
-      setAdminPanelMsg(err instanceof Error ? err.message : String(err));
-    }
-  }
+  // adminPanelCreateUser / adminPanelSetPassword отключены по требованию
 
   function openChatMenuAtTime(e: MouseEvent, key: string) {
     e.preventDefault();
@@ -4112,115 +4028,7 @@ export default function App() {
     );
   }
 
-  if (token && showAdminUsersPage && isCompanyAdmin) {
-    return (
-      <div className="adminUsersPage">
-        <header className="adminUsersHeader">
-          <button type="button" className="chip" onClick={() => setShowAdminUsersPage(false)}>
-            ← К мессенджеру
-          </button>
-          <div>
-            <h1 className="adminUsersTitle">Пользователи организации</h1>
-            <p className="adminUsersSub">
-              Компания: <strong>{adminOrgName || "…"}</strong> · ID: <code>{organizationId}</code>
-            </p>
-            <p className="adminUsersHint">
-              Пароли в системе хранятся только в виде хеша; открытый текст показать нельзя. Используйте «Задать пароль» для сброса.
-            </p>
-          </div>
-        </header>
-        {adminPanelMsg ? <div className="adminUsersBanner">{adminPanelMsg}</div> : null}
-        <section className="adminUsersCard">
-          <h2 className="adminUsersCardTitle">Добавить пользователя</h2>
-          <form className="adminUsersForm" onSubmit={(e) => void adminPanelCreateUser(e)}>
-            <input
-              type="email"
-              placeholder="Email (логин)"
-              value={adminNewEmail}
-              onChange={(e) => setAdminNewEmail(e.target.value)}
-              autoComplete="off"
-            />
-            <input
-              type="password"
-              placeholder="Пароль (мин. 8 символов)"
-              value={adminNewPassword}
-              onChange={(e) => setAdminNewPassword(e.target.value)}
-              autoComplete="new-password"
-            />
-            <input
-              type="text"
-              placeholder="Имя (необязательно)"
-              value={adminNewFullName}
-              onChange={(e) => setAdminNewFullName(e.target.value)}
-            />
-            <select value={adminNewRole} onChange={(e) => setAdminNewRole(e.target.value as typeof adminNewRole)}>
-              <option value="employee">employee</option>
-              <option value="manager">manager</option>
-              <option value="guest">guest</option>
-              <option value="admin">admin</option>
-              {viewerRole === "owner" ? <option value="owner">owner</option> : null}
-            </select>
-            <button type="submit">Создать</button>
-          </form>
-        </section>
-        <section className="adminUsersTableWrap">
-          <table className="adminUsersTable">
-            <thead>
-              <tr>
-                <th>Email (логин)</th>
-                <th>Телефон</th>
-                <th>Роль</th>
-                <th>Отдел</th>
-                <th>Компания</th>
-                <th>Пароль</th>
-                <th />
-              </tr>
-            </thead>
-            <tbody>
-              {users.map((u) => {
-                const isSelf = u.id === userId;
-                const targetIsElevated = u.role === "owner" || u.role === "admin";
-                const adminCannotManage = viewerRole === "admin" && targetIsElevated;
-                return (
-                  <tr key={u.id}>
-                    <td>{u.email}</td>
-                    <td>{u.phone?.trim() || "—"}</td>
-                    <td>{u.role ?? "—"}</td>
-                    <td>{u.department ?? "—"}</td>
-                    <td>{adminOrgName || "—"}</td>
-                    <td>
-                      <span className="adminUsersPwdMask">••••••••</span>
-                      <button
-                        type="button"
-                        className="chip adminUsersPwdBtn"
-                        disabled={adminCannotManage}
-                        title={adminCannotManage ? "Недостаточно прав (только owner)" : "Задать новый пароль"}
-                        onClick={() => void adminPanelSetPassword(u.id)}
-                      >
-                        Задать пароль
-                      </button>
-                    </td>
-                    <td className="adminUsersActions">
-                      <button
-                        type="button"
-                        className="chip danger"
-                        disabled={isSelf || adminCannotManage}
-                        title={isSelf ? "Нельзя деактивировать себя" : adminCannotManage ? "Только owner может удалить эту роль" : "Деактивировать"}
-                        onClick={() => void deactivateCompanyUser(u.id)}
-                      >
-                        Удалить
-                      </button>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-          {users.length === 0 ? <div className="empty adminUsersEmpty">Нет активных пользователей. Нажмите «К мессенджеру», откройте меню ⋮ — при необходимости загрузите список из кабинета компании.</div> : null}
-        </section>
-      </div>
-    );
-  }
+  // Админ-страница "Пользователи организации" отключена по требованию
 
   return (
     <div
@@ -4336,49 +4144,11 @@ export default function App() {
               Архив
             </button>
           </div>
-          <div className="row tgModeTabs">
-            <button className={chatListScope === "all" ? "active" : ""} onClick={() => setChatListScope("all")} disabled={!canReadChats}>
-              Все чаты
-            </button>
-            <button
-              className={chatListScope === "dms" ? "active" : ""}
-              onClick={() => {
-                setChatListScope("dms");
-                setMode("dms");
-              }}
-              disabled={!canReadChats}
-            >
-              Личка
-            </button>
-            <button
-              className={chatListScope === "groups" ? "active" : ""}
-              onClick={() => {
-                setChatListScope("groups");
-                setMode("groups");
-              }}
-              disabled={!canReadChats}
-            >
-              Группы
-            </button>
-            <button
-              className={chatListScope === "channels" ? "active" : ""}
-              onClick={() => {
-                setChatListScope("channels");
-                setMode("channels");
-              }}
-              disabled={!canReadChats}
-            >
-              Каналы
-            </button>
-          </div>
+          {/* Разделение списка (Личка/Группы/Каналы) отключено — всегда единый список */}
           <div className="tgChatList">
             {chatListScope === "all" ? (
               <>
-                {orderedDMs.length > 0 ? (
-                  <div className="tgChatSectionTitle" role="presentation">
-                    Личка
-                  </div>
-                ) : null}
+                {/* Единый список без заголовков секций */}
                 {orderedDMs.map((d) => {
                   const otherId = d.userIds.find((id) => id !== userId) ?? d.userIds[0] ?? "";
                   const u = users.find((x) => x.id === otherId);
@@ -4448,11 +4218,7 @@ export default function App() {
                     </button>
                   );
                 })}
-                {orderedGroups.length > 0 ? (
-                  <div className="tgChatSectionTitle" role="presentation">
-                    Группы
-                  </div>
-                ) : null}
+                {/* Единый список без заголовков секций */}
                 {orderedGroups.map((g) => (
                   <button
                     key={`all-g-${g.id}`}
@@ -4513,11 +4279,7 @@ export default function App() {
                     {unreadFor(chatKeyFor("g", g.id)) ? <div className="tgUnread">{unreadFor(chatKeyFor("g", g.id))}</div> : null}
                   </button>
                 ))}
-                {orderedChannels.length > 0 ? (
-                  <div className="tgChatSectionTitle" role="presentation">
-                    Каналы
-                  </div>
-                ) : null}
+                {/* Единый список без заголовков секций */}
                 {orderedChannels.map((c) => (
                   <button
                     key={`all-c-${c.id}`}
@@ -4834,19 +4596,7 @@ export default function App() {
                       Кабинет компании
                     </button>
                   ) : null}
-                  {isCompanyAdmin ? (
-                    <button
-                      type="button"
-                      className="moreMenuWideBtn"
-                      onClick={() => {
-                        openAdminUsersPanel();
-                        setMoreMenuOpen(false);
-                      }}
-                      disabled={!token || !organizationId}
-                    >
-                      Админ: пользователи
-                    </button>
-                  ) : null}
+                  {/* Админ: пользователи скрыто по требованию */}
                   <button
                     type="button"
                     className="moreMenuWideBtn subtle"
@@ -4893,18 +4643,7 @@ export default function App() {
                   >
                     Избранное — заметки для себя
                   </button>
-                  {isCompanyAdmin ? (
-                    <button
-                      type="button"
-                      className="moreMenuWideBtn subtle"
-                      onClick={() => {
-                        setShowLogs(true);
-                        setMoreMenuOpen(false);
-                      }}
-                    >
-                      Журнал / отладка
-                    </button>
-                  ) : null}
+                  {/* Админские отладочные панели скрыты по требованию */}
                   <button
                     type="button"
                     className="moreMenuWideBtn danger"
@@ -4953,36 +4692,7 @@ export default function App() {
                     </div>
                   )}
                 </div>
-                {isCompanyAdmin ? (
-                  <div className="moreMenuSection">
-                    <button type="button" className="moreMenuWideBtn subtle" onClick={() => setShowDev((v) => !v)}>
-                      {showDev ? "Скрыть отладку" : "Отладка и загрузка данных"}
-                    </button>
-                    {showDev ? (
-                      <div className="moreMenuDev">
-                        <label>Workspace ID</label>
-                        <input value={workspaceId} onChange={(e) => setWorkspaceId(e.target.value)} placeholder="workspace id" />
-                        <div className="row" style={{ flexWrap: "wrap", marginTop: 8 }}>
-                          <button type="button" onClick={connectSocket} disabled={!token}>
-                            Socket
-                          </button>
-                          <button type="button" onClick={() => void loadChannels()} disabled={!token || !workspaceId}>
-                            Каналы
-                          </button>
-                          <button type="button" onClick={() => void loadGroupChats()} disabled={!token}>
-                            Группы
-                          </button>
-                          <button type="button" onClick={() => void loadDirectChats()} disabled={!token}>
-                            Личка
-                          </button>
-                          <button type="button" onClick={() => void loadUsers()} disabled={!token || !organizationId}>
-                            Users
-                          </button>
-                        </div>
-                      </div>
-                    ) : null}
-                  </div>
-                ) : null}
+                {/* Админские отладочные панели скрыты по требованию */}
               </div>
             </div>
           </>
@@ -5128,6 +4838,9 @@ export default function App() {
                     }
                     const otherId = activeDirectChat?.userIds.find((id) => id !== userId) ?? activeDirectChat?.userIds[0] ?? "";
                     const u = users.find((x) => x.id === otherId);
+                    if (u?.avatarUrl) {
+                      return <img src={String(u.avatarUrl)} alt="" className="tgHeaderAvatarImg" />;
+                    }
                     return initials(displayUserNameForSidebar(u, otherId || "Л"));
                   })()
                 )}

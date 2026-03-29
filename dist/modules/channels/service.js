@@ -40,7 +40,8 @@ export class ChannelsService {
         if (!workspace || workspace.organizationId !== viewer.organizationId)
             throw new Error("Forbidden");
         const wsMember = await this.repo.isWorkspaceMember({ workspaceId: input.workspaceId, userId: viewer.userId });
-        if (!wsMember || wsMember.role !== "admin")
+        const isOrgAdmin = viewer.role === "owner" || viewer.role === "admin";
+        if ((!wsMember || wsMember.role !== "admin") && !isOrgAdmin)
             throw new Error("Forbidden");
         const channel = await this.repo.createChannel({
             organizationId: viewer.organizationId,
