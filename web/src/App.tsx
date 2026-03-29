@@ -2,76 +2,37 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, MouseEvent } from "react";
 import { io, Socket } from "socket.io-client";
 import * as XLSX from "xlsx";
+import { acceptIncomingOffer, startOutgoingCall } from "./webrtcDm";
 import "./App.css";
-
-const TG_SESSION_KEY = "tg:session";
-const TG_LAST_OPEN_CHAT_KEY = "tg:lastOpenChat";
-
-type StoredSession = {
-  token: string;
-  userId?: string;
-  viewerRole?: string;
-  organizationId?: string;
-  workspaceId?: string;
-};
-
-function readStoredSession(): StoredSession | null {
-  if (typeof window === "undefined") return null;
-  try {
-    const raw = localStorage.getItem(TG_SESSION_KEY);
-    if (!raw) return null;
-    const s = JSON.parse(raw) as Record<string, unknown>;
-    const token = s.token;
-    if (typeof token === "string" && token.length > 0) {
-      return {
-        token,
-        userId: typeof s.userId === "string" ? s.userId : undefined,
-        viewerRole: typeof s.viewerRole === "string" ? s.viewerRole : undefined,
-        organizationId: typeof s.organizationId === "string" ? s.organizationId : undefined,
-        workspaceId: typeof s.workspaceId === "string" ? s.workspaceId : undefined,
-      };
-    }
-  } catch {
-    /* ignore */
-  }
-  return null;
-}
-
-const initialSession = readStoredSession();
 
 type LoginResult = {
   accessToken: string;
   viewer: { userId: string; organizationId: string; role: string };
 };
 
-type Channel = {
-  id: string;
-  workspaceId: string;
-  name: string;
-  type: "public" | "private" | "broadcast";
-  avatarUrl?: string | null;
-  createdByUserId?: string;
-};
-type GroupChat = { id: string; name: string; memberIds: string[]; createdByUserId?: string; avatarUrl?: string | null };
+type Channel = { id: string; workspaceId: string; name: string; type: "public" | "private" | "broadcast" };
+type GroupChat = { id: string; name: string; memberIds: string[] };
 type DirectChat = { id: string; userIds: string[] };
 
 type Reaction = { emoji: string; count: number; viewerHasReacted: boolean };
 type FileInfo = { id: string; originalName?: string | null; mimeType: string; size: number; downloadUrl?: string };
 
+type MessageAuthor = { email: string; firstName?: string | null; lastName?: string | null };
+
 type Message = {
   id: string;
   content: string;
   createdAt: string;
-  author: { email: string };
+  author: MessageAuthor;
   type?: string;
   file?: FileInfo | null;
   reactions?: Reaction[];
   parentMessageId?: string | null;
   editedAt?: string | null;
-  updatedAt?: string;
   isDeleted?: boolean;
   _localFileState?: "uploading" | "scanning" | "failed";
   _localError?: string;
+  _sendState?: "sending" | "failed";
 };
 
 type DirectChatMessage = {
@@ -79,15 +40,21 @@ type DirectChatMessage = {
   directChatId: string;
   content: string;
   createdAt: string;
-  updatedAt?: string;
-  author: { email: string };
+  author: MessageAuthor;
   type?: string;
   parentMessageId?: string | null;
   reactions?: Reaction[];
   file?: FileInfo | null;
 };
 
-/** В проде без VITE_API_URL используем origin сайта (тот же хост, что и UI), иначе fetch уйдёт не туда. */
+type GlobalSearchResult = {
+  users: { id: string; email: string; firstName?: string | null; lastName?: string | null }[];
+  channels: { id: string; name: string; workspaceId: string; type: string }[];
+  messages: { id: string; content: string; createdAt: string; type: string; author: { email: string }; channelId?: string | null; groupChatId?: string | null; directChatId?: string | null }[];
+  files: { id: string; url: string }[];
+};
+
+/** База HTTP API: в проде без VITE_API_URL — тот же origin, что и у сайта (иначе /files и относительные URL ломаются). */
 function getApiBase(): string {
   const env = (import.meta as any).env?.VITE_API_URL as string | undefined;
   if (env && String(env).trim()) return String(env).replace(/\/$/, "");
@@ -142,8 +109,20 @@ async function gql<T>(query: string, variables: Record<string, unknown>, token?:
 function normalizeDownloadUrl(url?: string | null) {
   if (!url) return "";
   if (url.startsWith("http://") || url.startsWith("https://")) return url;
-  if (url.startsWith("/")) return `${API_BASE}${url}`;
+  if (typeof window !== "undefined" && url.startsWith("//")) return `${window.location.protocol}${url}`;
+  const base = getApiBase();
+  if (url.startsWith("/")) return `${base}${url}`;
   return url;
+}
+
+function messageAuthorLabel(author: MessageAuthor | undefined): string {
+  if (!author) return "…";
+  const n = [author.firstName, author.lastName]
+    .map((x) => (x != null ? String(x).trim() : ""))
+    .filter(Boolean)
+    .join(" ")
+    .trim();
+  return n || author.email;
 }
 
 function fileExtensionUpper(name: string): string {
@@ -151,7 +130,6 @@ function fileExtensionUpper(name: string): string {
   return i >= 0 ? name.slice(i + 1).toUpperCase() : "";
 }
 
-/** Подпись формата: расширение из имени или хвост MIME. */
 function fileFormatLabel(originalName: string | null | undefined, mimeType: string): string {
   const ext = fileExtensionUpper(originalName ?? "");
   if (ext) return ext;
@@ -159,56 +137,94 @@ function fileFormatLabel(originalName: string | null | undefined, mimeType: stri
   return part ? part.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 12) : "FILE";
 }
 
-/** Имя для списка чатов и заголовков — без email, только ФИО или нейтральная подпись */
-function displayUserNameForSidebar(
-  u: { email: string; firstName?: string | null; middleName?: string | null; lastName?: string | null } | undefined,
-  fallback: string,
-): string {
-  if (!u) {
-    if (fallback && !fallback.includes("@")) return `Контакт ${fallback.slice(0, 8)}`;
-    return "Участник";
-  }
-  const name = [u.firstName, u.middleName, u.lastName]
-    .map((x) => (x != null ? String(x).trim() : ""))
-    .filter(Boolean)
-    .join(" ")
-    .trim();
-  if (name) return name;
-  if (fallback && !fallback.includes("@")) return `Контакт ${fallback.slice(0, 8)}`;
-  return "Участник";
+function ChatImagePreview(props: { downloadUrl?: string; name?: string | null; token?: string }) {
+  const { downloadUrl, name, token } = props;
+  const [src, setSrc] = useState(() => normalizeDownloadUrl(downloadUrl));
+  const triedRef = useRef(false);
+  useEffect(() => {
+    setSrc(normalizeDownloadUrl(downloadUrl));
+    triedRef.current = false;
+  }, [downloadUrl]);
+  useEffect(() => {
+    return () => {
+      if (src?.startsWith("blob:")) URL.revokeObjectURL(src);
+    };
+  }, [src]);
+  const onImgError = () => {
+    if (triedRef.current || !token || !downloadUrl) return;
+    triedRef.current = true;
+    const abs = normalizeDownloadUrl(downloadUrl);
+    fetch(abs, { headers: { Authorization: `Bearer ${token}` } })
+      .then((r) => (r.ok ? r.blob() : Promise.reject()))
+      .then((b) => setSrc(URL.createObjectURL(b)))
+      .catch(() => {});
+  };
+  const display = src || normalizeDownloadUrl(downloadUrl);
+  if (!display) return null;
+  return (
+    <a href={display} target="_blank" rel="noreferrer" className="chatImageLink">
+      <img src={display} alt={name ?? ""} className="chatImage" onError={onImgError} loading="lazy" />
+    </a>
+  );
 }
 
-/** Одна «стикерная» графема (эмодзи) — для увеличенного отображения в чате */
-function isSingleStickerContent(content: string): boolean {
-  const t = content.trim();
-  if (!t || t.length > 64) return false;
-  try {
-    const seg = [...new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(t)];
-    return seg.length === 1;
-  } catch {
-    return false;
-  }
+function ChatVoicePlayer(props: { downloadUrl?: string; originalName?: string | null; token?: string }) {
+  const { downloadUrl, token, originalName } = props;
+  const [src, setSrc] = useState(() => normalizeDownloadUrl(downloadUrl));
+  const triedRef = useRef(false);
+  useEffect(() => {
+    setSrc(normalizeDownloadUrl(downloadUrl));
+    triedRef.current = false;
+  }, [downloadUrl]);
+  useEffect(() => {
+    return () => {
+      if (src?.startsWith("blob:")) URL.revokeObjectURL(src);
+    };
+  }, [src]);
+  const reloadWithAuth = () => {
+    if (triedRef.current || !token || !downloadUrl) return;
+    triedRef.current = true;
+    const abs = normalizeDownloadUrl(downloadUrl);
+    fetch(abs, { headers: { Authorization: `Bearer ${token}` } })
+      .then((r) => (r.ok ? r.blob() : Promise.reject()))
+      .then((b) => setSrc(URL.createObjectURL(b)))
+      .catch(() => {});
+  };
+  const display = src || normalizeDownloadUrl(downloadUrl);
+  if (!display) return null;
+  return (
+    <div className="voiceMsgBlock">
+      <div className="voiceMsgRow">
+        <audio className="voiceMsgAudio" controls preload="metadata" src={display} onError={reloadWithAuth} />
+        <a
+          className="fileDownloadIconBtn"
+          href={display}
+          download={originalName || undefined}
+          target="_blank"
+          rel="noreferrer"
+          title="Скачать"
+          aria-label="Скачать"
+        >
+          ⬇
+        </a>
+      </div>
+    </div>
+  );
 }
 
 export default function App() {
   const [authMode, setAuthMode] = useState<"admin" | "user">("user");
-  const [organizationId, setOrganizationId] = useState(() => initialSession?.organizationId ?? "");
+  const [organizationId, setOrganizationId] = useState("");
   const [organizationCode, setOrganizationCode] = useState("");
   const [email, setEmail] = useState("admin@seed.local");
   const [password, setPassword] = useState("SeedPass123!");
-  const [workspaceId, setWorkspaceId] = useState(() => initialSession?.workspaceId ?? "");
+  const [workspaceId, setWorkspaceId] = useState("");
 
-  const [token, setToken] = useState(() => initialSession?.token ?? "");
-  const [userId, setUserId] = useState(() => initialSession?.userId ?? "");
-  const [viewerRole, setViewerRole] = useState<"owner" | "admin" | "manager" | "employee" | "guest" | "">(
-    () => (initialSession?.viewerRole as any) ?? "",
-  );
+  const [token, setToken] = useState("");
+  const [userId, setUserId] = useState("");
+  const [viewerRole, setViewerRole] = useState<"owner" | "admin" | "manager" | "employee" | "guest" | "">("");
 
   const [mode, setMode] = useState<"channels" | "groups" | "dms">("channels");
-  /** Список слева: все чаты сразу или только один тип */
-  const [chatListScope, setChatListScope] = useState<"all" | "dms" | "groups" | "channels">("all");
-  /** Звонок Jitsi внутри интерфейса */
-  const [embeddedCall, setEmbeddedCall] = useState<null | { room: string; video: boolean }>(null);
 
   const [channels, setChannels] = useState<Channel[]>([]);
   const [activeChannelId, setActiveChannelId] = useState("");
@@ -224,6 +240,9 @@ export default function App() {
   const [typingUserIds, setTypingUserIds] = useState<string[]>([]);
   const [log, setLog] = useState<string[]>([]);
   const [socket, setSocket] = useState<Socket | null>(null);
+  const [globalQuery, setGlobalQuery] = useState("");
+  const [globalResult, setGlobalResult] = useState<GlobalSearchResult | null>(null);
+  const [showGlobalResult, setShowGlobalResult] = useState(false);
   const [showSaved, setShowSaved] = useState(false);
   const [savedIds, setSavedIds] = useState<Set<string>>(new Set());
   const [showPins, setShowPins] = useState(false);
@@ -232,29 +251,9 @@ export default function App() {
   const [showForwardPicker, setShowForwardPicker] = useState(false);
   const [showLogs, setShowLogs] = useState(false);
   const [showDev, setShowDev] = useState(false);
-  const [moreMenuOpen, setMoreMenuOpen] = useState(false);
-  const [newChatMenuOpen, setNewChatMenuOpen] = useState(false);
-  const [newThingWizardKind, setNewThingWizardKind] = useState<null | "dm" | "group" | "channel">(null);
-  const [wizardUserQuery, setWizardUserQuery] = useState("");
-  const [wizardSelectedUserIds, setWizardSelectedUserIds] = useState<string[]>([]);
-  const [wizardGroupName, setWizardGroupName] = useState("Новая группа");
-  const [wizardChannelName, setWizardChannelName] = useState("new-channel");
-  const [wizardChannelType, setWizardChannelType] = useState<"public" | "private" | "broadcast">("public");
-  const [wizardBusy, setWizardBusy] = useState(false);
-  const [wizardError, setWizardError] = useState("");
-  const [showRightPanel, setShowRightPanel] = useState(false);
-  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
-  const [viewportW, setViewportW] = useState(() => (typeof window !== "undefined" ? window.innerWidth : 1280));
   const [authError, setAuthError] = useState("");
   const [chatSearch, setChatSearch] = useState("");
   const [showCompanyCabinet, setShowCompanyCabinet] = useState(false);
-  const [showAdminUsersPage, setShowAdminUsersPage] = useState(false);
-  const [adminOrgName, setAdminOrgName] = useState("");
-  const [adminPanelMsg, setAdminPanelMsg] = useState("");
-  const [adminNewEmail, setAdminNewEmail] = useState("");
-  const [adminNewPassword, setAdminNewPassword] = useState("");
-  const [adminNewFullName, setAdminNewFullName] = useState("");
-  const [adminNewRole, setAdminNewRole] = useState<"owner" | "admin" | "manager" | "employee" | "guest">("employee");
   const [showUserCabinet, setShowUserCabinet] = useState(false);
   const [companyTab, setCompanyTab] = useState<"employees" | "invites" | "settings" | "admin">("employees");
   const [companyUserQuery, setCompanyUserQuery] = useState("");
@@ -297,20 +296,12 @@ export default function App() {
   const [myProfileEmail, setMyProfileEmail] = useState("");
   const [profileFirstName, setProfileFirstName] = useState("");
   const [profileLastName, setProfileLastName] = useState("");
-  const [profileMiddleName, setProfileMiddleName] = useState("");
-  const [profileBirthDate, setProfileBirthDate] = useState(""); // yyyy-mm-dd для input type=date
   const [profileAvatarUrl, setProfileAvatarUrl] = useState("");
   const [profileStatusText, setProfileStatusText] = useState("");
   const [profileTitle, setProfileTitle] = useState("");
   const [profileDepartment, setProfileDepartment] = useState("");
   const [profileMsg, setProfileMsg] = useState("");
   const [showStickerPicker, setShowStickerPicker] = useState(false);
-  const [chatMetaNameDraft, setChatMetaNameDraft] = useState("");
-  const [chatMetaAvatarData, setChatMetaAvatarData] = useState("");
-  const [chatMetaMsg, setChatMetaMsg] = useState("");
-  const [infoPanelChannelMembers, setInfoPanelChannelMembers] = useState<
-    { id: string; email: string; firstName?: string | null; lastName?: string | null }[]
-  >([]);
   const [stickerCatalog, setStickerCatalog] = useState(defaultStickerCatalog);
   const [installedStickerPackIds, setInstalledStickerPackIds] = useState<string[]>([]);
   const [activeStickerPackId, setActiveStickerPackId] = useState(defaultStickerCatalog[0].id);
@@ -323,27 +314,33 @@ export default function App() {
   const [archivedChatByKey, setArchivedChatByKey] = useState<Record<string, boolean>>({});
   const [chatFolder, setChatFolder] = useState<"all" | "unread" | "archived">("all");
   const [chatMenu, setChatMenu] = useState<null | { x: number; y: number; key: string }>(null);
-  const [callMenuOpen, setCallMenuOpen] = useState(false);
-  const callMenuWrapRef = useRef<HTMLDivElement | null>(null);
   const [msgMenu, setMsgMenu] = useState<null | { x: number; y: number; messageId: string }>(null);
-  const [reactionPopover, setReactionPopover] = useState<null | { messageId: string; top: number; left: number }>(null);
-  const reactionPopoverRef = useRef<HTMLDivElement | null>(null);
+  /** Прочтения по ключу чата `c:id` / `g:id` / `d:id`: userId → lastReadAt ISO */
+  const [threadReadByKey, setThreadReadByKey] = useState<Record<string, Record<string, string>>>({});
+  const [readReceiptModalForId, setReadReceiptModalForId] = useState<string | null>(null);
+  const [readReceiptUsers, setReadReceiptUsers] = useState<{ id: string; email: string; firstName?: string | null; lastName?: string | null }[]>(
+    [],
+  );
+  const [threadSearchQ, setThreadSearchQ] = useState("");
+  const [threadSearchHits, setThreadSearchHits] = useState<Message[]>([]);
+  const [threadSearchOpen, setThreadSearchOpen] = useState(false);
+  const [webrtcUi, setWebrtcUi] = useState<null | {
+    remoteStream: MediaStream | null;
+    localStream: MediaStream;
+    hangup: () => void;
+    audioOnly: boolean;
+  }>(null);
+  const [incomingCall, setIncomingCall] = useState<null | { fromUserId: string; offerSdp: string; audioOnly: boolean }>(null);
+  const userIdRef = useRef("");
+  const directChatsRef = useRef<DirectChat[]>([]);
+  const webrtcBusyRef = useRef(false);
   const [isRecordingVoice, setIsRecordingVoice] = useState(false);
   const [voiceHoldMs, setVoiceHoldMs] = useState(0);
-  const [chatFileDragActive, setChatFileDragActive] = useState(false);
-  const [chatDragPreview, setChatDragPreview] = useState<
-    null | { kind: "image"; url: string; name: string } | { kind: "file"; name: string; ext: string; mime: string }
-  >(null);
-  const chatDragPreviewKeyRef = useRef<string>("");
   const [users, setUsers] = useState<
     {
       id: string;
       email: string;
-      firstName?: string | null;
-      middleName?: string | null;
-      lastName?: string | null;
-      birthDate?: string | null;
-      role?: "owner" | "admin" | "manager" | "employee" | "guest" | null;
+        role?: "owner" | "admin" | "manager" | "employee" | "guest" | null;
       department?: string | null;
       status?: string | null;
       lastSeen?: string | null;
@@ -353,25 +350,10 @@ export default function App() {
     const q = companyUserQuery.trim().toLowerCase();
     return users.filter((u) => {
       const roleOk = companyRoleFilter === "all" ? true : (u.role ?? "employee") === companyRoleFilter;
-      const textOk = !q
-        ? true
-        : `${u.email} ${u.firstName ?? ""} ${u.lastName ?? ""} ${u.department ?? ""}`.toLowerCase().includes(q);
+      const textOk = !q ? true : `${u.email} ${u.department ?? ""}`.toLowerCase().includes(q);
       return roleOk && textOk;
     });
   }, [users, companyUserQuery, companyRoleFilter]);
-
-  const newThingWizardUsers = useMemo(() => {
-    const q = wizardUserQuery.trim().toLowerCase();
-    return users
-      .filter((u) => u.id !== userId)
-      .filter(
-        (u) =>
-          !q ||
-          `${u.email} ${u.firstName ?? ""} ${u.lastName ?? ""} ${u.department ?? ""}`.toLowerCase().includes(q),
-      )
-      .slice()
-      .sort((a, b) => a.email.localeCompare(b.email));
-  }, [users, userId, wizardUserQuery]);
 
   const [presenceByUserId, setPresenceByUserId] = useState<Record<string, { status: string; lastSeen?: string }>>({});
   const isCompanyAdmin = viewerRole === "owner" || viewerRole === "admin";
@@ -401,21 +383,6 @@ export default function App() {
   const canCreateChannelsAndGroups = ["owner", "admin", "manager", "employee"].includes(viewerRole);
   const canStartCalls = ["owner", "admin", "manager", "employee"].includes(viewerRole);
 
-  const messagesRef = useRef<Message[]>([]);
-  messagesRef.current = messages;
-
-  const pendingFileHydrateCount = useMemo(
-    () =>
-      messages.filter(
-        (m) =>
-          (m.type === "voice" || m.type === "file") &&
-          Boolean(m.file?.id) &&
-          !m.file?.downloadUrl &&
-          !m._localFileState,
-      ).length,
-    [messages],
-  );
-
   useEffect(() => {
     if (!isRecordingVoice) {
       setVoiceHoldMs(0);
@@ -428,82 +395,9 @@ export default function App() {
     return () => window.clearInterval(timer);
   }, [isRecordingVoice]);
 
-  /** Не вешаем pointerup на window — после клика «старт» сразу приходит отпускание и рвёт запись. Только Esc и сворачивание вкладки. */
-  useEffect(() => {
-    if (!isRecordingVoice) return;
-    const end = () => {
-      stopVoiceRecordRef.current();
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") end();
-    };
-    window.addEventListener("keydown", onKey, true);
-    const onVis = () => {
-      if (document.visibilityState === "hidden") end();
-    };
-    document.addEventListener("visibilitychange", onVis);
-    return () => {
-      window.removeEventListener("keydown", onKey, true);
-      document.removeEventListener("visibilitychange", onVis);
-    };
-  }, [isRecordingVoice]);
-
   const activeChannel = useMemo(() => channels.find((c) => c.id === activeChannelId), [channels, activeChannelId]);
   const activeGroupChat = useMemo(() => groupChats.find((g) => g.id === activeGroupChatId), [groupChats, activeGroupChatId]);
   const activeDirectChat = useMemo(() => directChats.find((d) => d.id === activeDirectChatId), [directChats, activeDirectChatId]);
-
-  const canEditActiveGroupMeta = useMemo(() => {
-    if (!activeGroupChatId || !userId) return false;
-    const g = groupChats.find((x) => x.id === activeGroupChatId);
-    if (!g?.createdByUserId) return false;
-    return g.createdByUserId === userId || isCompanyAdmin;
-  }, [groupChats, activeGroupChatId, userId, isCompanyAdmin]);
-
-  const canEditActiveChannelMeta = useMemo(() => {
-    if (!activeChannelId || !userId) return false;
-    const c = channels.find((x) => x.id === activeChannelId);
-    if (!c?.createdByUserId) return false;
-    return c.createdByUserId === userId || isCompanyAdmin;
-  }, [channels, activeChannelId, userId, isCompanyAdmin]);
-
-  useEffect(() => {
-    if (mode === "groups" && activeGroupChat) {
-      setChatMetaNameDraft(activeGroupChat.name);
-      setChatMetaAvatarData(activeGroupChat.avatarUrl?.trim() ?? "");
-    } else if (mode === "channels" && activeChannel) {
-      setChatMetaNameDraft(activeChannel.name);
-      setChatMetaAvatarData(activeChannel.avatarUrl?.trim() ?? "");
-    } else {
-      setChatMetaNameDraft("");
-      setChatMetaAvatarData("");
-    }
-    setChatMetaMsg("");
-  }, [mode, activeGroupChat, activeChannel]);
-
-  useEffect(() => {
-    if (!showRightPanel || !token || mode !== "channels" || !activeChannelId) {
-      setInfoPanelChannelMembers([]);
-      return;
-    }
-    let cancelled = false;
-    void (async () => {
-      try {
-        const data = await gql<{
-          channelMembers: { id: string; email: string; firstName?: string | null; lastName?: string | null }[];
-        }>(
-          `query($id: ID!) { channelMembers(channelId: $id) { id email firstName lastName } }`,
-          { id: activeChannelId },
-          token,
-        );
-        if (!cancelled) setInfoPanelChannelMembers(data.channelMembers ?? []);
-      } catch {
-        if (!cancelled) setInfoPanelChannelMembers([]);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [showRightPanel, mode, activeChannelId, token]);
 
   function initials(s: string) {
     const v = (s || "").trim();
@@ -515,35 +409,59 @@ export default function App() {
   }
 
   const chatSearchQ = chatSearch.trim().toLowerCase();
-  const filteredChannels = useMemo(() => {
-    if (!chatSearchQ) return channels;
-    const needle = chatSearchQ.replace(/^#/, "").trim();
-    if (!needle) return channels;
-    return channels.filter((c) => {
-      const name = c.name.toLowerCase();
-      const typeStr = String(c.type ?? "").toLowerCase();
-      return name.includes(needle) || typeStr.includes(needle);
-    });
-  }, [channels, chatSearchQ]);
-  const filteredGroups = useMemo(() => {
-    if (!chatSearchQ) return groupChats;
-    return groupChats.filter((g) => g.name.toLowerCase().includes(chatSearchQ));
-  }, [groupChats, chatSearchQ]);
+  const filteredChannels = useMemo(
+    () => (chatSearchQ ? channels.filter((c) => (`#${c.name}`).toLowerCase().includes(chatSearchQ)) : channels),
+    [channels, chatSearchQ],
+  );
+  const filteredGroups = useMemo(
+    () => (chatSearchQ ? groupChats.filter((g) => g.name.toLowerCase().includes(chatSearchQ)) : groupChats),
+    [groupChats, chatSearchQ],
+  );
   const filteredDMs = useMemo(() => {
     if (!chatSearchQ) return directChats;
     return directChats.filter((d) => {
-      const key = `d:${d.id}`;
       const otherId = d.userIds.find((id) => id !== userId) ?? d.userIds[0] ?? "";
       const u = users.find((x) => x.id === otherId);
-      const label = displayUserNameForSidebar(u, otherId || d.id);
-      const preview = (chatPreviewByKey[key]?.text ?? "").toLowerCase();
-      const hay = `${label} ${u?.email ?? ""} ${otherId} ${preview}`.toLowerCase();
-      return hay.includes(chatSearchQ);
+      const title = u?.email ?? otherId ?? d.id;
+      return title.toLowerCase().includes(chatSearchQ);
     });
-  }, [directChats, users, userId, chatSearchQ, chatPreviewByKey]);
+  }, [directChats, users, userId, chatSearchQ]);
 
   function chatKeyFor(kind: "c" | "g" | "d", id: string) {
     return `${kind}:${id}`;
+  }
+
+  useEffect(() => {
+    userIdRef.current = userId;
+  }, [userId]);
+  useEffect(() => {
+    directChatsRef.current = directChats;
+  }, [directChats]);
+
+  async function mergeThreadReadStates(kind: "c" | "g" | "d", chatId: string) {
+    if (!token || !chatId) return;
+    try {
+      const variables =
+        kind === "c"
+          ? { channelId: chatId, groupChatId: null, directChatId: null }
+          : kind === "g"
+            ? { channelId: null, groupChatId: chatId, directChatId: null }
+            : { channelId: null, groupChatId: null, directChatId: chatId };
+      const data = await gql<{
+        threadReadStates: { userId: string; lastReadAt: string }[];
+      }>(
+        `query($channelId: ID, $groupChatId: ID, $directChatId: ID) {
+          threadReadStates(channelId: $channelId, groupChatId: $groupChatId, directChatId: $directChatId) { userId lastReadAt }
+        }`,
+        variables,
+        token,
+      );
+      const inner: Record<string, string> = {};
+      for (const r of data.threadReadStates) inner[r.userId] = r.lastReadAt;
+      setThreadReadByKey((prev) => ({ ...prev, [chatKeyFor(kind, chatId)]: inner }));
+    } catch {
+      /* ignore */
+    }
   }
 
   function unreadFor(key: string) {
@@ -576,22 +494,22 @@ export default function App() {
   function toggleArchive(key: string) {
     setArchivedChatByKey((prev) => ({ ...prev, [key]: !prev[key] }));
   }
-
-  function removeChatFromList(key: string) {
-    if (!window.confirm("Убрать чат из списка? Его можно снова открыть через вкладку «Архив».")) return;
-    setArchivedChatByKey((prev) => ({ ...prev, [key]: true }));
-    const [kind, id] = key.split(":");
-    if (kind === "c" && id === activeChannelId) {
-      setActiveChannelId("");
-      setMessages([]);
-    } else if (kind === "g" && id === activeGroupChatId) {
-      setActiveGroupChatId("");
-      setMessages([]);
-    } else if (kind === "d" && id === activeDirectChatId) {
-      setActiveDirectChatId("");
-      setMessages([]);
-    }
-    setChatMenu(null);
+  function movePinned(key: string, dir: -1 | 1) {
+    const pinnedKeys = Object.keys(pinnedChatByKey).filter((k) => pinnedChatByKey[k]);
+    const list = pinnedKeys
+      .map((k) => ({ k, o: pinnedOrderByKey[k] ?? 999999 }))
+      .sort((a, b) => a.o - b.o)
+      .map((x) => x.k);
+    const i = list.indexOf(key);
+    if (i < 0) return;
+    const j = i + dir;
+    if (j < 0 || j >= list.length) return;
+    [list[i], list[j]] = [list[j], list[i]];
+    const next: Record<string, number> = {};
+    list.forEach((k, idx) => {
+      next[k] = idx + 1;
+    });
+    setPinnedOrderByKey((prev) => ({ ...prev, ...next }));
   }
   function reorderPinned(dragKey: string, targetKey: string) {
     if (!dragKey || !targetKey || dragKey === targetKey) return;
@@ -684,14 +602,54 @@ export default function App() {
 
   function displayUser(userId: string) {
     const u = users.find((x) => x.id === userId);
-    return displayUserNameForSidebar(u, userId);
+    return u?.email ?? userId;
   }
 
-  function messageAuthorLabel(m: { author?: { email?: string } }) {
-    const em = m.author?.email ?? "";
-    const u = users.find((x) => x.email === em);
-    return displayUserNameForSidebar(u, em);
+  function currentChatKeyStr(): string {
+    if (mode === "channels" && activeChannelId) return chatKeyFor("c", activeChannelId);
+    if (mode === "groups" && activeGroupChatId) return chatKeyFor("g", activeGroupChatId);
+    if (mode === "dms" && activeDirectChatId) return chatKeyFor("d", activeDirectChatId);
+    return "";
   }
+  function peerReadMapForCurrentChat(): Record<string, string> {
+    const k = currentChatKeyStr();
+    if (!k) return {};
+    return threadReadByKey[k] ?? {};
+  }
+  function messageReadByOthers(m: Message, myEmail: string, myUserId: string, peerMap: Record<string, string>) {
+    if (m.author?.email !== myEmail) return false;
+    if (m._sendState === "sending" || m._sendState === "failed") return false;
+    if (String(m.id).startsWith("tmp-")) return false;
+    for (const [uid, iso] of Object.entries(peerMap)) {
+      if (uid === myUserId) continue;
+      try {
+        if (new Date(iso).getTime() >= new Date(m.createdAt).getTime()) return true;
+      } catch {
+        /* ignore */
+      }
+    }
+    return false;
+  }
+
+  useEffect(() => {
+    if (!token || threadRootId || showPins || showSaved) return;
+    const t = window.setTimeout(() => {
+      void (async () => {
+        try {
+          if (mode === "channels" && activeChannelId) {
+            await gql(`mutation($input: MarkThreadReadInput!) { markThreadRead(input: $input) }`, { input: { channelId: activeChannelId } }, token);
+          } else if (mode === "groups" && activeGroupChatId) {
+            await gql(`mutation($input: MarkThreadReadInput!) { markThreadRead(input: $input) }`, { input: { groupChatId: activeGroupChatId } }, token);
+          } else if (mode === "dms" && activeDirectChatId) {
+            await gql(`mutation($input: MarkThreadReadInput!) { markThreadRead(input: $input) }`, { input: { directChatId: activeDirectChatId } }, token);
+          }
+        } catch {
+          /* ignore */
+        }
+      })();
+    }, 600);
+    return () => clearTimeout(t);
+  }, [token, mode, activeChannelId, activeGroupChatId, activeDirectChatId, messages.length, threadRootId, showPins, showSaved]);
 
   useEffect(() => {
     if (!socket) return;
@@ -732,20 +690,6 @@ export default function App() {
   }, [chatMenu]);
 
   useEffect(() => {
-    if (!callMenuOpen) return;
-    const onDown = (e: globalThis.MouseEvent) => {
-      const el = callMenuWrapRef.current;
-      if (el && !el.contains(e.target as Node)) setCallMenuOpen(false);
-    };
-    document.addEventListener("mousedown", onDown, true);
-    return () => document.removeEventListener("mousedown", onDown, true);
-  }, [callMenuOpen]);
-
-  useEffect(() => {
-    setCallMenuOpen(false);
-  }, [mode, activeChannelId, activeGroupChatId, activeDirectChatId]);
-
-  useEffect(() => {
     if (!msgMenu) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") setMsgMenu(null);
@@ -766,7 +710,7 @@ export default function App() {
     // Auto-scroll to bottom on new messages (Telegram behavior)
     if (!stickToBottomRef.current) return;
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [messages.length, mode, activeChannelId, activeGroupChatId, activeDirectChatId, threadRootId, showPins, showSaved]);
+  }, [messages.length, mode, activeChannelId, activeGroupChatId, activeDirectChatId, threadRootId, showPins, showSaved, showGlobalResult]);
 
   useEffect(() => {
     const el = messagesWrapRef.current;
@@ -784,15 +728,14 @@ export default function App() {
 
   const typingRef = useRef<{ started: boolean; stopTimerId: number | null }>({ started: false, stopTimerId: null });
   const localFileMessageIdByFileIdRef = useRef(new Map<string, string>());
+  const fileStatusWaitersRef = useRef(
+    new Map<string, { resolve: () => void; reject: (e: Error) => void; timeoutId: number }>(),
+  );
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const mediaChunksRef = useRef<BlobPart[]>([]);
   const voiceStartAtRef = useRef<number>(0);
-  /** Пользователь отпустил кнопку до окончания await getUserMedia / до rec.start */
-  const voiceRecordAbortRef = useRef(false);
-  const voiceStartingRef = useRef(false);
-  /** Чтобы глобальный pointerup (ниже) вызывал актуальный stopVoiceRecord */
-  const stopVoiceRecordRef = useRef<() => void>(() => {});
+  const voiceTouchActiveRef = useRef(false);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const messagesWrapRef = useRef<HTMLDivElement | null>(null);
@@ -814,31 +757,16 @@ export default function App() {
         setChatMenu(null);
         setShowForwardPicker(false);
         setShowStickerPicker(false);
-        setMoreMenuOpen(false);
-        setNewChatMenuOpen(false);
-        setShowRightPanel(false);
-        setMobileSidebarOpen(false);
         return;
       }
-      if (k === "end" && !showSaved && !showPins) {
+      if (k === "end" && !showGlobalResult && !showSaved && !showPins) {
         stickToBottomRef.current = true;
         messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [showSaved, showPins]);
-
-  useEffect(() => {
-    const onResize = () => setViewportW(window.innerWidth);
-    window.addEventListener("resize", onResize);
-    onResize();
-    return () => window.removeEventListener("resize", onResize);
-  }, []);
-
-  useEffect(() => {
-    if (viewportW < 800) setMobileSidebarOpen(false);
-  }, [activeChannelId, activeGroupChatId, activeDirectChatId, viewportW]);
+  }, [showGlobalResult, showSaved, showPins]);
 
   useEffect(() => {
     try {
@@ -957,42 +885,33 @@ export default function App() {
     }
   }
 
+  async function runGlobalSearch() {
+    if (!token) return;
+    const q = globalQuery.trim();
+    if (!q) return;
+    const data = await gql<{ globalSearch: GlobalSearchResult }>(
+      `query($query: String!) {
+        globalSearch(query: $query) {
+          users { id email firstName lastName }
+          channels { id name workspaceId type }
+          messages { id channelId groupChatId directChatId content createdAt type author { email firstName lastName } }
+          files { id url }
+        }
+      }`,
+      { query: q },
+      token,
+    );
+    setGlobalResult(data.globalSearch);
+    setShowGlobalResult(true);
+    pushLog(
+      `Поиск "${q}": users=${data.globalSearch.users.length} channels=${data.globalSearch.channels.length} messages=${data.globalSearch.messages.length} files=${data.globalSearch.files.length}`,
+    );
+  }
+
   useEffect(() => {
     if (!token) return;
     void refreshSavedIds();
   }, [token]);
-
-  useEffect(() => {
-    if (!token) return;
-    try {
-      localStorage.setItem(
-        TG_SESSION_KEY,
-        JSON.stringify({
-          token,
-          userId,
-          viewerRole,
-          organizationId,
-          workspaceId,
-        }),
-      );
-    } catch {
-      /* ignore */
-    }
-  }, [token, userId, viewerRole, organizationId, workspaceId]);
-
-  useEffect(() => {
-    if (!token) return;
-    let key = "";
-    if (mode === "channels" && activeChannelId) key = `c:${activeChannelId}`;
-    else if (mode === "groups" && activeGroupChatId) key = `g:${activeGroupChatId}`;
-    else if (mode === "dms" && activeDirectChatId) key = `d:${activeDirectChatId}`;
-    if (!key) return;
-    try {
-      localStorage.setItem(TG_LAST_OPEN_CHAT_KEY, JSON.stringify({ key }));
-    } catch {
-      /* ignore */
-    }
-  }, [token, mode, activeChannelId, activeGroupChatId, activeDirectChatId]);
 
   useEffect(() => {
     try {
@@ -1032,7 +951,7 @@ export default function App() {
     const data = await gql<{ savedMessages: Message[] }>(
       `query($limit: Int!) {
         savedMessages(limit: $limit) {
-          id content createdAt editedAt isDeleted type parentMessageId author { email } reactions { emoji count viewerHasReacted } file { id originalName mimeType size downloadUrl }
+          id content createdAt editedAt isDeleted type parentMessageId author { email firstName lastName } reactions { emoji count viewerHasReacted } file { id originalName mimeType size downloadUrl }
         }
       }`,
       { limit: 100 },
@@ -1048,7 +967,7 @@ export default function App() {
     const data = await gql<{ pinnedMessages: Message[] }>(
       `query($channelId: ID!, $limit: Int!) {
         pinnedMessages(channelId: $channelId, limit: $limit) {
-          id content createdAt editedAt isDeleted type parentMessageId author { email } reactions { emoji count viewerHasReacted } file { id originalName mimeType size downloadUrl }
+          id content createdAt editedAt isDeleted type parentMessageId author { email firstName lastName } reactions { emoji count viewerHasReacted } file { id originalName mimeType size downloadUrl }
         }
       }`,
       { channelId: activeChannelId, limit: 50 },
@@ -1128,6 +1047,26 @@ export default function App() {
     setSavedIds(new Set(data.savedMessageIds ?? []));
   }
 
+  async function goToSearchMessage(m: GlobalSearchResult["messages"][number]) {
+    if (m.channelId) {
+      setMode("channels");
+      setActiveChannelId(m.channelId);
+      await loadMessages(m.channelId);
+      return;
+    }
+    if (m.groupChatId) {
+      setMode("groups");
+      setActiveGroupChatId(m.groupChatId);
+      await loadGroupMessages(m.groupChatId);
+      return;
+    }
+    if (m.directChatId) {
+      setMode("dms");
+      setActiveDirectChatId(m.directChatId);
+      await loadDirectMessages(m.directChatId);
+    }
+  }
+
   async function login(e?: FormEvent) {
     e?.preventDefault();
     try {
@@ -1171,17 +1110,18 @@ export default function App() {
       });
       const data = (await res.json()) as LoginResult | { error: string };
       if (!res.ok || "error" in data) throw new Error((data as any).error || "Login failed");
-      setOrganizationId(orgId);
       setToken(data.accessToken);
       setUserId(data.viewer.userId);
       setViewerRole((data.viewer.role as any) ?? "");
       pushLog("Успешный вход.");
-    } catch (e: any) {
-      let msg = String(e?.message ?? e ?? "Login failed");
-      if (msg === "Failed to fetch") {
-        msg =
-          "Не удалось связаться с сервером (сеть / CORS / прокси). Проверьте, что backend запущен, в .env CLIENT_URL совпадает с адресом сайта (можно несколько через запятую), а Nginx проксирует /auth/ и /graphql.";
+      // Auto-load users for presence mapping
+      try {
+        await loadUsers(data.accessToken, orgId);
+      } catch {
+        // ignore
       }
+    } catch (e: any) {
+      const msg = String(e?.message ?? e ?? "Login failed");
       setAuthError(`Ошибка входа: ${msg}`);
     }
   }
@@ -1201,12 +1141,6 @@ export default function App() {
     setToken("");
     setUserId("");
     setViewerRole("");
-    try {
-      localStorage.removeItem(TG_SESSION_KEY);
-      localStorage.removeItem(TG_LAST_OPEN_CHAT_KEY);
-    } catch {
-      /* ignore */
-    }
     setMessages([]);
     setChannels([]);
     setGroupChats([]);
@@ -1215,6 +1149,8 @@ export default function App() {
     setActiveGroupChatId("");
     setActiveDirectChatId("");
     setTypingUserIds([]);
+    setShowGlobalResult(false);
+    setGlobalResult(null);
     setShowSaved(false);
     setShowPins(false);
     cancelForwardSelect();
@@ -1249,7 +1185,11 @@ export default function App() {
         createdAt: String(m.createdAt ?? new Date().toISOString()),
         editedAt: m.editedAt ?? null,
         isDeleted: !!m.isDeleted,
-        author: { email: String(m.author?.email ?? "user") },
+        author: {
+          email: String(m.author?.email ?? "user"),
+          firstName: m.author?.firstName ?? null,
+          lastName: m.author?.lastName ?? null,
+        },
         type: m.type,
         parentMessageId: m.parentMessageId ?? null,
         file: m.file ?? null,
@@ -1355,6 +1295,45 @@ export default function App() {
           );
         }
       }
+
+      const waiter = fileId ? fileStatusWaitersRef.current.get(fileId) : undefined;
+      if (!waiter) return;
+      if (status === "clean") {
+        clearTimeout(waiter.timeoutId);
+        fileStatusWaitersRef.current.delete(fileId);
+        waiter.resolve();
+      } else if (status === "infected" || status === "blocked" || status === "error") {
+        const reason = evt?.blockedReason ? ` (${String(evt.blockedReason)})` : "";
+        clearTimeout(waiter.timeoutId);
+        fileStatusWaitersRef.current.delete(fileId);
+        waiter.reject(new Error(`Файл не прошел проверку: ${status}${reason}`));
+      }
+    });
+    s.on("thread:read", (evt: any) => {
+      const channelId = evt?.channelId ? String(evt.channelId) : null;
+      const groupChatId = evt?.groupChatId ? String(evt.groupChatId) : null;
+      const directChatId = evt?.directChatId ? String(evt.directChatId) : null;
+      const readerUserId = String(evt?.readerUserId ?? "");
+      const lastReadAt = String(evt?.lastReadAt ?? "");
+      if (!readerUserId || !lastReadAt) return;
+      const key = channelId ? chatKeyFor("c", channelId) : groupChatId ? chatKeyFor("g", groupChatId) : directChatId ? chatKeyFor("d", directChatId) : "";
+      if (!key) return;
+      setThreadReadByKey((prev) => ({
+        ...prev,
+        [key]: { ...(prev[key] ?? {}), [readerUserId]: lastReadAt },
+      }));
+    });
+    s.on("call:signal", (data: any) => {
+      const from = String(data?.fromUserId ?? "");
+      const p = data?.payload;
+      if (!from || !p || p.type !== "offer" || !p.sdp) return;
+      const uid = userIdRef.current;
+      const dms = directChatsRef.current;
+      const allowed = dms.some((d) => d.userIds.includes(from) && d.userIds.includes(uid));
+      if (!allowed) return;
+      if (webrtcBusyRef.current) return;
+      const audioOnly = !String(p.sdp).includes("m=video");
+      setIncomingCall({ fromUserId: from, offerSdp: p.sdp, audioOnly });
     });
     setSocket(s);
   }
@@ -1410,32 +1389,20 @@ export default function App() {
   async function loadChannels() {
     if (!token || !workspaceId) return;
     const data = await gql<{ channels: Channel[] }>(
-      `query($workspaceId: ID!) { channels(workspaceId: $workspaceId) { id workspaceId name type avatarUrl createdByUserId } }`,
+      `query($workspaceId: ID!) { channels(workspaceId: $workspaceId) { id workspaceId name type } }`,
       { workspaceId },
       token,
     );
     setChannels(data.channels);
-    setActiveChannelId((prev) => {
-      const ids = new Set(data.channels.map((c) => c.id));
-      if (prev && ids.has(prev)) return prev;
-      return data.channels[0]?.id ?? "";
-    });
+    if (data.channels[0]) setActiveChannelId(data.channels[0].id);
     pushLog(`Каналов: ${data.channels.length}`);
   }
 
   async function loadGroupChats() {
     if (!token) return;
-    const data = await gql<{ groupChats: GroupChat[] }>(
-      `query { groupChats { id name memberIds createdByUserId avatarUrl } }`,
-      {},
-      token,
-    );
+    const data = await gql<{ groupChats: GroupChat[] }>(`query { groupChats { id name memberIds } }`, {}, token);
     setGroupChats(data.groupChats);
-    setActiveGroupChatId((prev) => {
-      const ids = new Set(data.groupChats.map((g) => g.id));
-      if (prev && ids.has(prev)) return prev;
-      return data.groupChats[0]?.id ?? "";
-    });
+    if (data.groupChats[0]) setActiveGroupChatId(data.groupChats[0].id);
     pushLog(`Групп: ${data.groupChats.length}`);
   }
 
@@ -1443,11 +1410,7 @@ export default function App() {
     if (!token) return;
     const data = await gql<{ dms: DirectChat[] }>(`query { dms { id userIds } }`, {}, token);
     setDirectChats(data.dms);
-    setActiveDirectChatId((prev) => {
-      const ids = new Set(data.dms.map((d) => d.id));
-      if (prev && ids.has(prev)) return prev;
-      return data.dms[0]?.id ?? "";
-    });
+    if (data.dms[0]) setActiveDirectChatId(data.dms[0].id);
     pushLog(`DM: ${data.dms.length}`);
   }
 
@@ -1457,7 +1420,6 @@ export default function App() {
     const [kind, id] = value.split(":");
     if (!id) return;
     if (kind === "c") {
-      setChatListScope("channels");
       setMode("channels");
       setActiveChannelId(id);
       setUnreadByKey((prev) => ({ ...prev, [chatKeyFor("c", id)]: 0 }));
@@ -1465,7 +1427,6 @@ export default function App() {
       return;
     }
     if (kind === "g") {
-      setChatListScope("groups");
       setMode("groups");
       setActiveGroupChatId(id);
       setUnreadByKey((prev) => ({ ...prev, [chatKeyFor("g", id)]: 0 }));
@@ -1473,12 +1434,68 @@ export default function App() {
       return;
     }
     if (kind === "d") {
-      setChatListScope("dms");
       setMode("dms");
       setActiveDirectChatId(id);
       setUnreadByKey((prev) => ({ ...prev, [chatKeyFor("d", id)]: 0 }));
       await loadDirectMessages(id);
     }
+  }
+
+  async function createChannelQuick() {
+    if (!token || !workspaceId) return;
+    if (!canCreateChannelsAndGroups) {
+      setChatError("Недостаточно прав для создания канала");
+      return;
+    }
+    const name = (window.prompt("Название канала", "new-channel") ?? "").trim();
+    if (!name) return;
+    const typeRaw = (window.prompt("Тип канала: public/private/broadcast", "public") ?? "public").trim().toLowerCase();
+    const type = (["public", "private", "broadcast"].includes(typeRaw) ? typeRaw : "public") as "public" | "private" | "broadcast";
+    await gql<{ createChannel: { id: string } }>(
+      `mutation($input: CreateChannelInput!) {
+        createChannel(input: $input) { id name type workspaceId }
+      }`,
+      { input: { workspaceId, name, type } },
+      token,
+    );
+    await loadChannels();
+    setMode("channels");
+    pushLog(`Канал создан: #${name}`);
+  }
+
+  async function createGroupChatQuick() {
+    if (!token) return;
+    if (!canCreateChannelsAndGroups) {
+      setChatError("Недостаточно прав для создания группы");
+      return;
+    }
+    const name = (window.prompt("Название группового чата", "Новая группа") ?? "").trim();
+    if (!name) return;
+    const emailsRaw = (window.prompt("Email участников через запятую (опционально)", "") ?? "").trim();
+    const emails = emailsRaw
+      ? emailsRaw
+          .split(",")
+          .map((x) => x.trim().toLowerCase())
+          .filter(Boolean)
+      : [];
+    const idsFromEmails = users.filter((u) => emails.includes(String(u.email).toLowerCase())).map((u) => u.id);
+    const memberIds = Array.from(new Set([...idsFromEmails, userId].filter(Boolean)));
+    if (!memberIds.length) {
+      setChatError("Не удалось определить участников группы");
+      return;
+    }
+    const data = await gql<{ createGroupChat: { id: string; name: string } }>(
+      `mutation($input: CreateGroupChatInput!) {
+        createGroupChat(input: $input) { id name memberIds }
+      }`,
+      { input: { name, memberIds } },
+      token,
+    );
+    await loadGroupChats();
+    setMode("groups");
+    setActiveGroupChatId(data.createGroupChat.id);
+    await loadGroupMessages(data.createGroupChat.id);
+    pushLog(`Группа создана: ${data.createGroupChat.name}`);
   }
 
   async function sendServiceMessageToCurrentChat(content: string) {
@@ -1487,7 +1504,7 @@ export default function App() {
       if (!activeChannelId) return;
       const data = await gql<{ sendMessage: Message }>(
         `mutation($channelId: ID!, $content: String!) {
-          sendMessage(input: { channelId: $channelId, content: $content }) { id content createdAt author { email } type }
+          sendMessage(input: { channelId: $channelId, content: $content }) { id content createdAt author { email firstName lastName } type }
         }`,
         { channelId: activeChannelId, content },
         token,
@@ -1499,7 +1516,7 @@ export default function App() {
       if (!activeGroupChatId) return;
       const data = await gql<{ sendGroupChatMessage: Message }>(
         `mutation($groupChatId: ID!, $content: String!) {
-          sendGroupChatMessage(input: { groupChatId: $groupChatId, content: $content }) { id content createdAt author { email } type }
+          sendGroupChatMessage(input: { groupChatId: $groupChatId, content: $content }) { id content createdAt author { email firstName lastName } type }
         }`,
         { groupChatId: activeGroupChatId, content },
         token,
@@ -1513,7 +1530,7 @@ export default function App() {
       if (!otherUserId) return;
       const data = await gql<{ sendDirectMessage: DirectChatMessage }>(
         `mutation($userId: ID!, $content: String!) {
-          sendDirectMessage(input: { userId: $userId, content: $content }) { id content createdAt author { email } type directChatId }
+          sendDirectMessage(input: { userId: $userId, content: $content }) { id content createdAt author { email firstName lastName } type directChatId }
         }`,
         { userId: otherUserId, content },
         token,
@@ -1531,18 +1548,156 @@ export default function App() {
     }
   }
 
-  async function startEmbeddedCall(video: boolean) {
+  async function runThreadSearch() {
+    const q = threadSearchQ.trim();
+    if (!token || !q) return;
+    setThreadSearchOpen(true);
+    try {
+      const vars =
+        mode === "channels" && activeChannelId
+          ? { query: q, limit: 50, channelId: activeChannelId, groupChatId: null, directChatId: null }
+          : mode === "groups" && activeGroupChatId
+            ? { query: q, limit: 50, channelId: null, groupChatId: activeGroupChatId, directChatId: null }
+            : mode === "dms" && activeDirectChatId
+              ? { query: q, limit: 50, channelId: null, groupChatId: null, directChatId: activeDirectChatId }
+              : null;
+      if (!vars) {
+        setChatError("Откройте чат для поиска по сообщениям");
+        return;
+      }
+      const data = await gql<{ searchMessages: Message[] }>(
+        `query($query: String!, $limit: Int!, $channelId: ID, $groupChatId: ID, $directChatId: ID) {
+          searchMessages(query: $query, limit: $limit, channelId: $channelId, groupChatId: $groupChatId, directChatId: $directChatId) {
+            id content createdAt author { email firstName lastName }
+          }
+        }`,
+        vars,
+        token,
+      );
+      setThreadSearchHits(data.searchMessages);
+      pushLog(`Поиск в чате: ${data.searchMessages.length} совпадений`);
+    } catch (e: any) {
+      setChatError(String(e?.message ?? e));
+    }
+  }
+
+  async function openReadReceipts(messageId: string) {
+    if (!token) return;
+    try {
+      const data = await gql<{
+        messageReaders: { id: string; email: string; firstName?: string | null; lastName?: string | null }[];
+      }>(`query($id: ID!) { messageReaders(messageId: $id) { id email firstName lastName } }`, { id: messageId }, token);
+      setReadReceiptUsers(data.messageReaders);
+      setReadReceiptModalForId(messageId);
+    } catch (e: any) {
+      setChatError(String(e?.message ?? e));
+    }
+  }
+
+  async function acceptIncomingCall() {
+    if (!incomingCall || !socket) return;
+    if (webrtcBusyRef.current) return;
+    webrtcBusyRef.current = true;
+    const { fromUserId, offerSdp, audioOnly } = incomingCall;
+    setIncomingCall(null);
+    try {
+      const ac = await acceptIncomingOffer(socket, {
+        fromUserId,
+        offerSdp,
+        audioOnly,
+        onRemoteStream: (stream) => {
+          setWebrtcUi((prev) => (prev ? { ...prev, remoteStream: stream } : null));
+        },
+        onClose: () => {
+          webrtcBusyRef.current = false;
+          setWebrtcUi(null);
+        },
+      });
+      setWebrtcUi({ localStream: ac.localStream, remoteStream: null, hangup: ac.hangup, audioOnly });
+    } catch (e: any) {
+      webrtcBusyRef.current = false;
+      setChatError(String(e?.message ?? e));
+    }
+  }
+
+  function declineIncomingCall() {
+    if (!incomingCall || !socket) return;
+    socket.emit("call:end", { targetUserId: incomingCall.fromUserId });
+    setIncomingCall(null);
+  }
+
+  async function startAudioCall() {
     if (!canStartCalls) {
       setChatError("Недостаточно прав для звонков");
       return;
     }
-    const room = `sf-${video ? "v" : "a"}-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
-    const link = `https://meet.jit.si/${room}`;
-    await sendServiceMessageToCurrentChat(
-      video ? `🎥 Видеозвонок (в окне мессенджера): ${link}` : `📞 Аудиозвонок (в окне мессенджера): ${link}`,
-    );
-    setEmbeddedCall({ room, video });
-    pushLog(`${video ? "Видео" : "Аудио"} звонок: ${room}`);
+    if (mode !== "dms" || !activeDirectChat) {
+      setChatError("Встроенный звонок доступен в личных сообщениях (DM)");
+      return;
+    }
+    const other = activeDirectChat.userIds.find((id) => id !== userId) ?? "";
+    if (!other || !socket) {
+      setChatError("Нет собеседника или сокет не подключён");
+      return;
+    }
+    if (webrtcBusyRef.current) return;
+    webrtcBusyRef.current = true;
+    try {
+      const ac = await startOutgoingCall(socket, {
+        targetUserId: other,
+        audioOnly: true,
+        onRemoteStream: (stream) => {
+          setWebrtcUi((prev) => (prev ? { ...prev, remoteStream: stream } : null));
+        },
+        onClose: () => {
+          webrtcBusyRef.current = false;
+          setWebrtcUi(null);
+        },
+      });
+      setWebrtcUi({ localStream: ac.localStream, remoteStream: null, hangup: ac.hangup, audioOnly: true });
+      void sendServiceMessageToCurrentChat(`📞 Созвон (встроенный WebRTC)`);
+      pushLog("Созвон: WebRTC");
+    } catch (e: any) {
+      webrtcBusyRef.current = false;
+      setChatError(String(e?.message ?? e));
+    }
+  }
+
+  async function startVideoMeeting() {
+    if (!canStartCalls) {
+      setChatError("Недостаточно прав для видео встреч");
+      return;
+    }
+    if (mode !== "dms" || !activeDirectChat) {
+      setChatError("Встроенный видеозвонок доступен в личных сообщениях (DM)");
+      return;
+    }
+    const other = activeDirectChat.userIds.find((id) => id !== userId) ?? "";
+    if (!other || !socket) {
+      setChatError("Нет собеседника или сокет не подключён");
+      return;
+    }
+    if (webrtcBusyRef.current) return;
+    webrtcBusyRef.current = true;
+    try {
+      const ac = await startOutgoingCall(socket, {
+        targetUserId: other,
+        audioOnly: false,
+        onRemoteStream: (stream) => {
+          setWebrtcUi((prev) => (prev ? { ...prev, remoteStream: stream } : null));
+        },
+        onClose: () => {
+          webrtcBusyRef.current = false;
+          setWebrtcUi(null);
+        },
+      });
+      setWebrtcUi({ localStream: ac.localStream, remoteStream: null, hangup: ac.hangup, audioOnly: false });
+      void sendServiceMessageToCurrentChat(`🎥 Видеовстреча (встроенная WebRTC)`);
+      pushLog("Видеовстреча: WebRTC");
+    } catch (e: any) {
+      webrtcBusyRef.current = false;
+      setChatError(String(e?.message ?? e));
+    }
   }
 
   async function loadUsers(tokenOverride?: string, orgIdOverride?: string) {
@@ -1553,61 +1708,19 @@ export default function App() {
       users: {
         id: string;
         email: string;
-        firstName?: string | null;
-        middleName?: string | null;
-        lastName?: string | null;
-        birthDate?: string | null;
         role?: "owner" | "admin" | "manager" | "employee" | "guest" | null;
         department?: string | null;
         status?: string | null;
         lastSeen?: string | null;
       }[];
     }>(
-      `query($organizationId: ID!) { users(organizationId: $organizationId) { id email firstName middleName lastName birthDate role department status lastSeen } }`,
+      `query($organizationId: ID!) { users(organizationId: $organizationId) { id email role department status lastSeen } }`,
       { organizationId: orgId },
       t,
     );
     setUsers(data.users);
     pushLog(`Пользователей: ${data.users.length}`);
   }
-
-  useEffect(() => {
-    if (!token) return;
-    let cancelled = false;
-    void (async () => {
-      try {
-        if (organizationId) {
-          await loadUsers();
-          if (cancelled) return;
-        }
-        await loadGroupChats();
-        if (cancelled) return;
-        await loadDirectChats();
-        if (cancelled) return;
-        if (workspaceId) await loadChannels();
-        if (cancelled) return;
-        connectSocket();
-        try {
-          const raw = localStorage.getItem(TG_LAST_OPEN_CHAT_KEY);
-          if (raw) {
-            const parsed = JSON.parse(raw) as { key?: string } | string;
-            const key = typeof parsed === "string" ? parsed : parsed?.key;
-            if (key && typeof key === "string" && /^[cgd]:/.test(key)) {
-              await openChatFromList(key);
-            }
-          }
-        } catch {
-          /* ignore */
-        }
-      } catch (e) {
-        console.error(e);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- bootstrap runs when session/workspace is ready; chat loaders are stable enough for this app
-  }, [token, organizationId, workspaceId]);
 
   async function loadMyProfile() {
     if (!token) return;
@@ -1617,8 +1730,6 @@ export default function App() {
         email: string;
         firstName?: string | null;
         lastName?: string | null;
-        middleName?: string | null;
-        birthDate?: string | null;
         avatarUrl?: string | null;
         statusText?: string | null;
         title?: string | null;
@@ -1632,8 +1743,6 @@ export default function App() {
           email
           firstName
           lastName
-          middleName
-          birthDate
           avatarUrl
           statusText
           title
@@ -1648,8 +1757,6 @@ export default function App() {
     setMyProfileEmail(data.me.email);
     setProfileFirstName(data.me.firstName || "");
     setProfileLastName(data.me.lastName || "");
-    setProfileMiddleName(data.me.middleName || "");
-    setProfileBirthDate(data.me.birthDate ? data.me.birthDate.slice(0, 10) : "");
     setProfileAvatarUrl(data.me.avatarUrl || "");
     setProfileStatusText(data.me.statusText || "");
     setProfileTitle(data.me.title || "");
@@ -1676,10 +1783,6 @@ export default function App() {
     const input: Record<string, unknown> = { userId: myProfileId };
     if (profileFirstName.trim()) input.firstName = profileFirstName.trim();
     if (profileLastName.trim()) input.lastName = profileLastName.trim();
-    input.middleName = profileMiddleName.trim() || null;
-    input.birthDate = profileBirthDate.trim()
-      ? new Date(`${profileBirthDate.trim()}T12:00:00`).toISOString()
-      : null;
     if (profileAvatarUrl.trim()) input.avatarUrl = profileAvatarUrl.trim();
     if (profileStatusText.trim()) input.statusText = profileStatusText.trim();
     if (canEditOrgFields && profileTitle.trim()) input.title = profileTitle.trim();
@@ -1693,60 +1796,6 @@ export default function App() {
     );
     setProfileMsg("Профиль сохранен");
     await loadUsers();
-  }
-
-  function applyChatAvatarFromFile(file: File) {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const url = String(reader.result ?? "");
-      if (!url.startsWith("data:image/")) {
-        setChatMetaMsg("Аватар: нужен файл изображения");
-        return;
-      }
-      setChatMetaAvatarData(url);
-    };
-    reader.onerror = () => setChatMetaMsg("Не удалось прочитать файл");
-    reader.readAsDataURL(file);
-  }
-
-  async function saveChatMeta() {
-    if (!token) return;
-    setChatMetaMsg("");
-    try {
-      if (mode === "groups" && activeGroupChatId && canEditActiveGroupMeta) {
-        const input: Record<string, unknown> = { groupChatId: activeGroupChatId };
-        if (chatMetaNameDraft.trim()) input.name = chatMetaNameDraft.trim();
-        input.avatarUrl = chatMetaAvatarData.trim() || null;
-        const data = await gql<{ updateGroupChat: GroupChat }>(
-          `mutation($input: UpdateGroupChatInput!) {
-            updateGroupChat(input: $input) { id name memberIds createdByUserId avatarUrl }
-          }`,
-          { input },
-          token,
-        );
-        setGroupChats((prev) => prev.map((g) => (g.id === data.updateGroupChat.id ? data.updateGroupChat : g)));
-        setChatMetaMsg("Сохранено");
-        return;
-      }
-      if (mode === "channels" && activeChannelId && canEditActiveChannelMeta) {
-        const input: Record<string, unknown> = { channelId: activeChannelId };
-        if (chatMetaNameDraft.trim()) input.name = chatMetaNameDraft.trim();
-        input.avatarUrl = chatMetaAvatarData.trim() || null;
-        const data = await gql<{ updateChannel: Channel }>(
-          `mutation($input: UpdateChannelInput!) {
-            updateChannel(input: $input) { id workspaceId name type avatarUrl createdByUserId }
-          }`,
-          { input },
-          token,
-        );
-        setChannels((prev) =>
-          prev.map((c) => (c.id === data.updateChannel.id ? { ...c, ...data.updateChannel } : c)),
-        );
-        setChatMetaMsg("Сохранено");
-      }
-    } catch (e: unknown) {
-      setChatMetaMsg(String((e as Error)?.message ?? e ?? "Ошибка"));
-    }
   }
 
   function toggleInstallStickerPack(packId: string) {
@@ -1795,165 +1844,6 @@ export default function App() {
     setActiveDirectChatId(data.ensureDirectChat.id);
     await loadDirectChats();
     await loadDirectMessages(data.ensureDirectChat.id);
-  }
-
-  function closeNewThingWizard() {
-    setNewThingWizardKind(null);
-    setWizardSelectedUserIds([]);
-    setWizardError("");
-    setWizardUserQuery("");
-    setWizardBusy(false);
-  }
-
-  async function openNewThingWizard(kind: "dm" | "group" | "channel") {
-    setNewChatMenuOpen(false);
-    setNewThingWizardKind(kind);
-    setWizardSelectedUserIds([]);
-    setWizardError("");
-    setWizardUserQuery("");
-    if (kind === "group") setWizardGroupName("Новая группа");
-    if (kind === "channel") {
-      setWizardChannelName("new-channel");
-      setWizardChannelType("public");
-    }
-    if (token && organizationId && users.length === 0) await loadUsers();
-  }
-
-  function toggleWizardUser(pickId: string) {
-    if (!newThingWizardKind || pickId === userId) return;
-    if (newThingWizardKind === "dm") {
-      setWizardSelectedUserIds((prev) => (prev[0] === pickId ? [] : [pickId]));
-      return;
-    }
-    if (newThingWizardKind === "group") {
-      setWizardSelectedUserIds((prev) => {
-        const s = new Set(prev);
-        if (s.has(pickId)) s.delete(pickId);
-        else if (s.size >= 100) return prev;
-        else s.add(pickId);
-        return Array.from(s);
-      });
-      return;
-    }
-    setWizardSelectedUserIds((prev) => {
-      const s = new Set(prev);
-      if (s.has(pickId)) s.delete(pickId);
-      else s.add(pickId);
-      return Array.from(s);
-    });
-  }
-
-  function wizardSelectAllCompanyUsers() {
-    setWizardSelectedUserIds(users.map((u) => u.id).filter((id) => id !== userId));
-  }
-
-  async function submitNewThingWizard() {
-    if (!newThingWizardKind || !token) return;
-    setWizardError("");
-    if (newThingWizardKind === "dm") {
-      if (!canReadChats) {
-        setWizardError("Недостаточно прав для личных чатов");
-        return;
-      }
-      if (wizardSelectedUserIds.length !== 1) {
-        setWizardError("Выберите ровно одного пользователя");
-        return;
-      }
-      setWizardBusy(true);
-      try {
-        await ensureDmWithUser(wizardSelectedUserIds[0]);
-        closeNewThingWizard();
-        setMobileSidebarOpen(false);
-        pushLog("Личный чат открыт");
-      } catch (e: unknown) {
-        setWizardError(e instanceof Error ? e.message : String(e));
-      } finally {
-        setWizardBusy(false);
-      }
-      return;
-    }
-    if (newThingWizardKind === "group") {
-      if (!canCreateChannelsAndGroups) {
-        setWizardError("Недостаточно прав для создания группы");
-        return;
-      }
-      const gName = wizardGroupName.trim();
-      if (!gName) {
-        setWizardError("Введите название группы");
-        return;
-      }
-      const others = wizardSelectedUserIds.filter((id) => id !== userId);
-      if (others.length < 1 || others.length > 100) {
-        setWizardError("Выберите от 1 до 100 участников");
-        return;
-      }
-      const memberIds = Array.from(new Set([userId, ...others]));
-      setWizardBusy(true);
-      try {
-        const data = await gql<{ createGroupChat: { id: string; name: string } }>(
-          `mutation($input: CreateGroupChatInput!) {
-            createGroupChat(input: $input) { id name memberIds }
-          }`,
-          { input: { name: gName, memberIds } },
-          token,
-        );
-        await loadGroupChats();
-        setMode("groups");
-        setActiveGroupChatId(data.createGroupChat.id);
-        await loadGroupMessages(data.createGroupChat.id);
-        closeNewThingWizard();
-        setMobileSidebarOpen(false);
-        pushLog(`Группа создана: ${data.createGroupChat.name}`);
-      } catch (e: unknown) {
-        setWizardError(e instanceof Error ? e.message : String(e));
-      } finally {
-        setWizardBusy(false);
-      }
-      return;
-    }
-    if (!workspaceId) {
-      setWizardError("Не выбран workspace");
-      return;
-    }
-    if (!canCreateChannelsAndGroups) {
-      setWizardError("Недостаточно прав для создания канала");
-      return;
-    }
-    const chName = wizardChannelName.trim();
-    if (!chName) {
-      setWizardError("Введите название канала");
-      return;
-    }
-    setWizardBusy(true);
-    try {
-      const data = await gql<{ createChannel: { id: string } }>(
-        `mutation($input: CreateChannelInput!) {
-          createChannel(input: $input) { id name type workspaceId }
-        }`,
-        { input: { workspaceId, name: chName, type: wizardChannelType } },
-        token,
-      );
-      const channelId = data.createChannel.id;
-      for (const uid of wizardSelectedUserIds) {
-        if (uid === userId) continue;
-        await gql<{ channelAddMember: boolean }>(
-          `mutation($input: ChannelAddMemberInput!) { channelAddMember(input: $input) }`,
-          { input: { channelId, userId: uid } },
-          token,
-        );
-      }
-      await loadChannels();
-      setMode("channels");
-      setActiveChannelId(channelId);
-      await loadMessages(channelId);
-      closeNewThingWizard();
-      setMobileSidebarOpen(false);
-      pushLog(`Канал создан: #${chName}`);
-    } catch (e: unknown) {
-      setWizardError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setWizardBusy(false);
-    }
   }
 
   async function inviteCompanyUser() {
@@ -2246,122 +2136,16 @@ export default function App() {
       token,
     );
     setCompanyActionMsg("Пользователь деактивирован");
-    if (showAdminUsersPage) setAdminPanelMsg("Пользователь деактивирован.");
     await loadUsers();
   }
 
-  async function loadAdminOrganizationName() {
-    if (!token || !organizationId) return;
-    const data = await gql<{ organization: { id: string; name: string } }>(
-      `query($organizationId: ID!) { organization(organizationId: $organizationId) { id name } }`,
-      { organizationId },
-      token,
-    );
-    setAdminOrgName(data.organization.name);
-  }
-
-  function openAdminUsersPanel() {
-    if (!isCompanyAdmin) return;
-    setShowAdminUsersPage(true);
-    setAdminPanelMsg("");
-    void (async () => {
-      try {
-        await loadAdminOrganizationName();
-        await loadUsers();
-      } catch (e: unknown) {
-        setAdminPanelMsg(e instanceof Error ? e.message : String(e));
-      }
-    })();
-  }
-
-  async function adminPanelCreateUser(e: FormEvent) {
+  function openChatMenu(e: MouseEvent, key: string) {
     e.preventDefault();
-    if (!isCompanyAdmin || !token || !organizationId) return;
-    const em = adminNewEmail.trim().toLowerCase();
-    const pw = adminNewPassword.trim();
-    if (!em || pw.length < 8) {
-      setAdminPanelMsg("Укажите email и пароль не короче 8 символов.");
-      return;
-    }
-    setAdminPanelMsg("Создание…");
-    try {
-      await gql<{
-        createOrganizationUser: { id: string; email: string; role: string };
-      }>(
-        `mutation($input: CreateOrganizationUserInput!) {
-          createOrganizationUser(input: $input) { id email role department title }
-        }`,
-        {
-          input: {
-            organizationId,
-            email: em,
-            password: pw,
-            fullName: adminNewFullName.trim() || undefined,
-            role: adminNewRole,
-            department: undefined,
-          },
-        },
-        token,
-      );
-      setAdminNewEmail("");
-      setAdminNewPassword("");
-      setAdminNewFullName("");
-      setAdminPanelMsg(`Пользователь создан: ${em}`);
-      await loadUsers();
-    } catch (err: unknown) {
-      setAdminPanelMsg(err instanceof Error ? err.message : String(err));
-    }
-  }
-
-  async function adminPanelSetPassword(targetUserId: string) {
-    if (!isCompanyAdmin || !token || !organizationId) return;
-    const pw = window.prompt("Новый пароль пользователя (минимум 8 символов)?");
-    if (!pw || pw.length < 8) {
-      if (pw) setAdminPanelMsg("Пароль слишком короткий.");
-      return;
-    }
-    try {
-      await gql<{ setUserPassword: boolean }>(
-        `mutation($input: SetUserPasswordInput!) { setUserPassword(input: $input) }`,
-        { input: { organizationId, userId: targetUserId, password: pw } },
-        token,
-      );
-      setAdminPanelMsg("Пароль обновлён.");
-    } catch (err: unknown) {
-      setAdminPanelMsg(err instanceof Error ? err.message : String(err));
-    }
-  }
-
-  function openChatMenuAtTime(e: MouseEvent, key: string) {
-    e.preventDefault();
-    e.stopPropagation();
-    const el = e.currentTarget as HTMLElement;
-    const r = el.getBoundingClientRect();
-    const menuW = 260;
-    const menuH = 168;
+    const menuW = 240;
+    const menuH = 210;
     const pad = 8;
-    let x = r.left - menuW - 8;
-    if (x < pad) x = r.right + 8;
-    if (x + menuW > window.innerWidth - pad) x = window.innerWidth - menuW - pad;
-    let y = r.top;
-    if (y + menuH > window.innerHeight - pad) y = window.innerHeight - menuH - pad;
-    y = Math.max(pad, y);
-    setChatMenu({ x, y, key });
-  }
-
-  function openChatMenuAtEditButton(e: MouseEvent, key: string) {
-    e.preventDefault();
-    e.stopPropagation();
-    const el = e.currentTarget as HTMLElement;
-    const r = el.getBoundingClientRect();
-    const menuW = 260;
-    const menuH = 220;
-    const pad = 8;
-    let x = r.right - menuW;
-    if (x < pad) x = pad;
-    if (x + menuW > window.innerWidth - pad) x = window.innerWidth - menuW - pad;
-    let y = r.bottom + 4;
-    if (y + menuH > window.innerHeight - pad) y = Math.max(pad, r.top - menuH - 4);
+    const x = Math.max(pad, Math.min(e.clientX, window.innerWidth - menuW - pad));
+    const y = Math.max(pad, Math.min(e.clientY, window.innerHeight - menuH - pad));
     setChatMenu({ x, y, key });
   }
 
@@ -2370,7 +2154,7 @@ export default function App() {
     const data = await gql<{ messages: { items: Message[] } }>(
       `query($channelId: ID!, $limit: Int!) {
         messages(channelId: $channelId, limit: $limit) {
-          items { id content createdAt editedAt isDeleted type parentMessageId author { email } reactions { emoji count viewerHasReacted } file { id originalName mimeType size downloadUrl } }
+          items { id content createdAt editedAt isDeleted type parentMessageId author { email firstName lastName } reactions { emoji count viewerHasReacted } file { id originalName mimeType size downloadUrl } }
         }
       }`,
       { channelId, limit: 50 },
@@ -2380,6 +2164,7 @@ export default function App() {
     const p = previewForMessages(data.messages.items);
     setChatPreviewByKey((prev) => ({ ...prev, [chatKeyFor("c", channelId)]: p }));
     socket?.emit("channel:join", { channelId });
+    await mergeThreadReadStates("c", channelId);
   }
 
   async function loadGroupMessages(groupChatId: string) {
@@ -2387,7 +2172,7 @@ export default function App() {
     const data = await gql<{ groupChatMessages: Message[] }>(
       `query($groupChatId: ID!, $limit: Int!) {
         groupChatMessages(groupChatId: $groupChatId, limit: $limit) {
-          id content createdAt editedAt isDeleted type parentMessageId author { email } reactions { emoji count viewerHasReacted } file { id originalName mimeType size downloadUrl }
+          id content createdAt editedAt isDeleted type parentMessageId author { email firstName lastName } reactions { emoji count viewerHasReacted } file { id originalName mimeType size downloadUrl }
         }
       }`,
       { groupChatId, limit: 200 },
@@ -2397,6 +2182,7 @@ export default function App() {
     const p = previewForMessages(data.groupChatMessages);
     setChatPreviewByKey((prev) => ({ ...prev, [chatKeyFor("g", groupChatId)]: p }));
     socket?.emit("group:join", { groupChatId });
+    await mergeThreadReadStates("g", groupChatId);
   }
 
   async function loadDirectMessages(directChatId: string) {
@@ -2408,10 +2194,10 @@ export default function App() {
           directChatId
           content
           createdAt
-          updatedAt
+          editedAt
           type
           parentMessageId
-          author { email }
+          author { email firstName lastName }
           reactions { emoji count viewerHasReacted }
           file { id originalName mimeType size downloadUrl }
         }
@@ -2423,8 +2209,12 @@ export default function App() {
         id: m.id,
         content: m.content,
         createdAt: m.createdAt,
-        editedAt: m.updatedAt ?? null,
-        author: { email: m.author.email },
+      editedAt: (m as any).editedAt ?? null,
+        author: {
+          email: m.author.email,
+          firstName: m.author.firstName ?? null,
+          lastName: m.author.lastName ?? null,
+        },
         type: m.type,
         reactions: m.reactions ?? [],
         file: m.file ?? null,
@@ -2434,6 +2224,7 @@ export default function App() {
     const p = previewForMessages(mapped);
     setChatPreviewByKey((prev) => ({ ...prev, [chatKeyFor("d", directChatId)]: p }));
     socket?.emit("dm:join", { directChatId });
+    await mergeThreadReadStates("d", directChatId);
   }
 
   async function openThread(parentMessageId: string) {
@@ -2441,19 +2232,14 @@ export default function App() {
     const data = await gql<{ thread: Message[] }>(
       `query($parentMessageId: ID!, $limit: Int!) {
         thread(parentMessageId: $parentMessageId, limit: $limit) {
-          id content createdAt editedAt updatedAt isDeleted type parentMessageId author { email } reactions { emoji count viewerHasReacted } file { id originalName mimeType size downloadUrl }
+          id content createdAt editedAt isDeleted type parentMessageId author { email firstName lastName } reactions { emoji count viewerHasReacted } file { id originalName mimeType size downloadUrl }
         }
       }`,
       { parentMessageId, limit: 200 },
       token,
     );
     setThreadRootId(parentMessageId);
-    setMessages(
-      data.thread.map((row) => ({
-        ...row,
-        editedAt: row.editedAt ?? row.updatedAt ?? null,
-      })),
-    );
+    setMessages(data.thread);
   }
 
   async function backFromThread() {
@@ -2497,9 +2283,9 @@ export default function App() {
     }
   }
 
-  async function sendMessage(e?: FormEvent, contentOverride?: string) {
+  async function sendMessage(e?: FormEvent) {
     e?.preventDefault();
-    const content = (contentOverride !== undefined ? contentOverride : newMessage).trimEnd();
+    const content = newMessage.trimEnd();
     if (!token || !content.trim()) return;
     setChatError("");
 
@@ -2510,67 +2296,96 @@ export default function App() {
       emitTypingStop();
     }
 
+    const tempId = `tmp-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+    const optimistic: Message = {
+      id: tempId,
+      content,
+      createdAt: new Date().toISOString(),
+      author: {
+        email,
+        firstName: profileFirstName || null,
+        lastName: profileLastName || null,
+      },
+      _sendState: "sending",
+    };
+    setMessages((prev) => [...prev, optimistic]);
+
     try {
       const parentMessageId = replyTo?.id;
       if (mode === "channels") {
-        if (!activeChannelId) return;
+        if (!activeChannelId) {
+          setMessages((prev) => prev.filter((m) => m.id !== tempId));
+          return;
+        }
         const data = await gql<{ sendMessage: Message }>(
           `mutation($channelId: ID!, $content: String!, $parentMessageId: ID) {
             sendMessage(input: { channelId: $channelId, content: $content, parentMessageId: $parentMessageId }) {
-              id content createdAt editedAt isDeleted type parentMessageId author { email } reactions { emoji count viewerHasReacted }
+              id content createdAt editedAt isDeleted type parentMessageId author { email firstName lastName } reactions { emoji count viewerHasReacted }
             }
           }`,
           { channelId: activeChannelId, content, ...(parentMessageId ? { parentMessageId } : {}) },
           token,
         );
-        setMessages((prev) => [...prev, data.sendMessage]);
+        setMessages((prev) => prev.map((m) => (m.id === tempId ? { ...data.sendMessage } : m)));
       } else if (mode === "groups") {
-        if (!activeGroupChatId) return;
+        if (!activeGroupChatId) {
+          setMessages((prev) => prev.filter((m) => m.id !== tempId));
+          return;
+        }
         const data = await gql<{ sendGroupChatMessage: Message }>(
           `mutation($groupChatId: ID!, $content: String!, $parentMessageId: ID) {
             sendGroupChatMessage(input: { groupChatId: $groupChatId, content: $content, parentMessageId: $parentMessageId }) {
-              id content createdAt editedAt isDeleted type parentMessageId author { email } reactions { emoji count viewerHasReacted }
+              id content createdAt editedAt isDeleted type parentMessageId author { email firstName lastName } reactions { emoji count viewerHasReacted }
             }
           }`,
           { groupChatId: activeGroupChatId, content, ...(parentMessageId ? { parentMessageId } : {}) },
           token,
         );
-        setMessages((prev) => [...prev, data.sendGroupChatMessage]);
+        setMessages((prev) => prev.map((m) => (m.id === tempId ? { ...data.sendGroupChatMessage } : m)));
       } else {
-        if (!activeDirectChat) return;
+        if (!activeDirectChat) {
+          setMessages((prev) => prev.filter((m) => m.id !== tempId));
+          return;
+        }
         const otherUserId = activeDirectChat.userIds.find((id) => id !== userId) ?? "";
-        if (!otherUserId) return;
+        if (!otherUserId) {
+          setMessages((prev) => prev.filter((m) => m.id !== tempId));
+          return;
+        }
         const data = await gql<{ sendDirectMessage: DirectChatMessage }>(
           `mutation($userId: ID!, $content: String!, $parentMessageId: ID) {
             sendDirectMessage(input: { userId: $userId, content: $content, parentMessageId: $parentMessageId }) {
-              id directChatId content createdAt updatedAt type parentMessageId author { email } reactions { emoji count viewerHasReacted } file { id originalName mimeType size downloadUrl }
+              id directChatId content createdAt editedAt type parentMessageId author { email firstName lastName } reactions { emoji count viewerHasReacted } file { id originalName mimeType size downloadUrl }
             }
           }`,
           { userId: otherUserId, content, ...(parentMessageId ? { parentMessageId } : {}) },
           token,
         );
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: data.sendDirectMessage.id,
-            content: data.sendDirectMessage.content,
-            createdAt: data.sendDirectMessage.createdAt,
-            editedAt: data.sendDirectMessage.updatedAt ?? null,
-            author: data.sendDirectMessage.author,
-            type: data.sendDirectMessage.type,
-            reactions: data.sendDirectMessage.reactions ?? [],
-            file: data.sendDirectMessage.file ?? null,
-            parentMessageId: data.sendDirectMessage.parentMessageId ?? null,
-          },
-        ]);
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === tempId
+              ? {
+                  id: data.sendDirectMessage.id,
+                  content: data.sendDirectMessage.content,
+                  createdAt: data.sendDirectMessage.createdAt,
+                  editedAt: (data.sendDirectMessage as any).editedAt ?? null,
+                  author: data.sendDirectMessage.author,
+                  type: data.sendDirectMessage.type,
+                  reactions: data.sendDirectMessage.reactions ?? [],
+                  file: data.sendDirectMessage.file ?? null,
+                  parentMessageId: data.sendDirectMessage.parentMessageId ?? null,
+                }
+              : m,
+          ),
+        );
       }
       setNewMessage("");
       setReplyTo(null);
-      setShowStickerPicker(false);
     } catch (e: any) {
       const msg = String(e?.message ?? e ?? "Не удалось отправить сообщение");
       setChatError(msg);
       pushLog(`sendMessage error: ${msg}`);
+      setMessages((prev) => prev.map((m) => (m.id === tempId ? { ...m, _sendState: "failed" } : m)));
     }
   }
 
@@ -2583,7 +2398,7 @@ export default function App() {
     if (mode === "channels") {
       const data = await gql<{ editMessage: any }>(
         `mutation($input: EditMessageInput!) {
-          editMessage(input: $input) { id content createdAt type author { email } reactions { emoji count viewerHasReacted } file { id originalName mimeType size downloadUrl } }
+          editMessage(input: $input) { id content createdAt type author { email firstName lastName } reactions { emoji count viewerHasReacted } file { id originalName mimeType size downloadUrl } }
         }`,
         { input: { messageId, content: next } },
         token,
@@ -2593,7 +2408,7 @@ export default function App() {
       const data = await gql<{ editGroupChatMessage: any }>(
         `mutation($groupChatId: ID!, $messageId: ID!, $content: String!) {
           editGroupChatMessage(groupChatId: $groupChatId, messageId: $messageId, content: $content) {
-            id content createdAt type author { email } reactions { emoji count viewerHasReacted } file { id originalName mimeType size downloadUrl }
+            id content createdAt type author { email firstName lastName } reactions { emoji count viewerHasReacted } file { id originalName mimeType size downloadUrl }
           }
         }`,
         { groupChatId: activeGroupChatId, messageId, content: next },
@@ -2604,7 +2419,7 @@ export default function App() {
       const data = await gql<{ editDirectMessage: any }>(
         `mutation($directChatId: ID!, $messageId: ID!, $content: String!) {
           editDirectMessage(directChatId: $directChatId, messageId: $messageId, content: $content) {
-            id directChatId content createdAt updatedAt type author { email } reactions { emoji count viewerHasReacted } file { id originalName mimeType size downloadUrl }
+            id directChatId content createdAt type author { email firstName lastName } reactions { emoji count viewerHasReacted } file { id originalName mimeType size downloadUrl }
           }
         }`,
         { directChatId: activeDirectChatId, messageId, content: next },
@@ -2617,7 +2432,6 @@ export default function App() {
                 id: data.editDirectMessage.id,
                 content: data.editDirectMessage.content,
                 createdAt: data.editDirectMessage.createdAt,
-                editedAt: data.editDirectMessage.updatedAt ?? null,
                 author: data.editDirectMessage.author,
                 type: data.editDirectMessage.type,
                 reactions: data.editDirectMessage.reactions ?? [],
@@ -2668,16 +2482,38 @@ export default function App() {
     async function sleep(ms: number) {
       await new Promise((r) => setTimeout(r, ms));
     }
-    /** Пока файл не clean, send падает; не раздуваем матч под «service unavailable». */
-    function isFileNotReadyError(e: unknown) {
-      const msg = String((e as Error)?.message ?? e ?? "").toLowerCase();
-      return (
-        msg.includes("file not available") ||
-        msg.includes("not clean") ||
-        (msg.includes("pending") && (msg.includes("file") || msg.includes("scan") || msg.includes("av"))) ||
-        ((msg.includes("not available") || msg.includes("unavailable")) &&
-          (msg.includes("file") || msg.includes("download")))
-      );
+    async function waitForFileClean(fileId: string, timeoutMs = 60_000) {
+      if (socket) {
+        await new Promise<void>((resolve, reject) => {
+          const existing = fileStatusWaitersRef.current.get(fileId);
+          if (existing) {
+            clearTimeout(existing.timeoutId);
+            fileStatusWaitersRef.current.delete(fileId);
+          }
+          const timeoutId = window.setTimeout(() => {
+            fileStatusWaitersRef.current.delete(fileId);
+            reject(new Error("Таймаут ожидания антивирусной проверки (socket)"));
+          }, timeoutMs);
+          fileStatusWaitersRef.current.set(fileId, { resolve, reject, timeoutId });
+        });
+        return;
+      }
+
+      const started = Date.now();
+      while (Date.now() - started < timeoutMs) {
+        const data = await gql<{ file: { id: string; avStatus: string; blockedReason?: string | null } }>(
+          `query($id: ID!) { file(id: $id) { id avStatus blockedReason } }`,
+          { id: fileId },
+          token,
+        );
+        const status = String(data.file.avStatus || "");
+        if (status === "clean") return;
+        if (status === "infected" || status === "blocked" || status === "error") {
+          throw new Error(`Файл не прошел проверку: ${status}${data.file.blockedReason ? ` (${data.file.blockedReason})` : ""}`);
+        }
+        await sleep(1000);
+      }
+      throw new Error("Таймаут ожидания антивирусной проверки (pending слишком долго)");
     }
 
     const presign = await gql<{ createPresignedUpload: { fileId: string; uploadUrl: string } }>(
@@ -2780,101 +2616,52 @@ export default function App() {
       await gql<{ confirmFileUploaded: boolean }>(`mutation($fileId: ID!) { confirmFileUploaded(fileId: $fileId) }`, { fileId }, token);
 
       setMessages((prev) => prev.map((m) => (m.id === localId ? { ...m, _localFileState: "scanning" } : m)));
+      await waitForFileClean(fileId);
 
-      /* Не запрашиваем `file { ... }` в ответе мутации: резолвер File тянет presigned URL и на старых бэках
-         падает, пока запись ещё pending — мутация целиком ошибкой даже после успешного createMessage. */
-      const maxSendAttempts = 60;
-      for (let attempt = 0; attempt < maxSendAttempts; attempt++) {
-        try {
-          if (mode === "channels") {
-            const data = await gql<{ sendFileMessage: Message }>(
-              `mutation($input: SendFileMessageInput!) {
-            sendFileMessage(input: $input) { id content createdAt type author { email } reactions { emoji count viewerHasReacted } }
+      if (mode === "channels") {
+        const data = await gql<{ sendFileMessage: Message }>(
+          `mutation($input: SendFileMessageInput!) {
+            sendFileMessage(input: $input) { id content createdAt type author { email firstName lastName } reactions { emoji count viewerHasReacted } file { id originalName mimeType size downloadUrl } }
           }`,
-              { input: { channelId: activeChannelId, fileId, kind } },
-              token,
-            );
-            const sent = data.sendFileMessage as any;
-            setMessages((prev) =>
-              prev.map((m) =>
-                m.id === localId
-                  ? {
-                      ...sent,
-                      file: {
-                        id: fileId,
-                        originalName: originalName || null,
-                        mimeType: effectiveMime,
-                        size: blob.size,
-                      },
-                    }
-                  : m,
-              ),
-            );
-            void hydrateDownloadUrl(fileId);
-            return;
-          }
-          if (mode === "groups") {
-            const data = await gql<{ sendGroupChatFileMessage: Message }>(
-              `mutation($input: SendGroupChatFileMessageInput!) {
-            sendGroupChatFileMessage(input: $input) { id content createdAt type author { email } reactions { emoji count viewerHasReacted } }
+          { input: { channelId: activeChannelId, fileId, kind } },
+          token,
+        );
+        setMessages((prev) => prev.map((m) => (m.id === localId ? (data.sendFileMessage as any) : m)));
+      } else if (mode === "groups") {
+        const data = await gql<{ sendGroupChatFileMessage: Message }>(
+          `mutation($input: SendGroupChatFileMessageInput!) {
+            sendGroupChatFileMessage(input: $input) { id content createdAt type author { email firstName lastName } reactions { emoji count viewerHasReacted } file { id originalName mimeType size downloadUrl } }
           }`,
-              { input: { groupChatId: activeGroupChatId, fileId, kind } },
-              token,
-            );
-            const sent = data.sendGroupChatFileMessage as any;
-            setMessages((prev) =>
-              prev.map((m) =>
-                m.id === localId
-                  ? {
-                      ...sent,
-                      file: {
-                        id: fileId,
-                        originalName: originalName || null,
-                        mimeType: effectiveMime,
-                        size: blob.size,
-                      },
-                    }
-                  : m,
-              ),
-            );
-            void hydrateDownloadUrl(fileId);
-            return;
-          }
-          const data = await gql<{ sendDirectFileMessage: any }>(
-            `mutation($input: SendDirectFileMessageInput!) {
+          { input: { groupChatId: activeGroupChatId, fileId, kind } },
+          token,
+        );
+        setMessages((prev) => prev.map((m) => (m.id === localId ? (data.sendGroupChatFileMessage as any) : m)));
+      } else {
+        const data = await gql<{ sendDirectFileMessage: any }>(
+          `mutation($input: SendDirectFileMessageInput!) {
             sendDirectFileMessage(input: $input) {
-              id directChatId content createdAt type author { email }
+              id directChatId content createdAt type author { email firstName lastName }
             }
           }`,
-            { input: { directChatId: activeDirectChatId, fileId, kind } },
-            token,
-          );
-          setMessages((prev) =>
-            prev.map((m) =>
-              m.id === localId
-                ? {
-                    id: data.sendDirectFileMessage.id,
-                    content: data.sendDirectFileMessage.content ?? "",
-                    createdAt: data.sendDirectFileMessage.createdAt,
-                    author: data.sendDirectFileMessage.author,
-                    type: data.sendDirectFileMessage.type,
-                    reactions: [],
-                    file: { id: fileId, originalName: originalName || null, mimeType: effectiveMime, size: blob.size },
-                  }
-                : m,
-            ),
-          );
-          void hydrateDownloadUrl(fileId);
-          return;
-        } catch (e: unknown) {
-          if (isFileNotReadyError(e) && attempt < maxSendAttempts - 1) {
-            await sleep(1000);
-            continue;
-          }
-          throw e;
-        }
+          { input: { directChatId: activeDirectChatId, fileId, kind } },
+          token,
+        );
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === localId
+              ? {
+                  id: data.sendDirectFileMessage.id,
+                  content: data.sendDirectFileMessage.content ?? "",
+                  createdAt: data.sendDirectFileMessage.createdAt,
+                  author: data.sendDirectFileMessage.author,
+                  type: data.sendDirectFileMessage.type,
+                  reactions: [],
+                  file: { id: fileId, originalName: originalName || null, mimeType: effectiveMime, size: blob.size },
+                }
+              : m,
+          ),
+        );
       }
-      throw new Error("Таймаут: файл не стал доступен для отправки (антивирус/очередь)");
     } catch (e: any) {
       const msg = String(e?.message ?? e ?? "Upload failed");
       setMessages((prev) => prev.map((m) => (m.id === localId ? { ...m, _localFileState: "failed", _localError: msg } : m)));
@@ -2882,20 +2669,18 @@ export default function App() {
     }
   }
 
-  async function hydrateDownloadUrl(fileId: string) {
+  async function hydrateDownloadUrl(messageId: string, fileId: string) {
     if (!token) return;
-    const data = await gql<{ file: { id: string; downloadUrl?: string | null; originalName?: string | null; mimeType: string; size: number } }>(
+    const data = await gql<{ file: { id: string; downloadUrl: string; originalName?: string | null; mimeType: string; size: number } }>(
       `query($id: ID!) {
         file(id: $id) { id originalName mimeType size downloadUrl }
       }`,
       { id: fileId },
       token,
     );
-    const url = data.file.downloadUrl ? String(data.file.downloadUrl) : undefined;
-    /** Ищем по fileId: после send сообщение уже с серверным id, а не local-file-… */
     setMessages((prev) =>
       prev.map((m) =>
-        m.file?.id === fileId
+        m.id === messageId
           ? {
               ...m,
               file: {
@@ -2903,54 +2688,13 @@ export default function App() {
                 originalName: data.file.originalName ?? m.file?.originalName ?? null,
                 mimeType: data.file.mimeType,
                 size: data.file.size,
-                ...(url ? { downloadUrl: url } : {}),
+                downloadUrl: data.file.downloadUrl,
               },
             }
           : m,
       ),
     );
   }
-
-  /** Пока нет presigned URL у вложения — запрашиваем сразу и повторяем, пока файл не готов (скан и т.п.). */
-  useEffect(() => {
-    if (!token || pendingFileHydrateCount === 0) return;
-    const tick = () => {
-      const list = messagesRef.current;
-      for (const m of list) {
-        if (
-          (m.type === "voice" || m.type === "file") &&
-          m.file?.id &&
-          !m.file.downloadUrl &&
-          !m._localFileState
-        ) {
-          void hydrateDownloadUrl(m.file.id);
-        }
-      }
-    };
-    tick();
-    const id = window.setInterval(tick, 2500);
-    return () => window.clearInterval(id);
-  }, [token, pendingFileHydrateCount]);
-
-  useEffect(() => {
-    if (!reactionPopover) return;
-    const onDown = (e: globalThis.MouseEvent) => {
-      const t = e.target as HTMLElement | null;
-      if (t?.closest?.("[data-reaction-trigger]")) return;
-      const el = reactionPopoverRef.current;
-      if (el && e.target instanceof Node && el.contains(e.target)) return;
-      setReactionPopover(null);
-    };
-    const onKey = (e: globalThis.KeyboardEvent) => {
-      if (e.key === "Escape") setReactionPopover(null);
-    };
-    document.addEventListener("mousedown", onDown, true);
-    document.addEventListener("keydown", onKey, true);
-    return () => {
-      document.removeEventListener("mousedown", onDown, true);
-      document.removeEventListener("keydown", onKey, true);
-    };
-  }, [reactionPopover]);
 
   async function pickFile() {
     const el = document.createElement("input");
@@ -2964,208 +2708,86 @@ export default function App() {
   }
 
   async function startVoiceRecord() {
-    if (isRecordingVoice || mediaRecorderRef.current || voiceStartingRef.current) return;
+    if (isRecordingVoice || mediaRecorderRef.current) return;
     if (!navigator.mediaDevices?.getUserMedia) throw new Error("getUserMedia not supported");
     if (typeof MediaRecorder === "undefined") throw new Error("MediaRecorder not supported in browser");
     setChatError("");
-    voiceRecordAbortRef.current = false;
-    voiceStartingRef.current = true;
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      if (voiceRecordAbortRef.current) {
-        stream.getTracks().forEach((t) => t.stop());
-        return;
-      }
-      mediaStreamRef.current = stream;
-      const preferredTypes = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"];
-      const supported = preferredTypes.find((t) => (MediaRecorder as any).isTypeSupported?.(t));
-      const rec = supported ? new MediaRecorder(stream, { mimeType: supported }) : new MediaRecorder(stream);
-      mediaRecorderRef.current = rec;
-      voiceStartAtRef.current = Date.now();
-      mediaChunksRef.current = [];
-      rec.ondataavailable = (e) => {
-        if (e.data?.size) mediaChunksRef.current.push(e.data);
-      };
-      rec.onstop = async () => {
-        try {
-          const blob = new Blob(mediaChunksRef.current, { type: rec.mimeType || "audio/webm" });
-          mediaChunksRef.current = [];
-          const durationMs = Date.now() - voiceStartAtRef.current;
-          if (durationMs < 250) {
-            setChatError("Слишком короткая запись. Запишите дольше.");
-            return;
-          }
-          if (blob.size > 0) {
-            await uploadAndSend("voice", blob, `voice-${Date.now()}.webm`);
-          } else {
-            setChatError("Голосовое не записалось. Разрешите доступ к микрофону и попробуйте снова.");
-          }
-        } catch (e: any) {
-          const msg = String(e?.message ?? e ?? "Не удалось отправить голосовое");
-          setChatError(msg);
-          pushLog(`voice error: ${msg}`);
-        } finally {
-          mediaStreamRef.current?.getTracks().forEach((t) => t.stop());
-          mediaStreamRef.current = null;
-          mediaRecorderRef.current = null;
-          setIsRecordingVoice(false);
-        }
-      };
-      if (voiceRecordAbortRef.current) {
-        stream.getTracks().forEach((t) => t.stop());
-        mediaStreamRef.current = null;
-        mediaRecorderRef.current = null;
-        return;
-      }
-      /* Интервал ms — иначе в части браузеров ondataavailable не даёт данные до stop и blob пустой */
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    mediaStreamRef.current = stream;
+    const preferredTypes = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"];
+    const supported = preferredTypes.find((t) => (MediaRecorder as any).isTypeSupported?.(t));
+    const rec = supported ? new MediaRecorder(stream, { mimeType: supported }) : new MediaRecorder(stream);
+    mediaRecorderRef.current = rec;
+    voiceStartAtRef.current = Date.now();
+    mediaChunksRef.current = [];
+    rec.ondataavailable = (e) => {
+      if (e.data?.size) mediaChunksRef.current.push(e.data);
+    };
+    rec.onstop = async () => {
       try {
-        rec.start(250);
-      } catch {
-        rec.start();
-      }
-      setIsRecordingVoice(true);
-      setVoiceHoldMs(0);
-      pushLog("Запись голосового... нажмите 🎤 или «Готово» для отправки");
-    } catch (e: any) {
-      const msg = String(e?.message ?? e ?? "Не удалось начать запись");
-      setChatError(msg);
-      pushLog(`voice start error: ${msg}`);
-      mediaStreamRef.current?.getTracks().forEach((t) => t.stop());
-      mediaStreamRef.current = null;
-      mediaRecorderRef.current = null;
-      setIsRecordingVoice(false);
-    } finally {
-      voiceStartingRef.current = false;
-    }
-  }
-
-  function stopVoiceRecord() {
-    voiceRecordAbortRef.current = true;
-    setIsRecordingVoice(false);
-    const rec = mediaRecorderRef.current;
-    if (!rec) {
-      mediaStreamRef.current?.getTracks().forEach((t) => t.stop());
-      mediaStreamRef.current = null;
-      return;
-    }
-    if (rec.state === "inactive") {
-      mediaStreamRef.current?.getTracks().forEach((t) => t.stop());
-      mediaStreamRef.current = null;
-      mediaRecorderRef.current = null;
-      return;
-    }
-    if (rec.state === "recording" || rec.state === "paused") {
-      try {
-        if (typeof (rec as MediaRecorder & { requestData?: () => void }).requestData === "function") {
-          (rec as MediaRecorder & { requestData: () => void }).requestData();
+        const blob = new Blob(mediaChunksRef.current, { type: rec.mimeType || "audio/webm" });
+        mediaChunksRef.current = [];
+        const durationMs = Date.now() - voiceStartAtRef.current;
+        if (durationMs < 250) {
+          setChatError("Слишком короткая запись. Удерживайте кнопку дольше.");
+          return;
         }
-        rec.stop();
-      } catch {
+        if (blob.size > 0) {
+          await uploadAndSend("voice", blob, `voice-${Date.now()}.webm`);
+        } else {
+          setChatError("Голосовое не записалось. Разрешите доступ к микрофону и попробуйте снова.");
+        }
+      } catch (e: any) {
+        const msg = String(e?.message ?? e ?? "Не удалось отправить голосовое");
+        setChatError(msg);
+        pushLog(`voice error: ${msg}`);
+      } finally {
         mediaStreamRef.current?.getTracks().forEach((t) => t.stop());
         mediaStreamRef.current = null;
         mediaRecorderRef.current = null;
         setIsRecordingVoice(false);
       }
-    } else {
+    };
+    rec.start();
+    setIsRecordingVoice(true);
+    setVoiceHoldMs(0);
+    pushLog("Запись голосового... удерживайте кнопку");
+  }
+
+  function stopVoiceRecord() {
+    const rec = mediaRecorderRef.current;
+    if (!rec || rec.state === "inactive") return;
+    try {
+      rec.stop();
+    } catch {
       mediaStreamRef.current?.getTracks().forEach((t) => t.stop());
       mediaStreamRef.current = null;
       mediaRecorderRef.current = null;
+      setIsRecordingVoice(false);
     }
   }
 
-  stopVoiceRecordRef.current = stopVoiceRecord;
+  function onVoiceMouseDown(e: React.MouseEvent<HTMLButtonElement>) {
+    if (voiceTouchActiveRef.current) return;
+    e.preventDefault();
+    void startVoiceRecord();
+  }
+  function onVoiceTouchStart(e: React.TouchEvent<HTMLButtonElement>) {
+    voiceTouchActiveRef.current = true;
+    e.preventDefault();
+    void startVoiceRecord();
+  }
+  function onVoiceTouchEnd(e: React.TouchEvent<HTMLButtonElement>) {
+    e.preventDefault();
+    stopVoiceRecord();
+    window.setTimeout(() => {
+      voiceTouchActiveRef.current = false;
+    }, 200);
+  }
 
   const composerDisabled = (mode === "channels" ? !activeChannelId : mode === "groups" ? !activeGroupChatId : !activeDirectChatId) || !canWriteChats;
   const uploadDisabled = composerDisabled;
   const canSendText = !!newMessage.trim() && canWriteChats;
-
-  function clearChatDragPreview() {
-    setChatDragPreview((prev) => {
-      if (prev?.kind === "image") URL.revokeObjectURL(prev.url);
-      return null;
-    });
-    chatDragPreviewKeyRef.current = "";
-  }
-
-  function syncChatDragPreview(dt: DataTransfer) {
-    let file: File | null = null;
-    const item = dt.items?.[0];
-    if (item?.kind === "file") file = item.getAsFile();
-    if (!file && dt.files?.length) file = dt.files[0];
-    if (!file) return;
-    const key = `${file.name}:${file.size}:${file.lastModified}`;
-    if (key === chatDragPreviewKeyRef.current) return;
-    chatDragPreviewKeyRef.current = key;
-    const mime = file.type || "";
-    const looksLikeImage =
-      mime.startsWith("image/") || /\.(jpe?g|png|gif|webp|bmp|svg|avif|heic|heif)$/i.test(file.name);
-    setChatDragPreview((prev) => {
-      if (prev?.kind === "image") URL.revokeObjectURL(prev.url);
-      if (looksLikeImage) {
-        return { kind: "image", url: URL.createObjectURL(file), name: file.name };
-      }
-      return {
-        kind: "file",
-        name: file.name,
-        ext: fileFormatLabel(file.name, file.type || "application/octet-stream"),
-        mime: file.type || "application/octet-stream",
-      };
-    });
-  }
-
-  function onChatDragEnter(e: React.DragEvent<HTMLElement>) {
-    e.preventDefault();
-    if (!e.dataTransfer.types.includes("Files")) return;
-    setChatFileDragActive(true);
-    syncChatDragPreview(e.dataTransfer);
-  }
-
-  function onChatDragOver(e: React.DragEvent<HTMLElement>) {
-    e.preventDefault();
-    e.dataTransfer.dropEffect = uploadDisabled ? "none" : "copy";
-    if (!uploadDisabled && e.dataTransfer.types.includes("Files")) {
-      setChatFileDragActive(true);
-      syncChatDragPreview(e.dataTransfer);
-    }
-  }
-
-  function onChatDragLeave(e: React.DragEvent<HTMLElement>) {
-    e.preventDefault();
-    const next = e.relatedTarget as Node | null;
-    if (next && e.currentTarget.contains(next)) return;
-    setChatFileDragActive(false);
-    clearChatDragPreview();
-  }
-
-  async function onChatDrop(e: React.DragEvent<HTMLElement>) {
-    e.preventDefault();
-    setChatFileDragActive(false);
-    clearChatDragPreview();
-    if (uploadDisabled || !token) return;
-    const { files } = e.dataTransfer;
-    if (!files?.length) return;
-    for (let i = 0; i < files.length; i++) {
-      const f = files[i];
-      try {
-        await uploadAndSend("file", f, f.name);
-      } catch {
-        /* ошибка уже в пузыре сообщения */
-      }
-    }
-  }
-
-  /** Дважды нажать 🎤: старт / стоп (без удержания — надёжнее на мобильных). */
-  function onVoiceMicClick(e: React.MouseEvent<HTMLButtonElement>) {
-    e.preventDefault();
-    if (uploadDisabled) return;
-    const rec = mediaRecorderRef.current;
-    const active = Boolean(rec && (rec.state === "recording" || rec.state === "paused")) || isRecordingVoice;
-    if (active) {
-      stopVoiceRecord();
-    } else {
-      void startVoiceRecord();
-    }
-  }
 
   const isAuthed = !!token;
 
@@ -3223,458 +2845,189 @@ export default function App() {
     );
   }
 
-  if (token && showAdminUsersPage && isCompanyAdmin) {
-    return (
-      <div className="adminUsersPage">
-        <header className="adminUsersHeader">
-          <button type="button" className="chip" onClick={() => setShowAdminUsersPage(false)}>
-            ← К мессенджеру
-          </button>
-          <div>
-            <h1 className="adminUsersTitle">Пользователи организации</h1>
-            <p className="adminUsersSub">
-              Компания: <strong>{adminOrgName || "…"}</strong> · ID: <code>{organizationId}</code>
-            </p>
-            <p className="adminUsersHint">
-              Пароли в системе хранятся только в виде хеша; открытый текст показать нельзя. Используйте «Задать пароль» для сброса.
-            </p>
-          </div>
-        </header>
-        {adminPanelMsg ? <div className="adminUsersBanner">{adminPanelMsg}</div> : null}
-        <section className="adminUsersCard">
-          <h2 className="adminUsersCardTitle">Добавить пользователя</h2>
-          <form className="adminUsersForm" onSubmit={(e) => void adminPanelCreateUser(e)}>
-            <input
-              type="email"
-              placeholder="Email (логин)"
-              value={adminNewEmail}
-              onChange={(e) => setAdminNewEmail(e.target.value)}
-              autoComplete="off"
-            />
-            <input
-              type="password"
-              placeholder="Пароль (мин. 8 символов)"
-              value={adminNewPassword}
-              onChange={(e) => setAdminNewPassword(e.target.value)}
-              autoComplete="new-password"
-            />
-            <input
-              type="text"
-              placeholder="Имя (необязательно)"
-              value={adminNewFullName}
-              onChange={(e) => setAdminNewFullName(e.target.value)}
-            />
-            <select value={adminNewRole} onChange={(e) => setAdminNewRole(e.target.value as typeof adminNewRole)}>
-              <option value="employee">employee</option>
-              <option value="manager">manager</option>
-              <option value="guest">guest</option>
-              <option value="admin">admin</option>
-              {viewerRole === "owner" ? <option value="owner">owner</option> : null}
-            </select>
-            <button type="submit">Создать</button>
-          </form>
-        </section>
-        <section className="adminUsersTableWrap">
-          <table className="adminUsersTable">
-            <thead>
-              <tr>
-                <th>Email (логин)</th>
-                <th>Роль</th>
-                <th>Отдел</th>
-                <th>Компания</th>
-                <th>Пароль</th>
-                <th />
-              </tr>
-            </thead>
-            <tbody>
-              {users.map((u) => {
-                const isSelf = u.id === userId;
-                const targetIsElevated = u.role === "owner" || u.role === "admin";
-                const adminCannotManage = viewerRole === "admin" && targetIsElevated;
-                return (
-                  <tr key={u.id}>
-                    <td>{u.email}</td>
-                    <td>{u.role ?? "—"}</td>
-                    <td>{u.department ?? "—"}</td>
-                    <td>{adminOrgName || "—"}</td>
-                    <td>
-                      <span className="adminUsersPwdMask">••••••••</span>
-                      <button
-                        type="button"
-                        className="chip adminUsersPwdBtn"
-                        disabled={adminCannotManage}
-                        title={adminCannotManage ? "Недостаточно прав (только owner)" : "Задать новый пароль"}
-                        onClick={() => void adminPanelSetPassword(u.id)}
-                      >
-                        Задать пароль
-                      </button>
-                    </td>
-                    <td className="adminUsersActions">
-                      <button
-                        type="button"
-                        className="chip danger"
-                        disabled={isSelf || adminCannotManage}
-                        title={isSelf ? "Нельзя деактивировать себя" : adminCannotManage ? "Только owner может удалить эту роль" : "Деактивировать"}
-                        onClick={() => void deactivateCompanyUser(u.id)}
-                      >
-                        Удалить
-                      </button>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-          {users.length === 0 ? <div className="empty adminUsersEmpty">Нет активных пользователей. Нажмите «К мессенджеру», откройте меню ⋮ — при необходимости загрузите список из кабинета компании.</div> : null}
-        </section>
-      </div>
-    );
-  }
-
   return (
-    <div className={`layout ${showRightPanel ? "layout--info" : ""} ${viewportW < 800 && mobileSidebarOpen ? "layout--sidebarOpen" : ""}`}>
-      {viewportW < 800 && mobileSidebarOpen ? (
-        <button type="button" className="sidebarBackdrop" aria-label="Закрыть список чатов" onClick={() => setMobileSidebarOpen(false)} />
-      ) : null}
-      <aside className={`sidebar ${viewportW < 800 ? "sidebar--mobile" : ""} ${viewportW < 800 && mobileSidebarOpen ? "sidebar--openMobile" : ""}`}>
-        <div className="tgSidebarTopBar">
-          <button
-            type="button"
-            className={`tgBurgerBtn ${viewportW < 800 ? "tgBurgerBtn--visible" : ""}`}
-            aria-label="Список чатов"
-            onClick={() => setMobileSidebarOpen((v) => !v)}
-          >
-            ☰
-          </button>
-          <div className="tgLogoMark" aria-hidden>
-            <span className="tgLogoPlane">✈</span>
-          </div>
-          <div className="tgTopBarTitle">Messenger</div>
-          <div className="tgTopBarActions">
-            <div className="tgMenuAnchor">
-              <button
-                type="button"
-                className="tgCircleBtn"
-                title="Создать чат, группу или канал"
-                onClick={() => {
-                  setNewChatMenuOpen((v) => !v);
-                  setMoreMenuOpen(false);
-                }}
-              >
-                +
-              </button>
-              {newChatMenuOpen ? (
-                <div className="tgPopoverMenu">
-                  <button
-                    type="button"
-                    className="tgPopoverItem"
-                    onClick={() => void openNewThingWizard("dm")}
-                    disabled={!token || !organizationId || !canReadChats}
-                  >
-                    ✉ Личный чат (1 на 1)
-                  </button>
-                  <button
-                    type="button"
-                    className="tgPopoverItem"
-                    onClick={() => void openNewThingWizard("group")}
-                    disabled={!token || !organizationId || !canCreateChannelsAndGroups}
-                  >
-                    👥 Группа (несколько человек)
-                  </button>
-                  <button
-                    type="button"
-                    className="tgPopoverItem"
-                    onClick={() => void openNewThingWizard("channel")}
-                    disabled={!token || !workspaceId || !organizationId || !canCreateChannelsAndGroups}
-                  >
-                    # Канал в workspace
-                  </button>
-                </div>
-              ) : null}
-            </div>
-            <button
-              type="button"
-              className="tgCircleBtn"
-              title="Ещё — поиск, профиль, компания…"
-              onClick={() => {
-                setMoreMenuOpen((v) => !v);
-                setNewChatMenuOpen(false);
-              }}
-            >
-              ⋮
-            </button>
-          </div>
-        </div>
-        <div className="tgSearchWrap">
-          <span className="tgSearchIcon" aria-hidden>
-            ⌕
-          </span>
+    <div className="layout">
+      <aside className="sidebar">
+        <div className="tgSidebarHeader">
+          <div className="tgAppName">sf-communication</div>
           <input
-            className="tgSearch tgSearch--inWrap"
-            placeholder="Поиск по названию чата…"
+            className="tgSearch"
+            placeholder="Поиск"
             value={chatSearch}
             onChange={(e) => setChatSearch(e.target.value)}
             ref={chatSearchRef}
             title="Ctrl/Cmd + K"
           />
-        </div>
-
-        <div className="sidebarChatsBlock">
-          <div className="row tgFolderTabs">
-            <button className={chatFolder === "all" ? "active" : ""} onClick={() => setChatFolder("all")}>
-              Все
+          <div className="tgTopActions">
+            <button className="tgIconBtn" onClick={() => void runGlobalSearch()} disabled={!token || !globalQuery.trim()} title="Глобальный поиск (использует строку ниже)">
+              ⌕
             </button>
-            <button className={chatFolder === "unread" ? "active" : ""} onClick={() => setChatFolder("unread")}>
-              Непрочитанные
+            <button
+              className="tgIconBtn"
+              onClick={() => {
+                setShowUserCabinet(true);
+                setProfileMsg("");
+                void loadMyProfile();
+              }}
+              disabled={!token}
+              title="Личный кабинет"
+            >
+              👤
             </button>
-            <button className={chatFolder === "archived" ? "active" : ""} onClick={() => setChatFolder("archived")}>
-              Архив
+            <button
+              className="tgIconBtn"
+              onClick={() => {
+                setShowCompanyCabinet(true);
+                setCompanyTab("employees");
+                void loadUsers();
+              }}
+              disabled={!token || !organizationId}
+              title="Личный кабинет компании"
+            >
+              🏢
+            </button>
+            <button className="tgIconBtn" onClick={() => void loadSavedMessages()} disabled={!token} title="Saved">
+              ⭐
+            </button>
+            <button className="tgIconBtn" onClick={() => void refreshSavedIds()} disabled={!token} title="Обновить saved ids">
+              ↻
+            </button>
+            <button className="tgIconBtn" onClick={() => setShowDev((v) => !v)} title="Dev меню">
+              ⋮
             </button>
           </div>
+        </div>
+
+        <div className="block sidebarSearchBlock" style={{ padding: 10 }}>
+          <input
+            placeholder="глобальный поиск (user/channel/message/file)"
+            value={globalQuery}
+            onChange={(e) => setGlobalQuery(e.target.value)}
+          />
+        </div>
+
+        <div className="block sidebarUsersBlock">
+          <div className="title">Пользователи</div>
+          {users.length === 0 ? (
+            <div className="empty">Нажми “Users” в меню (⋮)</div>
+          ) : (
+            <div className="list">
+              {users.slice(0, 50).map((u) => {
+                const p = presenceByUserId[u.id];
+                const st = p?.status ?? u.status ?? "unknown";
+                return (
+                  <button key={u.id} onClick={() => void ensureDmWithUser(u.id)} disabled={!token || !canWriteChats} className="listItem">
+                    <span style={{ display: "inline-block", width: 10 }}>
+                      {st === "online" ? "●" : st === "away" ? "◐" : st === "dnd" ? "◍" : "○"}
+                    </span>{" "}
+                    {u.email}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        <div className="block sidebarCompanyBlock">
+          <div className="row" style={{ justifyContent: "space-between", alignItems: "center", marginTop: 0 }}>
+            <div className="title" style={{ marginBottom: 0 }}>
+              Личный кабинет компании
+            </div>
+            <button
+              className="chip"
+              onClick={() => {
+                setShowCompanyCabinet(true);
+                setCompanyTab("employees");
+                void loadUsers();
+              }}
+            >
+              Открыть
+            </button>
+          </div>
+          <div className="empty" style={{ marginTop: 8 }}>
+            Управление сотрудниками и инвайтами в отдельном окне.
+          </div>
+        </div>
+
+        <div className="block sidebarChatsBlock">
+          <label>Быстрый переход (выбрать из списка)</label>
+          <select
+            defaultValue=""
+            onChange={(e) => {
+              const v = e.target.value;
+              e.currentTarget.value = "";
+              void openChatFromList(v);
+            }}
+            style={{
+              width: "100%",
+              boxSizing: "border-box",
+              padding: "8px 10px",
+              borderRadius: 10,
+              border: "1px solid rgba(255,255,255,0.12)",
+              background: "rgba(0,0,0,0.25)",
+              color: "inherit",
+            }}
+          >
+            <option value="">Выберите чат…</option>
+            <optgroup label="Каналы">
+              {orderedChannels.map((c) => (
+                <option key={`pick-c-${c.id}`} value={`c:${c.id}`}>
+                  #{c.name}
+                </option>
+              ))}
+            </optgroup>
+            <optgroup label="Группы">
+              {orderedGroups.map((g) => (
+                <option key={`pick-g-${g.id}`} value={`g:${g.id}`}>
+                  {g.name}
+                </option>
+              ))}
+            </optgroup>
+            <optgroup label="DM">
+              {orderedDMs.map((d) => {
+                const otherId = d.userIds.find((id) => id !== userId) ?? d.userIds[0] ?? "";
+                const u = users.find((x) => x.id === otherId);
+                const title = u?.email ?? otherId ?? d.id;
+                return (
+                  <option key={`pick-d-${d.id}`} value={`d:${d.id}`}>
+                    {title}
+                  </option>
+                );
+              })}
+            </optgroup>
+          </select>
           <div className="row tgModeTabs">
-            <button className={chatListScope === "all" ? "active" : ""} onClick={() => setChatListScope("all")} disabled={!canReadChats}>
-              Все чаты
+            <button className={mode === "channels" ? "active" : ""} onClick={() => setMode("channels")} disabled={!canReadChats}>
+              Каналы
             </button>
-            <button
-              className={chatListScope === "dms" ? "active" : ""}
-              onClick={() => {
-                setChatListScope("dms");
-                setMode("dms");
-              }}
-              disabled={!canReadChats}
-            >
-              Личка
-            </button>
-            <button
-              className={chatListScope === "groups" ? "active" : ""}
-              onClick={() => {
-                setChatListScope("groups");
-                setMode("groups");
-              }}
-              disabled={!canReadChats}
-            >
+            <button className={mode === "groups" ? "active" : ""} onClick={() => setMode("groups")} disabled={!canReadChats}>
               Группы
             </button>
-            <button
-              className={chatListScope === "channels" ? "active" : ""}
-              onClick={() => {
-                setChatListScope("channels");
-                setMode("channels");
-              }}
-              disabled={!canReadChats}
-            >
-              Каналы
+            <button className={mode === "dms" ? "active" : ""} onClick={() => setMode("dms")} disabled={!canReadChats}>
+              DM
+            </button>
+          </div>
+          <div className="row" style={{ marginTop: 6 }}>
+            <button onClick={() => void createChannelQuick()} disabled={!token || !workspaceId || !canCreateChannelsAndGroups}>
+              + Канал
+            </button>
+            <button onClick={() => void createGroupChatQuick()} disabled={!token || !canCreateChannelsAndGroups}>
+              + Группа
+            </button>
+          </div>
+          <div className="row tgFolderTabs">
+            <button className={chatFolder === "all" ? "active" : ""} onClick={() => setChatFolder("all")}>
+              All
+            </button>
+            <button className={chatFolder === "unread" ? "active" : ""} onClick={() => setChatFolder("unread")}>
+              Unread
+            </button>
+            <button className={chatFolder === "archived" ? "active" : ""} onClick={() => setChatFolder("archived")}>
+              Archived
             </button>
           </div>
           <div className="tgChatList">
-            {chatListScope === "all" ? (
-              <>
-                {orderedDMs.length > 0 ? (
-                  <div className="tgChatSectionTitle" role="presentation">
-                    Личка
-                  </div>
-                ) : null}
-                {orderedDMs.map((d) => {
-                  const otherId = d.userIds.find((id) => id !== userId) ?? d.userIds[0] ?? "";
-                  const u = users.find((x) => x.id === otherId);
-                  const p = otherId ? presenceByUserId[otherId] : undefined;
-                  const st = p?.status ?? u?.status ?? "unknown";
-                  const dot = st === "online" ? "●" : st === "away" ? "◐" : st === "dnd" ? "◍" : "○";
-                  const title = displayUserNameForSidebar(u, otherId || d.id);
-                  return (
-                    <button
-                      key={`all-d-${d.id}`}
-                      className={`tgChatRow ${activeDirectChatId === d.id ? "active" : ""} ${dragPinnedKey === chatKeyFor("d", d.id) ? "dragging" : ""} ${dragOverPinnedKey === chatKeyFor("d", d.id) ? "dragover" : ""}`}
-                      draggable={isPinned(chatKeyFor("d", d.id))}
-                      onDragStart={() => setDragPinnedKey(chatKeyFor("d", d.id))}
-                      onDragEnd={() => {
-                        setDragPinnedKey("");
-                        setDragOverPinnedKey("");
-                      }}
-                      onDragOver={(e) => {
-                        if (!dragPinnedKey || !isPinned(chatKeyFor("d", d.id))) return;
-                        e.preventDefault();
-                        setDragOverPinnedKey(chatKeyFor("d", d.id));
-                      }}
-                      onDrop={(e) => {
-                        e.preventDefault();
-                        reorderPinned(dragPinnedKey, chatKeyFor("d", d.id));
-                        setDragPinnedKey("");
-                        setDragOverPinnedKey("");
-                      }}
-                      onClick={() => {
-                        setMode("dms");
-                        setActiveDirectChatId(d.id);
-                        setUnreadByKey((prev) => ({ ...prev, [chatKeyFor("d", d.id)]: 0 }));
-                        void loadDirectMessages(d.id);
-                      }}
-                    >
-                      <div className="tgAvatar">{initials(title)}</div>
-                      <div className="tgChatMain">
-                        <div className="tgChatTop">
-                          <div className="tgChatTitle">
-                            {isPinned(chatKeyFor("d", d.id)) ? "📌 " : ""}
-                            <span className="tgPresence">{dot}</span> {title}
-                          </div>
-                          <div className="tgChatTopRight">
-                            <button
-                              type="button"
-                              className="tgChatRowMenuBtn"
-                              title="Чат: закрепить, архив, удалить"
-                              aria-label="Действия с чатом"
-                              onClick={(e) => openChatMenuAtEditButton(e, chatKeyFor("d", d.id))}
-                            >
-                              ⋮
-                            </button>
-                            <div
-                              className="tgChatTime"
-                              onContextMenu={(e) => openChatMenuAtTime(e, chatKeyFor("d", d.id))}
-                            >
-                              {timeHHMM(chatPreviewByKey[chatKeyFor("d", d.id)]?.at)}
-                            </div>
-                          </div>
-                        </div>
-                        <div className="tgChatSub">
-                          {isMuted(chatKeyFor("d", d.id)) ? "🔕 " : ""}
-                          {chatPreviewByKey[chatKeyFor("d", d.id)]?.text || "Личка"}
-                        </div>
-                      </div>
-                      {unreadFor(chatKeyFor("d", d.id)) ? <div className="tgUnread">{unreadFor(chatKeyFor("d", d.id))}</div> : null}
-                    </button>
-                  );
-                })}
-                {orderedGroups.length > 0 ? (
-                  <div className="tgChatSectionTitle" role="presentation">
-                    Группы
-                  </div>
-                ) : null}
-                {orderedGroups.map((g) => (
-                  <button
-                    key={`all-g-${g.id}`}
-                    className={`tgChatRow ${activeGroupChatId === g.id ? "active" : ""} ${dragPinnedKey === chatKeyFor("g", g.id) ? "dragging" : ""} ${dragOverPinnedKey === chatKeyFor("g", g.id) ? "dragover" : ""}`}
-                    draggable={isPinned(chatKeyFor("g", g.id))}
-                    onDragStart={() => setDragPinnedKey(chatKeyFor("g", g.id))}
-                    onDragEnd={() => {
-                      setDragPinnedKey("");
-                      setDragOverPinnedKey("");
-                    }}
-                    onDragOver={(e) => {
-                      if (!dragPinnedKey || !isPinned(chatKeyFor("g", g.id))) return;
-                      e.preventDefault();
-                      setDragOverPinnedKey(chatKeyFor("g", g.id));
-                    }}
-                    onDrop={(e) => {
-                      e.preventDefault();
-                      reorderPinned(dragPinnedKey, chatKeyFor("g", g.id));
-                      setDragPinnedKey("");
-                      setDragOverPinnedKey("");
-                    }}
-                    onClick={() => {
-                      setMode("groups");
-                      setActiveGroupChatId(g.id);
-                      setUnreadByKey((prev) => ({ ...prev, [chatKeyFor("g", g.id)]: 0 }));
-                      void loadGroupMessages(g.id);
-                    }}
-                  >
-                    <div className={`tgAvatar ${g.avatarUrl ? "tgAvatar--img" : ""}`}>
-                      {g.avatarUrl ? <img src={g.avatarUrl} alt="" className="tgAvatarImg" /> : initials(g.name)}
-                    </div>
-                    <div className="tgChatMain">
-                      <div className="tgChatTop">
-                        <div className="tgChatTitle">{isPinned(chatKeyFor("g", g.id)) ? "📌 " : ""}{g.name}</div>
-                        <div className="tgChatTopRight">
-                          <button
-                            type="button"
-                            className="tgChatRowMenuBtn"
-                            title="Чат: закрепить, архив, удалить"
-                            aria-label="Действия с чатом"
-                            onClick={(e) => openChatMenuAtEditButton(e, chatKeyFor("g", g.id))}
-                          >
-                            ⋮
-                          </button>
-                          <div
-                            className="tgChatTime"
-                            onContextMenu={(e) => openChatMenuAtTime(e, chatKeyFor("g", g.id))}
-                          >
-                            {timeHHMM(chatPreviewByKey[chatKeyFor("g", g.id)]?.at)}
-                          </div>
-                        </div>
-                      </div>
-                      <div className="tgChatSub">
-                        {isMuted(chatKeyFor("g", g.id)) ? "🔕 " : ""}
-                        {chatPreviewByKey[chatKeyFor("g", g.id)]?.text || `Группа · участников: ${g.memberIds?.length ?? 0}`}
-                      </div>
-                    </div>
-                    {unreadFor(chatKeyFor("g", g.id)) ? <div className="tgUnread">{unreadFor(chatKeyFor("g", g.id))}</div> : null}
-                  </button>
-                ))}
-                {orderedChannels.length > 0 ? (
-                  <div className="tgChatSectionTitle" role="presentation">
-                    Каналы
-                  </div>
-                ) : null}
-                {orderedChannels.map((c) => (
-                  <button
-                    key={`all-c-${c.id}`}
-                    className={`tgChatRow ${activeChannelId === c.id ? "active" : ""} ${dragPinnedKey === chatKeyFor("c", c.id) ? "dragging" : ""} ${dragOverPinnedKey === chatKeyFor("c", c.id) ? "dragover" : ""}`}
-                    draggable={isPinned(chatKeyFor("c", c.id))}
-                    onDragStart={() => setDragPinnedKey(chatKeyFor("c", c.id))}
-                    onDragEnd={() => {
-                      setDragPinnedKey("");
-                      setDragOverPinnedKey("");
-                    }}
-                    onDragOver={(e) => {
-                      if (!dragPinnedKey || !isPinned(chatKeyFor("c", c.id))) return;
-                      e.preventDefault();
-                      setDragOverPinnedKey(chatKeyFor("c", c.id));
-                    }}
-                    onDrop={(e) => {
-                      e.preventDefault();
-                      reorderPinned(dragPinnedKey, chatKeyFor("c", c.id));
-                      setDragPinnedKey("");
-                      setDragOverPinnedKey("");
-                    }}
-                    onClick={() => {
-                      setMode("channels");
-                      setActiveChannelId(c.id);
-                      setUnreadByKey((prev) => ({ ...prev, [chatKeyFor("c", c.id)]: 0 }));
-                      void loadMessages(c.id);
-                    }}
-                  >
-                    <div className={`tgAvatar ${c.avatarUrl ? "tgAvatar--img" : ""}`}>
-                      {c.avatarUrl ? <img src={c.avatarUrl} alt="" className="tgAvatarImg" /> : "#"}
-                    </div>
-                    <div className="tgChatMain">
-                      <div className="tgChatTop">
-                        <div className="tgChatTitle">{isPinned(chatKeyFor("c", c.id)) ? "📌 " : ""}#{c.name}</div>
-                        <div className="tgChatTopRight">
-                          <button
-                            type="button"
-                            className="tgChatRowMenuBtn"
-                            title="Чат: закрепить, архив, удалить"
-                            aria-label="Действия с чатом"
-                            onClick={(e) => openChatMenuAtEditButton(e, chatKeyFor("c", c.id))}
-                          >
-                            ⋮
-                          </button>
-                          <div
-                            className="tgChatTime"
-                            onContextMenu={(e) => openChatMenuAtTime(e, chatKeyFor("c", c.id))}
-                          >
-                            {timeHHMM(chatPreviewByKey[chatKeyFor("c", c.id)]?.at)}
-                          </div>
-                        </div>
-                      </div>
-                      <div className="tgChatSub">
-                        {isMuted(chatKeyFor("c", c.id)) ? "🔕 " : ""}
-                        {chatPreviewByKey[chatKeyFor("c", c.id)]?.text || `Канал · ${c.type}`}
-                      </div>
-                    </div>
-                    {unreadFor(chatKeyFor("c", c.id)) ? <div className="tgUnread">{unreadFor(chatKeyFor("c", c.id))}</div> : null}
-                  </button>
-                ))}
-              </>
-            ) : chatListScope === "channels"
+            {mode === "channels"
               ? orderedChannels.map((c) => (
                   <button
                     key={c.id}
@@ -3696,46 +3049,49 @@ export default function App() {
                       setDragPinnedKey("");
                       setDragOverPinnedKey("");
                     }}
+                    onContextMenu={(e) => openChatMenu(e, chatKeyFor("c", c.id))}
                     onClick={() => {
-                      setMode("channels");
                       setActiveChannelId(c.id);
                       setUnreadByKey((prev) => ({ ...prev, [chatKeyFor("c", c.id)]: 0 }));
                       void loadMessages(c.id);
                     }}
                   >
-                    <div className={`tgAvatar ${c.avatarUrl ? "tgAvatar--img" : ""}`}>
-                      {c.avatarUrl ? <img src={c.avatarUrl} alt="" className="tgAvatarImg" /> : "#"}
-                    </div>
+                    <div className="tgAvatar">#</div>
                     <div className="tgChatMain">
                       <div className="tgChatTop">
                         <div className="tgChatTitle">{isPinned(chatKeyFor("c", c.id)) ? "📌 " : ""}#{c.name}</div>
-                        <div className="tgChatTopRight">
-                          <button
-                            type="button"
-                            className="tgChatRowMenuBtn"
-                            title="Чат: закрепить, архив, удалить"
-                            aria-label="Действия с чатом"
-                            onClick={(e) => openChatMenuAtEditButton(e, chatKeyFor("c", c.id))}
-                          >
-                            ⋮
-                          </button>
-                          <div
-                            className="tgChatTime"
-                            onContextMenu={(e) => openChatMenuAtTime(e, chatKeyFor("c", c.id))}
-                          >
-                            {timeHHMM(chatPreviewByKey[chatKeyFor("c", c.id)]?.at)}
-                          </div>
-                        </div>
+                        <div className="tgChatTime">{timeHHMM(chatPreviewByKey[chatKeyFor("c", c.id)]?.at)}</div>
                       </div>
                       <div className="tgChatSub">
                         {isMuted(chatKeyFor("c", c.id)) ? "🔕 " : ""}
                         {chatPreviewByKey[chatKeyFor("c", c.id)]?.text || `Канал · ${c.type}`}
                       </div>
                     </div>
+                    <div className="tgRowActions">
+                      {isPinned(chatKeyFor("c", c.id)) ? (
+                        <>
+                          <span className="tgRowAction" onClick={(e) => { e.stopPropagation(); movePinned(chatKeyFor("c", c.id), -1); }} title="Выше">
+                            ↑
+                          </span>
+                          <span className="tgRowAction" onClick={(e) => { e.stopPropagation(); movePinned(chatKeyFor("c", c.id), 1); }} title="Ниже">
+                            ↓
+                          </span>
+                        </>
+                      ) : null}
+                      <span className="tgRowAction" onClick={(e) => { e.stopPropagation(); togglePin(chatKeyFor("c", c.id)); }} title="Закрепить чат">
+                        📌
+                      </span>
+                      <span className="tgRowAction" onClick={(e) => { e.stopPropagation(); toggleMute(chatKeyFor("c", c.id)); }} title="Mute чат">
+                        🔕
+                      </span>
+                      <span className="tgRowAction" onClick={(e) => { e.stopPropagation(); toggleArchive(chatKeyFor("c", c.id)); }} title="Архивировать чат">
+                        🗂
+                      </span>
+                    </div>
                     {unreadFor(chatKeyFor("c", c.id)) ? <div className="tgUnread">{unreadFor(chatKeyFor("c", c.id))}</div> : null}
                   </button>
                 ))
-              : chatListScope === "groups"
+              : mode === "groups"
                 ? orderedGroups.map((g) => (
                     <button
                       key={g.id}
@@ -3757,42 +3113,45 @@ export default function App() {
                         setDragPinnedKey("");
                         setDragOverPinnedKey("");
                       }}
+                      onContextMenu={(e) => openChatMenu(e, chatKeyFor("g", g.id))}
                       onClick={() => {
-                        setMode("groups");
                         setActiveGroupChatId(g.id);
-                        setUnreadByKey((prev) => ({ ...prev, [chatKeyFor("g", g.id)]: 0 }));
+                      setUnreadByKey((prev) => ({ ...prev, [chatKeyFor("g", g.id)]: 0 }));
                         void loadGroupMessages(g.id);
                       }}
                     >
-                      <div className={`tgAvatar ${g.avatarUrl ? "tgAvatar--img" : ""}`}>
-                        {g.avatarUrl ? <img src={g.avatarUrl} alt="" className="tgAvatarImg" /> : initials(g.name)}
-                      </div>
+                      <div className="tgAvatar">{initials(g.name)}</div>
                       <div className="tgChatMain">
                         <div className="tgChatTop">
                           <div className="tgChatTitle">{isPinned(chatKeyFor("g", g.id)) ? "📌 " : ""}{g.name}</div>
-                          <div className="tgChatTopRight">
-                            <button
-                              type="button"
-                              className="tgChatRowMenuBtn"
-                              title="Чат: закрепить, архив, удалить"
-                              aria-label="Действия с чатом"
-                              onClick={(e) => openChatMenuAtEditButton(e, chatKeyFor("g", g.id))}
-                            >
-                              ⋮
-                            </button>
-                            <div
-                              className="tgChatTime"
-                              onContextMenu={(e) => openChatMenuAtTime(e, chatKeyFor("g", g.id))}
-                            >
-                              {timeHHMM(chatPreviewByKey[chatKeyFor("g", g.id)]?.at)}
-                            </div>
-                          </div>
+                          <div className="tgChatTime">{timeHHMM(chatPreviewByKey[chatKeyFor("g", g.id)]?.at)}</div>
                         </div>
                         <div className="tgChatSub">
                           {isMuted(chatKeyFor("g", g.id)) ? "🔕 " : ""}
                           {chatPreviewByKey[chatKeyFor("g", g.id)]?.text || `Группа · участников: ${g.memberIds?.length ?? 0}`}
                         </div>
                       </div>
+                    <div className="tgRowActions">
+                      {isPinned(chatKeyFor("g", g.id)) ? (
+                        <>
+                          <span className="tgRowAction" onClick={(e) => { e.stopPropagation(); movePinned(chatKeyFor("g", g.id), -1); }} title="Выше">
+                            ↑
+                          </span>
+                          <span className="tgRowAction" onClick={(e) => { e.stopPropagation(); movePinned(chatKeyFor("g", g.id), 1); }} title="Ниже">
+                            ↓
+                          </span>
+                        </>
+                      ) : null}
+                      <span className="tgRowAction" onClick={(e) => { e.stopPropagation(); togglePin(chatKeyFor("g", g.id)); }} title="Закрепить чат">
+                        📌
+                      </span>
+                      <span className="tgRowAction" onClick={(e) => { e.stopPropagation(); toggleMute(chatKeyFor("g", g.id)); }} title="Mute чат">
+                        🔕
+                      </span>
+                      <span className="tgRowAction" onClick={(e) => { e.stopPropagation(); toggleArchive(chatKeyFor("g", g.id)); }} title="Архивировать чат">
+                        🗂
+                      </span>
+                    </div>
                     {unreadFor(chatKeyFor("g", g.id)) ? <div className="tgUnread">{unreadFor(chatKeyFor("g", g.id))}</div> : null}
                     </button>
                   ))
@@ -3802,7 +3161,7 @@ export default function App() {
                     const p = otherId ? presenceByUserId[otherId] : undefined;
                     const st = p?.status ?? u?.status ?? "unknown";
                     const dot = st === "online" ? "●" : st === "away" ? "◐" : st === "dnd" ? "◍" : "○";
-                    const title = displayUserNameForSidebar(u, otherId || d.id);
+                    const title = u?.email ?? (otherId || d.id);
                     return (
                       <button
                         key={d.id}
@@ -3824,8 +3183,8 @@ export default function App() {
                           setDragPinnedKey("");
                           setDragOverPinnedKey("");
                         }}
+                        onContextMenu={(e) => openChatMenu(e, chatKeyFor("d", d.id))}
                         onClick={() => {
-                          setMode("dms");
                           setActiveDirectChatId(d.id);
                           setUnreadByKey((prev) => ({ ...prev, [chatKeyFor("d", d.id)]: 0 }));
                           void loadDirectMessages(d.id);
@@ -3838,28 +3197,33 @@ export default function App() {
                               {isPinned(chatKeyFor("d", d.id)) ? "📌 " : ""}
                               <span className="tgPresence">{dot}</span> {title}
                             </div>
-                            <div className="tgChatTopRight">
-                              <button
-                                type="button"
-                                className="tgChatRowMenuBtn"
-                                title="Чат: закрепить, архив, удалить"
-                                aria-label="Действия с чатом"
-                                onClick={(e) => openChatMenuAtEditButton(e, chatKeyFor("d", d.id))}
-                              >
-                                ⋮
-                              </button>
-                              <div
-                                className="tgChatTime"
-                                onContextMenu={(e) => openChatMenuAtTime(e, chatKeyFor("d", d.id))}
-                              >
-                                {timeHHMM(chatPreviewByKey[chatKeyFor("d", d.id)]?.at)}
-                              </div>
-                            </div>
+                            <div className="tgChatTime">{timeHHMM(chatPreviewByKey[chatKeyFor("d", d.id)]?.at)}</div>
                           </div>
                           <div className="tgChatSub">
                             {isMuted(chatKeyFor("d", d.id)) ? "🔕 " : ""}
                             {chatPreviewByKey[chatKeyFor("d", d.id)]?.text || "Личка"}
                           </div>
+                        </div>
+                        <div className="tgRowActions">
+                          {isPinned(chatKeyFor("d", d.id)) ? (
+                            <>
+                              <span className="tgRowAction" onClick={(e) => { e.stopPropagation(); movePinned(chatKeyFor("d", d.id), -1); }} title="Выше">
+                                ↑
+                              </span>
+                              <span className="tgRowAction" onClick={(e) => { e.stopPropagation(); movePinned(chatKeyFor("d", d.id), 1); }} title="Ниже">
+                                ↓
+                              </span>
+                            </>
+                          ) : null}
+                          <span className="tgRowAction" onClick={(e) => { e.stopPropagation(); togglePin(chatKeyFor("d", d.id)); }} title="Закрепить чат">
+                            📌
+                          </span>
+                          <span className="tgRowAction" onClick={(e) => { e.stopPropagation(); toggleMute(chatKeyFor("d", d.id)); }} title="Mute чат">
+                            🔕
+                          </span>
+                          <span className="tgRowAction" onClick={(e) => { e.stopPropagation(); toggleArchive(chatKeyFor("d", d.id)); }} title="Архивировать чат">
+                            🗂
+                          </span>
                         </div>
                         {unreadFor(chatKeyFor("d", d.id)) ? <div className="tgUnread">{unreadFor(chatKeyFor("d", d.id))}</div> : null}
                       </button>
@@ -3867,259 +3231,66 @@ export default function App() {
                   })}
           </div>
         </div>
-
-        {moreMenuOpen ? (
-          <>
-            <div className="moreMenuBackdrop" role="presentation" onClick={() => setMoreMenuOpen(false)} />
-            <div className="moreMenuPanel">
-              <div className="moreMenuHeader">
-                <span>Меню</span>
-                <button type="button" className="tgCircleBtn" aria-label="Закрыть" onClick={() => setMoreMenuOpen(false)}>
-                  ✕
-                </button>
-              </div>
-              <div className="moreMenuBody">
-                <div className="moreMenuSection">
-                  <button
-                    type="button"
-                    className="moreMenuWideBtn"
-                    onClick={() => {
-                      setShowUserCabinet(true);
-                      setProfileMsg("");
-                      void loadMyProfile();
-                      setMoreMenuOpen(false);
-                    }}
-                    disabled={!token}
-                  >
-                    Личный кабинет
-                  </button>
-                  <button
-                    type="button"
-                    className="moreMenuWideBtn"
-                    onClick={() => {
-                      setShowCompanyCabinet(true);
-                      setCompanyTab("employees");
-                      void loadUsers();
-                      setMoreMenuOpen(false);
-                    }}
-                    disabled={!token || !organizationId}
-                  >
-                    Кабинет компании
-                  </button>
-                  {isCompanyAdmin ? (
-                    <button
-                      type="button"
-                      className="moreMenuWideBtn"
-                      onClick={() => {
-                        openAdminUsersPanel();
-                        setMoreMenuOpen(false);
-                      }}
-                      disabled={!token || !organizationId}
-                    >
-                      Админ: пользователи
-                    </button>
-                  ) : null}
-                  <button
-                    type="button"
-                    className="moreMenuWideBtn"
-                    onClick={() => {
-                      void loadSavedMessages();
-                      setMoreMenuOpen(false);
-                    }}
-                    disabled={!token}
-                  >
-                    Сохранённые сообщения
-                  </button>
-                  <button
-                    type="button"
-                    className="moreMenuWideBtn subtle"
-                    onClick={() => {
-                      setShowLogs(true);
-                      setMoreMenuOpen(false);
-                    }}
-                  >
-                    Журнал / отладка
-                  </button>
-                  <button
-                    type="button"
-                    className="moreMenuWideBtn danger"
-                    onClick={() => {
-                      void logout();
-                      setMoreMenuOpen(false);
-                    }}
-                  >
-                    Выйти
-                  </button>
-                </div>
-                <div className="moreMenuSection">
-                  <div className="moreMenuLabel">Пользователи</div>
-                  {users.length === 0 ? (
-                    <div className="empty">Загрузите список (раздел «Отладка» ниже → Users)</div>
-                  ) : (
-                    <div className="moreMenuUsers">
-                      {users.slice(0, 80).map((u) => {
-                        const p = presenceByUserId[u.id];
-                        const st = p?.status ?? u.status ?? "unknown";
-                        return (
-                          <button
-                            key={u.id}
-                            type="button"
-                            className="moreMenuUserRow"
-                            onClick={() => {
-                              void ensureDmWithUser(u.id);
-                              setMoreMenuOpen(false);
-                              setMobileSidebarOpen(false);
-                            }}
-                            disabled={!token || !canWriteChats}
-                          >
-                            <span className="moreMenuUserDot">
-                              {st === "online" ? "●" : st === "away" ? "◐" : st === "dnd" ? "◍" : "○"}
-                            </span>
-                            <span className="moreMenuUserLabel">
-                              <span className="moreMenuUserName">{displayUserNameForSidebar(u, u.id)}</span>
-                              <span className="moreMenuUserEmail">{u.email}</span>
-                            </span>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-                <div className="moreMenuSection">
-                  <button type="button" className="moreMenuWideBtn subtle" onClick={() => setShowDev((v) => !v)}>
-                    {showDev ? "Скрыть отладку" : "Отладка и загрузка данных"}
-                  </button>
-                  {showDev ? (
-                    <div className="moreMenuDev">
-                      <label>Workspace ID</label>
-                      <input value={workspaceId} onChange={(e) => setWorkspaceId(e.target.value)} placeholder="workspace id" />
-                      <div className="row" style={{ flexWrap: "wrap", marginTop: 8 }}>
-                        <button type="button" onClick={connectSocket} disabled={!token}>
-                          Socket
-                        </button>
-                        <button type="button" onClick={() => void loadChannels()} disabled={!token || !workspaceId}>
-                          Каналы
-                        </button>
-                        <button type="button" onClick={() => void loadGroupChats()} disabled={!token}>
-                          Группы
-                        </button>
-                        <button type="button" onClick={() => void loadDirectChats()} disabled={!token}>
-                          Личка
-                        </button>
-                        <button type="button" onClick={() => void loadUsers()} disabled={!token || !organizationId}>
-                          Users
-                        </button>
-                      </div>
-                    </div>
-                  ) : null}
-                </div>
-              </div>
-            </div>
-          </>
-        ) : null}
-
         {chatMenu ? (
           <div className="chatMenu" style={{ top: chatMenu.y, left: chatMenu.x }} role="menu">
-            <button type="button" className="msgMenuItem" onClick={() => { togglePin(chatMenu.key); setChatMenu(null); }}>
+            <button className="msgMenuItem" onClick={() => { togglePin(chatMenu.key); setChatMenu(null); }}>
               {isPinned(chatMenu.key) ? "Открепить чат" : "Закрепить чат"}
             </button>
-            <button type="button" className="msgMenuItem" onClick={() => { toggleMute(chatMenu.key); setChatMenu(null); }}>
+            <button className="msgMenuItem" onClick={() => { toggleMute(chatMenu.key); setChatMenu(null); }}>
               {isMuted(chatMenu.key) ? "Включить уведомления" : "Выключить уведомления"}
             </button>
-            <button type="button" className="msgMenuItem" onClick={() => { toggleArchive(chatMenu.key); setChatMenu(null); }}>
-              {isArchived(chatMenu.key) ? "Вернуть из архива" : "В архив"}
+            <button className="msgMenuItem" onClick={() => { toggleArchive(chatMenu.key); setChatMenu(null); }}>
+              {isArchived(chatMenu.key) ? "Вернуть из архива" : "Архивировать чат"}
             </button>
-            {!isArchived(chatMenu.key) ? (
-              <button type="button" className="msgMenuItem danger" onClick={() => removeChatFromList(chatMenu.key)}>
-                Удалить из списка
+            <div className="msgMenuSep" />
+            <button className="msgMenuItem" onClick={() => { setUnreadByKey((p) => ({ ...p, [chatMenu.key]: 0 })); setChatMenu(null); }}>
+              Отметить как прочитанное
+            </button>
+          </div>
+        ) : null}
+
+        {showDev ? (
+          <div className="block sidebarDevBlock">
+            <div className="title">Dev</div>
+            <label>Workspace ID</label>
+            <input value={workspaceId} onChange={(e) => setWorkspaceId(e.target.value)} placeholder="workspace id" />
+            <div className="row" style={{ flexWrap: "wrap" }}>
+              <button onClick={connectSocket} disabled={!token}>
+                Socket
               </button>
-            ) : null}
+              <button onClick={() => void loadChannels()} disabled={!token || !workspaceId}>
+                Каналы
+              </button>
+              <button onClick={() => void loadGroupChats()} disabled={!token}>
+                Группы
+              </button>
+              <button onClick={() => void loadDirectChats()} disabled={!token}>
+                DM
+              </button>
+              <button onClick={() => void loadUsers()} disabled={!token || !organizationId}>
+                Users
+              </button>
+            </div>
           </div>
         ) : null}
       </aside>
 
-      <main
-        className={`chat${chatFileDragActive ? " chat--dropTarget" : ""}`}
-        onDragEnter={onChatDragEnter}
-        onDragOver={onChatDragOver}
-        onDragLeave={onChatDragLeave}
-        onDrop={(e) => void onChatDrop(e)}
-      >
-        {chatFileDragActive ? (
-          <div className="chatDropOverlay" aria-hidden>
-            <div className="chatDropOverlayInner">
-              {chatDragPreview?.kind === "image" ? (
-                <>
-                  <img src={chatDragPreview.url} alt="" className="chatDropPreviewImg" />
-                  <div className="chatDropHint">{chatDragPreview.name}</div>
-                </>
-              ) : chatDragPreview?.kind === "file" ? (
-                <>
-                  <div className="chatDropFileBadge">{chatDragPreview.ext}</div>
-                  <div className="chatDropHint">{chatDragPreview.name}</div>
-                  <div className="chatDropSub">{chatDragPreview.mime}</div>
-                </>
-              ) : (
-                <div className="chatDropHint">Отпустите файл, чтобы отправить в чат</div>
-              )}
-            </div>
-          </div>
-        ) : null}
+      <main className="chat">
         <header className="chatHeader">
           <div className="tgChatHeaderRow">
             <div className="tgChatHeaderLeft">
-              <button
-                type="button"
-                className={`tgBurgerBtn tgBurgerBtn--inChat ${viewportW < 800 ? "tgBurgerBtn--visible" : ""}`}
-                aria-label="Открыть список чатов"
-                onClick={() => setMobileSidebarOpen(true)}
-              >
-                ☰
-              </button>
-              <div
-                className={`tgHeaderAvatar ${mode === "channels" && activeChannel?.avatarUrl ? "tgHeaderAvatar--img" : ""} ${mode === "groups" && activeGroupChat?.avatarUrl ? "tgHeaderAvatar--img" : ""}`}
-                role="button"
-                tabIndex={0}
-                onClick={() => setShowRightPanel(true)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" || e.key === " ") {
-                    e.preventDefault();
-                    setShowRightPanel(true);
-                  }
-                }}
-              >
-                {mode === "channels" ? (
-                  activeChannel?.avatarUrl ? (
-                    <img src={activeChannel.avatarUrl} alt="" className="tgHeaderAvatarImg" />
-                  ) : (
-                    "#"
-                  )
-                ) : mode === "groups" ? (
-                  activeGroupChat?.avatarUrl ? (
-                    <img src={activeGroupChat.avatarUrl} alt="" className="tgHeaderAvatarImg" />
-                  ) : (
-                    initials(activeGroupChat?.name ?? "G")
-                  )
-                ) : (
-                  (() => {
-                    const otherId = activeDirectChat?.userIds.find((id) => id !== userId) ?? activeDirectChat?.userIds[0] ?? "";
-                    const u = users.find((x) => x.id === otherId);
-                    return initials(displayUserNameForSidebar(u, otherId || "Л"));
-                  })()
-                )}
+              <div className="tgHeaderAvatar">
+                {mode === "channels"
+                  ? "#"
+                  : mode === "groups"
+                    ? initials(activeGroupChat?.name ?? "G")
+                    : (() => {
+                        const otherId = activeDirectChat?.userIds.find((id) => id !== userId) ?? activeDirectChat?.userIds[0] ?? "";
+                        const u = users.find((x) => x.id === otherId);
+                        return initials(u?.email ?? otherId ?? "DM");
+                      })()}
               </div>
-              <div
-                className="tgChatHeaderText tgChatHeaderText--clickable"
-                role="button"
-                tabIndex={0}
-                onClick={() => setShowRightPanel(true)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" || e.key === " ") {
-                    e.preventDefault();
-                    setShowRightPanel(true);
-                  }
-                }}
-              >
+              <div className="tgChatHeaderText">
                 <div className="tgChatHeaderTitle">
                   {mode === "channels"
                     ? activeChannel
@@ -4134,9 +3305,9 @@ export default function App() {
                             const otherId =
                               activeDirectChat.userIds.find((id) => id !== userId) ?? activeDirectChat.userIds[0] ?? "";
                             const u = users.find((x) => x.id === otherId);
-                            return displayUserNameForSidebar(u, otherId || activeDirectChat.id);
+                            return u?.email ?? otherId ?? activeDirectChat.id;
                           })()
-                        : "Выберите личку"}
+                        : "Выберите DM"}
                 </div>
                 <div className="tgChatHeaderSub">
                   {mode === "dms" && activeDirectChat
@@ -4146,71 +3317,81 @@ export default function App() {
                         const u = users.find((x) => x.id === otherId);
                         const p = otherId ? presenceByUserId[otherId] : undefined;
                         const st = p?.status ?? u?.status ?? "unknown";
-                        const presence =
-                          st === "online" ? "в сети" : st === "away" ? "не активен" : st === "dnd" ? "не беспокоить" : "не в сети";
-                        return presence;
+                        return st === "online" ? "в сети" : st === "away" ? "не активен" : st === "dnd" ? "не беспокоить" : "не в сети";
                       })()
-                    : mode === "groups" && activeGroupChat
-                      ? `Участников: ${activeGroupChat.memberIds?.length ?? 0}`
-                      : mode === "channels" && activeChannel
-                        ? `Канал · ${activeChannel.type}`
-                        : organizationId
-                          ? `Орг. ${displayOrganizationId}`
-                          : "Не авторизован"}
+                    : organizationId
+                      ? `Вы вошли (${displayOrganizationId})`
+                      : "Не авторизован"}
                 </div>
               </div>
             </div>
-            <div className="tgChatHeaderRight" ref={callMenuWrapRef}>
+            <div className="tgChatHeaderRight">
               <button
-                type="button"
-                className="tgCircleBtn"
-                title="Поиск в чате (Ctrl/Cmd+K — поиск в списке)"
-                onClick={() => {
-                  composerRef.current?.focus();
-                }}
+                className="tgIconBtn"
+                onClick={() => void startAudioCall()}
+                title="Голосовой звонок (WebRTC, только DM)"
+                disabled={!canStartCalls || mode !== "dms" || !activeDirectChat || !socket}
               >
-                🔍
+                📞
               </button>
-              <div className="tgCallMenuAnchor">
-                <button
-                  type="button"
-                  className="tgCircleBtn"
-                  title="Созвон (аудио или видео)"
-                  disabled={!canStartCalls}
-                  onClick={() => setCallMenuOpen((v) => !v)}
-                >
-                  📞
-                </button>
-                {callMenuOpen && canStartCalls ? (
-                  <div className="tgPopoverMenu" role="menu">
-                    <button
-                      type="button"
-                      className="tgPopoverItem"
-                      onClick={() => {
-                        setCallMenuOpen(false);
-                        void startEmbeddedCall(false);
-                      }}
-                    >
-                      Аудиозвонок
-                    </button>
-                    <button
-                      type="button"
-                      className="tgPopoverItem"
-                      onClick={() => {
-                        setCallMenuOpen(false);
-                        void startEmbeddedCall(true);
-                      }}
-                    >
-                      Видеозвонок
-                    </button>
-                  </div>
-                ) : null}
-              </div>
-              <button type="button" className="tgCircleBtn" onClick={() => setShowRightPanel((v) => !v)} title="Сведения о чате">
-                ℹ️
+              <button
+                className="tgIconBtn"
+                onClick={() => void startVideoMeeting()}
+                title="Видеозвонок (WebRTC, только DM)"
+                disabled={!canStartCalls || mode !== "dms" || !activeDirectChat || !socket}
+              >
+                🎥
+              </button>
+              <button className="tgIconBtn" onClick={() => setShowLogs((v) => !v)} title="Лог">
+                🛈
+              </button>
+              <button className="tgIconBtn" onClick={() => void logout()} title="Выйти">
+                ⎋
               </button>
             </div>
           </div>
+          {!threadRootId && !showPins ? (
+            <div className="tgChatSearchRow" style={{ marginTop: 8, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+              <input
+                className="tgSearch"
+                style={{ flex: 1, minWidth: 160 }}
+                placeholder="Поиск в этом чате"
+                value={threadSearchQ}
+                onChange={(e) => setThreadSearchQ(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") void runThreadSearch();
+                }}
+              />
+              <button type="button" className="chip" onClick={() => void runThreadSearch()} disabled={!token || !threadSearchQ.trim()}>
+                Найти
+              </button>
+              {threadSearchOpen ? (
+                <button type="button" className="chip" onClick={() => setThreadSearchOpen(false)}>
+                  Скрыть
+                </button>
+              ) : null}
+            </div>
+          ) : null}
+          {threadSearchOpen && threadSearchHits.length ? (
+            <div
+              style={{
+                marginTop: 8,
+                maxHeight: 160,
+                overflow: "auto",
+                fontSize: 12,
+                borderTop: "1px solid rgba(255,255,255,0.08)",
+                paddingTop: 8,
+              }}
+            >
+              <div style={{ opacity: 0.85, marginBottom: 6 }}>Совпадений: {threadSearchHits.length}</div>
+              {threadSearchHits.map((hm) => (
+                <div key={hm.id} style={{ marginBottom: 6 }}>
+                  <span style={{ opacity: 0.75 }}>{new Date(hm.createdAt).toLocaleString()}</span> · {messageAuthorLabel(hm.author)} —{" "}
+                  {(hm.content || "").slice(0, 120)}
+                </div>
+              ))}
+            </div>
+          ) : null}
           {forwardSelecting ? (
             <div style={{ marginTop: 8, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
               <span style={{ opacity: 0.9, fontSize: 12 }}>Выбрано: {forwardSelectedIds.size}</span>
@@ -4238,6 +3419,91 @@ export default function App() {
             </div>
           ) : null}
         </header>
+
+        {showGlobalResult && globalResult ? (
+          <section className="messages" style={{ borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
+            <div className="empty" style={{ textAlign: "left" }}>
+              <div style={{ display: "flex", gap: 8, marginBottom: 10, alignItems: "center" }}>
+                <div style={{ fontWeight: 700 }}>Результаты поиска: “{globalQuery.trim()}”</div>
+                <button onClick={() => setShowGlobalResult(false)}>Закрыть</button>
+              </div>
+
+              <div style={{ marginBottom: 10 }}>
+                <div style={{ fontWeight: 700, marginBottom: 6 }}>Сообщения</div>
+                {globalResult.messages.length === 0 ? (
+                  <div>Нет</div>
+                ) : (
+                  globalResult.messages.map((m) => (
+                    <button
+                      key={m.id}
+                      onClick={() => void goToSearchMessage(m)}
+                      style={{ display: "block", width: "100%", textAlign: "left", marginBottom: 6 }}
+                    >
+                      <div style={{ fontSize: 12, opacity: 0.8 }}>
+                        {new Date(m.createdAt).toLocaleString()} · {m.author.email} · {m.channelId ? "channel" : m.groupChatId ? "group" : "dm"}
+                      </div>
+                      <div style={{ fontSize: 13 }}>{(m.content || "").slice(0, 200) || "(без текста)"}</div>
+                    </button>
+                  ))
+                )}
+              </div>
+
+              <div style={{ marginBottom: 10 }}>
+                <div style={{ fontWeight: 700, marginBottom: 6 }}>Каналы</div>
+                {globalResult.channels.length === 0 ? (
+                  <div>Нет</div>
+                ) : (
+                  globalResult.channels.map((c) => (
+                    <button
+                      key={c.id}
+                      onClick={() => {
+                        setMode("channels");
+                        setActiveChannelId(c.id);
+                        void loadMessages(c.id);
+                        setShowGlobalResult(false);
+                      }}
+                      style={{ display: "block", width: "100%", textAlign: "left", marginBottom: 6 }}
+                    >
+                      #{c.name}
+                    </button>
+                  ))
+                )}
+              </div>
+
+              <div style={{ marginBottom: 10 }}>
+                <div style={{ fontWeight: 700, marginBottom: 6 }}>Пользователи</div>
+                {globalResult.users.length === 0 ? (
+                  <div>Нет</div>
+                ) : (
+                  globalResult.users.map((u) => (
+                    <div key={u.id} style={{ marginBottom: 6, fontSize: 13 }}>
+                      {u.email} {u.firstName || u.lastName ? `(${[u.firstName, u.lastName].filter(Boolean).join(" ")})` : ""}
+                    </div>
+                  ))
+                )}
+              </div>
+
+              <div style={{ marginBottom: 10 }}>
+                <div style={{ fontWeight: 700, marginBottom: 6 }}>Файлы</div>
+                {globalResult.files.length === 0 ? (
+                  <div>Нет</div>
+                ) : (
+                  globalResult.files.map((f) => (
+                    <div key={f.id} style={{ marginBottom: 6, fontSize: 13 }}>
+                      {f.url ? (
+                        <a href={f.url} target="_blank" rel="noreferrer">
+                          file {f.id}
+                        </a>
+                      ) : (
+                        <span style={{ opacity: 0.8 }}>file {f.id} (нет доступа/не clean)</span>
+                      )}
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          </section>
+        ) : null}
 
         {showForwardPicker ? (
           <section className="messages" style={{ borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
@@ -4270,7 +3536,7 @@ export default function App() {
                   </div>
                 </div>
                 <div>
-                  <div style={{ opacity: 0.85, marginBottom: 6 }}>Личка</div>
+                  <div style={{ opacity: 0.85, marginBottom: 6 }}>DM</div>
                   <div className="list">
                     {directChats.map((d) => {
                       const otherId = d.userIds.find((id) => id !== userId) ?? d.userIds[0] ?? "";
@@ -4278,7 +3544,7 @@ export default function App() {
                       const p = otherId ? presenceByUserId[otherId] : undefined;
                       const st = p?.status ?? u?.status ?? "unknown";
                       const dot = st === "online" ? "●" : st === "away" ? "◐" : st === "dnd" ? "◍" : "○";
-                      const title = `Личка ${dot} ${displayUserNameForSidebar(u, otherId || d.id)}`;
+                      const title = `DM ${dot} ${u?.email ?? (otherId || d.id)}`;
                       return (
                         <button key={d.id} onClick={() => void forwardSelectedTo({ directChatId: d.id })} disabled={!token}>
                           {title}
@@ -4340,40 +3606,6 @@ export default function App() {
 
               {companyTab === "employees" ? (
                 <div className="companyBody">
-                  {isCompanyAdmin ? (
-                    <div
-                      className="row"
-                      style={{
-                        marginBottom: 12,
-                        padding: "12px 14px",
-                        borderRadius: 12,
-                        background: "rgba(100, 160, 255, 0.1)",
-                        border: "1px solid rgba(100, 160, 255, 0.22)",
-                        flexWrap: "wrap",
-                        gap: 10,
-                        alignItems: "center",
-                      }}
-                    >
-                      <div style={{ flex: 1, minWidth: 200, fontSize: 13, lineHeight: 1.4 }}>
-                        <strong>Админ: пользователи</strong> — отдельная страница: таблица, создание учётной записи, сброс пароля, деактивация.
-                      </div>
-                      <button
-                        type="button"
-                        className="chip"
-                        onClick={() => {
-                          setShowCompanyCabinet(false);
-                          openAdminUsersPanel();
-                        }}
-                      >
-                        Открыть страницу
-                      </button>
-                    </div>
-                  ) : (
-                    <p style={{ fontSize: 12, opacity: 0.75, margin: "0 0 12px" }}>
-                      Раздел «Админ: пользователи» доступен только ролям <strong>owner</strong> и <strong>admin</strong>. Ваша роль:{" "}
-                      <strong>{viewerRole || "—"}</strong>.
-                    </p>
-                  )}
                   <div className="row">
                     <input
                       value={companyUserQuery}
@@ -4748,12 +3980,7 @@ export default function App() {
                     {profileAvatarUrl ? <img src={profileAvatarUrl} alt="avatar" /> : <span>{initials(myProfileEmail || email)}</span>}
                   </div>
                   <div style={{ minWidth: 0 }}>
-                    <div style={{ fontWeight: 700 }}>
-                      {[profileFirstName, profileMiddleName, profileLastName].filter(Boolean).join(" ").trim() || myProfileEmail || email}
-                    </div>
-                    <div className="empty" style={{ fontSize: 12, opacity: 0.85 }}>
-                      {myProfileEmail || email}
-                    </div>
+                    <div style={{ fontWeight: 700 }}>{myProfileEmail || email}</div>
                     <div className="empty">
                       Уровень доступа: <b>{viewerRole || "unknown"}</b>
                     </div>
@@ -4765,12 +3992,8 @@ export default function App() {
 
                 <label>Имя</label>
                 <input value={profileFirstName} onChange={(e) => setProfileFirstName(e.target.value)} placeholder="Имя" />
-                <label>Отчество</label>
-                <input value={profileMiddleName} onChange={(e) => setProfileMiddleName(e.target.value)} placeholder="Отчество" />
                 <label>Фамилия</label>
                 <input value={profileLastName} onChange={(e) => setProfileLastName(e.target.value)} placeholder="Фамилия" />
-                <label>Дата рождения</label>
-                <input type="date" value={profileBirthDate} onChange={(e) => setProfileBirthDate(e.target.value)} />
                 <label>Статус</label>
                 <input value={profileStatusText} onChange={(e) => setProfileStatusText(e.target.value)} placeholder="О чем вы думаете?" />
                 <label>Avatar URL или data:image</label>
@@ -4889,6 +4112,11 @@ export default function App() {
                   <span>{dt.toLocaleDateString()}</span>
                 </div>
               ) : null}
+              {showMeta ? (
+                <div className="meta">
+                  {mode === "groups" ? messageAuthorLabel(m.author) : m.author?.email ?? "user"}
+                </div>
+              ) : null}
               <div className="actions">
                 <button className="chip" onClick={() => void editMessageInChat(m.id)} disabled={!token || m.author?.email !== email}>
                   ✎
@@ -4941,31 +4169,25 @@ export default function App() {
                 >
                   ⭐
                 </button>
-                <button
-                  type="button"
-                  className="chip"
-                  data-reaction-trigger
-                  title="Реакция"
-                  disabled={!token}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    const r = e.currentTarget.getBoundingClientRect();
-                    const popH = 56;
-                    const popW = 300;
-                    let top = r.bottom + 6;
-                    if (top + popH > window.innerHeight - 8) top = Math.max(8, r.top - popH - 6);
-                    let left = Math.min(r.left, window.innerWidth - popW - 8);
-                    left = Math.max(8, left);
-                    setReactionPopover((p) => (p?.messageId === m.id ? null : { messageId: m.id, top, left }));
-                  }}
-                >
-                  😊
-                </button>
               </div>
               <div
-                className={`bubble ${m.type !== "file" && m.type !== "voice" && m.content && isSingleStickerContent(m.content) ? "bubble--stickerLarge" : ""}`}
+                className="bubble"
                 onDoubleClick={() => setReplyTo({ id: m.id, preview: (m.content || "").slice(0, 80) || m.type || "" })}
-                onClick={forwardSelecting ? () => toggleForwardSelected(m.id) : undefined}
+                onClick={(e) => {
+                  if (forwardSelecting) {
+                    toggleForwardSelected(m.id);
+                    return;
+                  }
+                  if (
+                    m.author?.email === email &&
+                    m._sendState !== "failed" &&
+                    m._sendState !== "sending" &&
+                    !String(m.id).startsWith("tmp-")
+                  ) {
+                    e.stopPropagation();
+                    void openReadReceipts(m.id);
+                  }
+                }}
                 onContextMenu={(e) => {
                   e.preventDefault();
                   const menuW = 260;
@@ -4978,8 +4200,8 @@ export default function App() {
                   setMsgMenu({ x, y, messageId: m.id });
                 }}
               >
-                {(mode === "groups" || mode === "channels") && showMeta && m.author?.email !== email ? (
-                  <div className="bubbleAuthor">{messageAuthorLabel(m)}</div>
+                {mode === "groups" && !showMeta ? (
+                  <div className="bubbleGroupAuthor bubbleGroupAuthor--compact">{messageAuthorLabel(m.author)}</div>
                 ) : null}
                 {m.type === "file" || m.type === "voice" ? (
                   m.file ? (
@@ -4998,28 +4220,15 @@ export default function App() {
                       </div>
                     ) : m.file.downloadUrl ? (
                       m.type === "voice" ? (
-                        <div className="voiceMsgBlock">
-                          <div className="voiceMsgRow">
-                            <audio
-                              key={`${m.id}-audio`}
-                              className="voiceMsgAudio"
-                              controls
-                              preload="metadata"
-                              playsInline
-                              src={normalizeDownloadUrl(m.file.downloadUrl)}
-                            />
-                            <a
-                              className="fileDownloadIconBtn"
-                              href={normalizeDownloadUrl(m.file.downloadUrl)}
-                              download={m.file.originalName || "voice.webm"}
-                              target="_blank"
-                              rel="noreferrer"
-                              title="Скачать"
-                              aria-label="Скачать"
-                            >
-                              ⬇
-                            </a>
+                        <div>
+                          <div style={{ fontSize: 12, opacity: 0.85, marginBottom: 6 }}>
+                            Голосовое: {m.file.originalName ?? m.file.id}
                           </div>
+                          <ChatVoicePlayer
+                            downloadUrl={m.file.downloadUrl}
+                            originalName={m.file.originalName}
+                            token={token}
+                          />
                         </div>
                       ) : (m.file.mimeType || "").startsWith("image/") ? (
                         <div>
@@ -5027,19 +4236,7 @@ export default function App() {
                             <span className="fileFormatBadge">{fileFormatLabel(m.file.originalName, m.file.mimeType)}</span>
                             <span style={{ fontSize: 12, opacity: 0.9 }}>Изображение</span>
                           </div>
-                          <a
-                            href={normalizeDownloadUrl(m.file.downloadUrl)}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="chatImageLink"
-                          >
-                            <img
-                              src={normalizeDownloadUrl(m.file.downloadUrl)}
-                              alt={m.file.originalName ?? "image"}
-                              className="chatImage"
-                              loading="lazy"
-                            />
-                          </a>
+                          <ChatImagePreview downloadUrl={m.file.downloadUrl} name={m.file.originalName} token={token} />
                         </div>
                       ) : (
                         <div className="fileAttachmentRow">
@@ -5061,22 +4258,12 @@ export default function App() {
                         </div>
                       )
                     ) : (
-                      m.type === "voice" ? (
-                        <div>
-                          <div style={{ fontSize: 12, opacity: 0.85, marginBottom: 6 }}>
-                            Голосовое: {m.file.originalName ?? m.file.id}
-                          </div>
-                          <div className="fileState">Подготовка воспроизведения…</div>
-                        </div>
-                      ) : (
-                        <div>
-                          <div className="fileLineWithBadge">
-                            <span className="fileFormatBadge">{fileFormatLabel(m.file.originalName, m.file.mimeType)}</span>
-                            <span>{(m.file.mimeType || "").startsWith("image/") ? "Изображение" : "Файл"}: {m.file.originalName ?? m.file.id}</span>
-                          </div>
-                          <div className="fileState">Получение ссылки…</div>
-                        </div>
-                      )
+                      <span>
+                        {m.type === "voice" ? "Голосовое" : "Файл"}: {m.file.originalName ?? m.file.id}{" "}
+                        <button className="chip" onClick={() => void hydrateDownloadUrl(m.id, m.file!.id)}>
+                          получить ссылку
+                        </button>
+                      </span>
                     )
                   ) : (
                     "(файл)"
@@ -5085,7 +4272,25 @@ export default function App() {
                   m.content ? m.content : "(удалено)"
                 )}
                 <span className="bubbleTime">
-                  {m.author?.email === email ? "✓✓ " : ""}
+                  {m.author?.email === email ? (
+                    m._sendState === "failed" ? (
+                      <span className="msgSendFail" title="Не удалось отправить">
+                        !
+                      </span>
+                    ) : m._sendState === "sending" ? (
+                      <span className="msgTick msgTick--pending" title="Отправка">
+                        …
+                      </span>
+                    ) : messageReadByOthers(m, email, userId, peerReadMapForCurrentChat()) ? (
+                      <span className="msgTick msgTick--read" title="Прочитано">
+                        ✓✓
+                      </span>
+                    ) : (
+                      <span className="msgTick" title="Доставлено">
+                        ✓
+                      </span>
+                    )
+                  ) : null}{" "}
                   {m.editedAt ? "(ред.) " : ""}
                   {new Date(m.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
                 </span>
@@ -5111,6 +4316,11 @@ export default function App() {
                 </div>
               ) : null}
               <div className="reactions">
+                {quickEmojis.map((e) => (
+                  <button key={`q-${m.id}-${e}`} onClick={() => void toggleReaction(m.id, e)} className="chip">
+                    {e}
+                  </button>
+                ))}
                 {(m.reactions ?? []).map((r) => (
                   <button
                     key={`${m.id}-${r.emoji}`}
@@ -5139,47 +4349,17 @@ export default function App() {
           </button>
         ) : null}
 
-        {reactionPopover ? (
-          <div
-            ref={reactionPopoverRef}
-            className="msgReactionPopover"
-            style={{ top: reactionPopover.top, left: reactionPopover.left }}
-            role="dialog"
-            aria-label="Реакции"
-          >
-            {quickEmojis.map((em) => (
-              <button
-                key={em}
-                type="button"
-                className="msgReactionEmojiBtn"
-                onClick={() => {
-                  void toggleReaction(reactionPopover.messageId, em);
-                  setReactionPopover(null);
-                }}
-              >
-                {em}
-              </button>
-            ))}
-          </div>
-        ) : null}
-
         <form onSubmit={(e) => void sendMessage(e)} className="composer">
           {isRecordingVoice ? (
-            <div className="voiceHoldBar" style={{ gridColumn: "1 / -1", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            <div className="voiceHoldBar" style={{ gridColumn: "1 / -1" }}>
               <span className="dot" />
-              <span>
-                Идет запись: {Math.floor(voiceHoldMs / 60000)
-                  .toString()
-                  .padStart(2, "0")}
-                :
-                {Math.floor((voiceHoldMs % 60000) / 1000)
-                  .toString()
-                  .padStart(2, "0")}{" "}
-                (нажмите 🎤 снова, «Готово» или Esc)
-              </span>
-              <button type="button" className="chip" onClick={() => stopVoiceRecord()}>
-                Готово
-              </button>
+              Идет запись: {Math.floor(voiceHoldMs / 60000)
+                .toString()
+                .padStart(2, "0")}
+              :
+              {Math.floor((voiceHoldMs % 60000) / 1000)
+                .toString()
+                .padStart(2, "0")} (отпустите кнопку для отправки)
             </div>
           ) : null}
           {chatError ? (
@@ -5200,10 +4380,14 @@ export default function App() {
           </button>
           <button
             type="button"
-            style={{ touchAction: "manipulation" }}
-            onClick={onVoiceMicClick}
+            onMouseDown={onVoiceMouseDown}
+            onMouseUp={stopVoiceRecord}
+            onMouseLeave={stopVoiceRecord}
+            onTouchStart={onVoiceTouchStart}
+            onTouchEnd={onVoiceTouchEnd}
+            onTouchCancel={onVoiceTouchEnd}
             disabled={uploadDisabled}
-            title={isRecordingVoice ? "Нажмите ещё раз, чтобы отправить" : "Нажмите для записи голосового"}
+            title={isRecordingVoice ? "Отпустите, чтобы отправить" : "Удерживайте для записи"}
           >
             🎤
           </button>
@@ -5230,8 +4414,8 @@ export default function App() {
             disabled={composerDisabled}
             rows={1}
           />
-          <button type="submit" disabled={composerDisabled || !canSendText} title="Отправить">
-            ✈️
+          <button type="submit" disabled={composerDisabled || !canSendText}>
+            ➤
           </button>
           {showStickerPicker ? (
             <div className="stickerPicker" style={{ gridColumn: "1 / -1" }}>
@@ -5255,8 +4439,8 @@ export default function App() {
                     type="button"
                     key={`${activeStickerPackId}-${idx}-${s}`}
                     className="stickerBtn"
-                    onClick={() => void sendMessage(undefined, s)}
-                    title="Отправить стикер"
+                    onClick={() => setNewMessage((prev) => (prev ? `${prev} ${s}` : s))}
+                    title="Добавить стикер в сообщение"
                   >
                     {s}
                   </button>
@@ -5265,360 +4449,7 @@ export default function App() {
             </div>
           ) : null}
         </form>
-        <div
-          style={{ fontSize: 10, opacity: 0.42, padding: "2px 10px 6px", gridColumn: "1 / -1" }}
-          title="Время и git обновляются только после «npm run build» в каталоге web на сервере. Ctrl+Shift+R сбрасывает кеш браузера, но не пересобирает файлы."
-        >
-          Сборка: {__BUILD_TIME__} · git {__GIT_SHA__} · кэш: Ctrl+Shift+R
-        </div>
-
-        {embeddedCall ? (
-          <div className="callOverlay" role="dialog" aria-label="Звонок">
-            <div className="callOverlayInner">
-              <div className="callOverlayToolbar">
-                <span className="callOverlayTitle">{embeddedCall.video ? "Видеозвонок" : "Аудиозвонок"}</span>
-                <button type="button" className="chip" onClick={() => setEmbeddedCall(null)}>
-                  Закрыть
-                </button>
-              </div>
-              <iframe
-                className="callOverlayFrame"
-                title="Jitsi Meet"
-                src={`https://meet.jit.si/${encodeURIComponent(embeddedCall.room)}#config.startWithVideoMuted=${!embeddedCall.video}`}
-                allow="camera; microphone; fullscreen; display-capture; autoplay; clipboard-write"
-              />
-            </div>
-          </div>
-        ) : null}
       </main>
-
-      {showRightPanel ? (
-        <div className={viewportW >= 1200 ? "infoPanelHost infoPanelHost--desktop" : "infoPanelHost infoPanelHost--overlay"}>
-          {viewportW < 1200 ? (
-            <button type="button" className="infoPanelBackdrop" aria-label="Закрыть панель" onClick={() => setShowRightPanel(false)} />
-          ) : null}
-          <aside className="infoPanel">
-            <div className="infoPanelHeader">
-              <span>Сведения о чате</span>
-              <button type="button" className="tgCircleBtn" aria-label="Закрыть" onClick={() => setShowRightPanel(false)}>
-                ✕
-              </button>
-            </div>
-            <div className="infoPanelBody">
-              <div className={`infoPanelHeroAvatar ${mode === "channels" && activeChannel?.avatarUrl ? "infoPanelHeroAvatar--img" : ""} ${mode === "groups" && activeGroupChat?.avatarUrl ? "infoPanelHeroAvatar--img" : ""}`}>
-                {mode === "channels" ? (
-                  activeChannel?.avatarUrl ? (
-                    <img src={activeChannel.avatarUrl} alt="" className="infoPanelHeroAvatarImg" />
-                  ) : (
-                    "#"
-                  )
-                ) : mode === "groups" ? (
-                  activeGroupChat?.avatarUrl ? (
-                    <img src={activeGroupChat.avatarUrl} alt="" className="infoPanelHeroAvatarImg" />
-                  ) : (
-                    initials(activeGroupChat?.name ?? "G")
-                  )
-                ) : (
-                  (() => {
-                    const otherId = activeDirectChat?.userIds.find((id) => id !== userId) ?? activeDirectChat?.userIds[0] ?? "";
-                    const u = users.find((x) => x.id === otherId);
-                    return initials(displayUserNameForSidebar(u, otherId || "Л"));
-                  })()
-                )}
-              </div>
-              <div className="infoPanelHeroTitle">
-                {mode === "channels"
-                  ? activeChannel
-                    ? `#${activeChannel.name}`
-                    : "Канал не выбран"
-                  : mode === "groups"
-                    ? activeGroupChat
-                      ? activeGroupChat.name
-                      : "Группа не выбрана"
-                    : activeDirectChat
-                      ? (() => {
-                          const otherId =
-                            activeDirectChat.userIds.find((id) => id !== userId) ?? activeDirectChat.userIds[0] ?? "";
-                          const u = users.find((x) => x.id === otherId);
-                          return displayUserNameForSidebar(u, otherId || activeDirectChat.id);
-                        })()
-                      : "Личка не выбрана"}
-              </div>
-              <p className="infoPanelHeroSub">
-                {organizationId ? `Организация: ${displayOrganizationId}` : "—"} · {myProfileEmail || email}
-              </p>
-
-              {mode === "groups" && activeGroupChat ? (
-                <div className="infoPanelSection">
-                  <div className="infoPanelSectionTitle">Участники ({activeGroupChat.memberIds.length})</div>
-                  <ul className="infoPanelMemberList">
-                    {activeGroupChat.memberIds.map((mid) => {
-                      const u = users.find((x) => x.id === mid);
-                      return (
-                        <li key={mid}>
-                          {displayUserNameForSidebar(u, mid)}
-                          <span className="infoPanelMemberEmail">{u?.email ?? mid}</span>
-                        </li>
-                      );
-                    })}
-                  </ul>
-                </div>
-              ) : null}
-
-              {mode === "channels" && activeChannelId ? (
-                <div className="infoPanelSection">
-                  <div className="infoPanelSectionTitle">
-                    Участники канала
-                    {activeChannel?.type === "public" || activeChannel?.type === "broadcast"
-                      ? " (все в workspace)"
-                      : null}
-                  </div>
-                  {activeChannel?.type === "private" ? (
-                    <ul className="infoPanelMemberList">
-                      {infoPanelChannelMembers.map((u) => (
-                        <li key={u.id}>
-                          {displayUserNameForSidebar(u, u.id)}
-                          <span className="infoPanelMemberEmail">{u.email}</span>
-                        </li>
-                      ))}
-                    </ul>
-                  ) : (
-                    <p className="infoPanelHint">Публичный и broadcast-канал виден участникам workspace; список подписчиков не хранится отдельно.</p>
-                  )}
-                </div>
-              ) : null}
-
-              {(mode === "groups" && canEditActiveGroupMeta) || (mode === "channels" && canEditActiveChannelMeta) ? (
-                <div className="infoPanelSection">
-                  <div className="infoPanelSectionTitle">Название и аватар</div>
-                  {chatMetaMsg ? <div className="empty">{chatMetaMsg}</div> : null}
-                  <label className="infoPanelLabel">Название</label>
-                  <input
-                    className="infoPanelInput"
-                    value={chatMetaNameDraft}
-                    onChange={(e) => setChatMetaNameDraft(e.target.value)}
-                    placeholder={mode === "channels" ? "Имя канала" : "Имя группы"}
-                  />
-                  <label className="infoPanelLabel">Аватар (файл или data:image)</label>
-                  <input
-                    className="infoPanelInput"
-                    value={chatMetaAvatarData}
-                    onChange={(e) => setChatMetaAvatarData(e.target.value)}
-                    placeholder="https://… или data:image/…"
-                  />
-                  <input
-                    type="file"
-                    accept="image/*"
-                    onChange={(e) => {
-                      const f = e.currentTarget.files?.[0];
-                      if (f) applyChatAvatarFromFile(f);
-                      e.currentTarget.value = "";
-                    }}
-                  />
-                  <button type="button" className="moreMenuWideBtn" onClick={() => void saveChatMeta()} disabled={!token}>
-                    Сохранить
-                  </button>
-                </div>
-              ) : null}
-
-              <div className="infoPanelSection">
-                <div className="infoPanelSectionTitle">Действия</div>
-                <button
-                  type="button"
-                  className="moreMenuWideBtn"
-                  onClick={() => {
-                    setShowCompanyCabinet(true);
-                    setCompanyTab("employees");
-                    void loadUsers();
-                  }}
-                  disabled={!token || !organizationId}
-                >
-                  Кабинет компании
-                </button>
-                {isCompanyAdmin ? (
-                  <button
-                    type="button"
-                    className="moreMenuWideBtn"
-                    onClick={() => void openAdminUsersPanel()}
-                    disabled={!token || !organizationId}
-                  >
-                    Админ: пользователи
-                  </button>
-                ) : null}
-                <button
-                  type="button"
-                  className="moreMenuWideBtn"
-                  onClick={() => {
-                    setShowUserCabinet(true);
-                    setProfileMsg("");
-                    void loadMyProfile();
-                  }}
-                  disabled={!token}
-                >
-                  Мой профиль
-                </button>
-                {mode === "channels" && activeChannelId ? (
-                  <button
-                    type="button"
-                    className="moreMenuWideBtn subtle"
-                    onClick={() => {
-                      void loadPinnedMessages();
-                      setShowRightPanel(false);
-                    }}
-                    disabled={!token}
-                  >
-                    Открыть закреплённые сообщения
-                  </button>
-                ) : null}
-              </div>
-            </div>
-          </aside>
-        </div>
-      ) : null}
-
-      {newThingWizardKind ? (
-        <div
-          className="companyModalBackdrop newChatWizardBackdrop"
-          onClick={() => {
-            if (!wizardBusy) closeNewThingWizard();
-          }}
-        >
-          <section className="companyModal newChatWizardModal" onClick={(e) => e.stopPropagation()}>
-            <div className="companyModalHeader">
-              <div>
-                <div style={{ fontWeight: 700 }}>
-                  {newThingWizardKind === "dm"
-                    ? "Новый личный чат"
-                    : newThingWizardKind === "group"
-                      ? "Новая группа"
-                      : "Новый канал"}
-                </div>
-                <div style={{ fontSize: 12, opacity: 0.75, marginTop: 4 }}>
-                  {newThingWizardKind === "dm"
-                    ? "Только два человека: вы и собеседник. Не путайте с «Группой» в меню +."
-                    : newThingWizardKind === "group"
-                      ? "Выберите от 1 до 100 участников (вы сами будете добавлены автоматически)"
-                      : "Выберите участников — можно добавить всех сотрудников компании"}
-                </div>
-              </div>
-              <button type="button" className="chip" disabled={wizardBusy} onClick={closeNewThingWizard}>
-                Закрыть
-              </button>
-            </div>
-
-            {newThingWizardKind === "group" ? (
-              <div className="row" style={{ marginBottom: 10 }}>
-                <input
-                  value={wizardGroupName}
-                  onChange={(e) => setWizardGroupName(e.target.value)}
-                  placeholder="Название группы"
-                  style={{ flex: 1, minWidth: 0 }}
-                />
-              </div>
-            ) : null}
-
-            {newThingWizardKind === "channel" ? (
-              <div className="row" style={{ marginBottom: 10, flexWrap: "wrap", gap: 8 }}>
-                <input
-                  value={wizardChannelName}
-                  onChange={(e) => setWizardChannelName(e.target.value)}
-                  placeholder="Название канала"
-                  style={{ flex: 1, minWidth: 160 }}
-                />
-                <select
-                  value={wizardChannelType}
-                  onChange={(e) => setWizardChannelType(e.target.value as "public" | "private" | "broadcast")}
-                  style={{
-                    boxSizing: "border-box",
-                    padding: "8px 10px",
-                    borderRadius: 10,
-                    border: "1px solid rgba(255,255,255,0.12)",
-                    background: "rgba(0,0,0,0.25)",
-                    color: "inherit",
-                  }}
-                >
-                  <option value="public">public</option>
-                  <option value="private">private</option>
-                  <option value="broadcast">broadcast</option>
-                </select>
-              </div>
-            ) : null}
-
-            <div className="row" style={{ marginBottom: 8, flexWrap: "wrap", gap: 8 }}>
-              <input
-                value={wizardUserQuery}
-                onChange={(e) => setWizardUserQuery(e.target.value)}
-                placeholder="Поиск по email или отделу"
-                style={{ flex: 1, minWidth: 0 }}
-              />
-              {newThingWizardKind === "channel" ? (
-                <button type="button" onClick={wizardSelectAllCompanyUsers} disabled={!users.length || wizardBusy}>
-                  Все сотрудники
-                </button>
-              ) : null}
-            </div>
-
-            {wizardError ? (
-              <div className="empty" style={{ color: "#f08080", marginBottom: 8 }}>
-                {wizardError}
-              </div>
-            ) : null}
-
-            <div className="companyList newChatWizardUserList">
-              {newThingWizardUsers.length === 0 ? (
-                <div className="empty" style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
-                  <span>Нет пользователей в списке.</span>
-                  <button type="button" onClick={() => void loadUsers()} disabled={!token || !organizationId || wizardBusy}>
-                    Загрузить
-                  </button>
-                </div>
-              ) : (
-                newThingWizardUsers.map((u) => (
-                  <button
-                    key={u.id}
-                    type="button"
-                    className={`newChatWizardRow ${wizardSelectedUserIds.includes(u.id) ? "selected" : ""}`}
-                    onClick={() => toggleWizardUser(u.id)}
-                  >
-                    <span className="newChatWizardCheck" aria-hidden>
-                      {newThingWizardKind === "dm"
-                        ? wizardSelectedUserIds[0] === u.id
-                          ? "◉"
-                          : "○"
-                        : wizardSelectedUserIds.includes(u.id)
-                          ? "☑"
-                          : "☐"}
-                    </span>
-                    <span className="newChatWizardEmail">{u.email}</span>
-                    {u.department ? <span className="newChatWizardMeta">{u.department}</span> : null}
-                  </button>
-                ))
-              )}
-            </div>
-
-            <div className="row" style={{ marginTop: 12, justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
-              <div style={{ fontSize: 12, opacity: 0.8 }}>
-                {newThingWizardKind === "group" || newThingWizardKind === "channel"
-                  ? `Выбрано: ${wizardSelectedUserIds.length}${newThingWizardKind === "group" ? " (макс. 100)" : ""}`
-                  : "\u00a0"}
-              </div>
-              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                <button type="button" className="chip" disabled={wizardBusy} onClick={closeNewThingWizard}>
-                  Отмена
-                </button>
-                <button type="button" disabled={wizardBusy} onClick={() => void submitNewThingWizard()}>
-                  {newThingWizardKind === "dm"
-                    ? "Открыть чат"
-                    : newThingWizardKind === "group"
-                      ? "Создать группу"
-                      : "Создать канал"}
-                </button>
-              </div>
-            </div>
-          </section>
-        </div>
-      ) : null}
-
       {showLogs ? (
         <div className="logsDrawer" role="dialog" aria-label="logs">
           <div className="logsHeader">
@@ -5628,6 +4459,70 @@ export default function App() {
             </button>
           </div>
           <pre className="logsBody">{log.join("\n") || "Пусто"}</pre>
+        </div>
+      ) : null}
+      {webrtcUi ? (
+        <div className="webrtcOverlay" role="dialog" aria-label="Звонок">
+          <div className="webrtcPanel">
+            <div className="webrtcVideos">
+              <video
+                ref={(el) => {
+                  if (el) el.srcObject = webrtcUi.remoteStream;
+                }}
+                autoPlay
+                playsInline
+                className="webrtcRemote"
+              />
+              <video
+                ref={(el) => {
+                  if (el) el.srcObject = webrtcUi.localStream;
+                }}
+                autoPlay
+                playsInline
+                muted
+                className="webrtcLocal"
+              />
+            </div>
+            <button type="button" className="chip" onClick={() => webrtcUi.hangup()}>
+              Завершить
+            </button>
+          </div>
+        </div>
+      ) : null}
+      {incomingCall ? (
+        <div className="webrtcOverlay" role="dialog" aria-label="Входящий звонок">
+          <div className="webrtcPanel">
+            <div style={{ marginBottom: 8 }}>Входящий {incomingCall.audioOnly ? "звонок" : "видеозвонок"}</div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button type="button" className="chip" onClick={() => void acceptIncomingCall()}>
+                Принять
+              </button>
+              <button type="button" className="chip" onClick={declineIncomingCall}>
+                Отклонить
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {readReceiptModalForId ? (
+        <div className="modalBackdrop" role="presentation" onClick={() => setReadReceiptModalForId(null)}>
+          <div className="modalPanel" role="dialog" onClick={(e) => e.stopPropagation()}>
+            <div style={{ fontWeight: 700, marginBottom: 8 }}>Прочитали сообщение</div>
+            {readReceiptUsers.length === 0 ? (
+              <div className="empty">Пока никто не открыл чат после этого сообщения</div>
+            ) : (
+              <ul style={{ margin: 0, paddingLeft: 18 }}>
+                {readReceiptUsers.map((u) => (
+                  <li key={u.id} style={{ marginBottom: 4 }}>
+                    {messageAuthorLabel(u)} <span style={{ opacity: 0.75 }}>({u.email})</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <button type="button" className="chip" style={{ marginTop: 10 }} onClick={() => setReadReceiptModalForId(null)}>
+              Закрыть
+            </button>
+          </div>
         </div>
       ) : null}
     </div>
