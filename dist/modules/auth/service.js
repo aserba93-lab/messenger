@@ -6,6 +6,7 @@ import { hashPassword, verifyPassword } from "../../security/password.js";
 import { issueAccessToken, issueRefreshToken, verifyRefreshToken } from "../../security/jwt.js";
 import { setRefreshCookie } from "../../web/cookies.js";
 import { maskEmail, sendLoginOtpEmail } from "../../lib/mail.js";
+import { prisma } from "../../db/prisma.js";
 export class AuthService {
     repo;
     constructor(repo = new AuthRepository()) {
@@ -257,6 +258,11 @@ export class AuthService {
             throw new Error("Invalid credentials");
         }
         await this.repo.resetFailedLogin(user.id);
+        /** После успешного входа по паролю считаем email подтверждённым — иначе в production блокируются файлы/голосовые (requireVerified). */
+        if (!user.emailVerifiedAt) {
+            await prisma.user.update({ where: { id: user.id }, data: { emailVerifiedAt: new Date() } });
+            user.emailVerifiedAt = new Date();
+        }
         const twoFactor = await this.repo.getTwoFactorByUserId(user.id);
         if (twoFactor?.enabledAt) {
             if (params.backupCode) {
@@ -317,6 +323,10 @@ export class AuthService {
         });
         if (!membership || membership.deactivatedAt)
             throw new Error("Not a member of this organization");
+        if (!user.emailVerifiedAt) {
+            await prisma.user.update({ where: { id: user.id }, data: { emailVerifiedAt: new Date() } });
+            user.emailVerifiedAt = new Date();
+        }
         const sessionId = crypto.randomBytes(24).toString("hex");
         const expiresAt = new Date(Date.now() + env.JWT_REFRESH_TTL_SECONDS * 1000);
         const refreshToken = issueRefreshToken({ sub: user.id, sid: sessionId });

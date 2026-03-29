@@ -224,6 +224,11 @@ export default function App() {
   const [activeGroupChatId, setActiveGroupChatId] = useState("");
   const [directChats, setDirectChats] = useState<DirectChat[]>([]);
   const [activeDirectChatId, setActiveDirectChatId] = useState("");
+  const modeRef = useRef(mode);
+  const activeChannelIdRef = useRef(activeChannelId);
+  const activeGroupChatIdRef = useRef(activeGroupChatId);
+  const activeDirectChatIdRef = useRef(activeDirectChatId);
+  const myAccountEmailRef = useRef("");
 
   const [messages, setMessages] = useState<Message[]>([]);
   const [newMessage, setNewMessage] = useState("");
@@ -240,6 +245,15 @@ export default function App() {
   const [showForwardPicker, setShowForwardPicker] = useState(false);
   const [showLogs, setShowLogs] = useState(false);
   const [showDev, setShowDev] = useState(false);
+  const [theme, setTheme] = useState<"dark" | "light">(() => {
+    if (typeof window === "undefined") return "dark";
+    return localStorage.getItem("tg:theme") === "light" ? "light" : "dark";
+  });
+  const [browserNotify, setBrowserNotify] = useState(() => {
+    if (typeof window === "undefined") return false;
+    return localStorage.getItem("tg:browserNotify") === "1";
+  });
+  const browserNotifyRef = useRef(browserNotify);
   const [moreMenuOpen, setMoreMenuOpen] = useState(false);
   const [newChatMenuOpen, setNewChatMenuOpen] = useState(false);
   const [newThingWizardKind, setNewThingWizardKind] = useState<null | "dm" | "group" | "channel">(null);
@@ -289,6 +303,29 @@ export default function App() {
     () => myProfileEmail.trim() || selfAuthorEmail,
     [myProfileEmail, selfAuthorEmail],
   );
+  useEffect(() => {
+    modeRef.current = mode;
+    activeChannelIdRef.current = activeChannelId;
+    activeGroupChatIdRef.current = activeGroupChatId;
+    activeDirectChatIdRef.current = activeDirectChatId;
+    myAccountEmailRef.current = myAccountEmailForMessages;
+  }, [mode, activeChannelId, activeGroupChatId, activeDirectChatId, myAccountEmailForMessages]);
+  useEffect(() => {
+    browserNotifyRef.current = browserNotify;
+    try {
+      localStorage.setItem("tg:browserNotify", browserNotify ? "1" : "0");
+    } catch {
+      /* ignore */
+    }
+  }, [browserNotify]);
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme === "light" ? "light" : "dark";
+    try {
+      localStorage.setItem("tg:theme", theme);
+    } catch {
+      /* ignore */
+    }
+  }, [theme]);
   const [profileFirstName, setProfileFirstName] = useState("");
   const [profileLastName, setProfileLastName] = useState("");
   const [profileMiddleName, setProfileMiddleName] = useState("");
@@ -403,7 +440,7 @@ export default function App() {
   const newThingWizardUsers = useMemo(() => {
     const q = wizardUserQuery.trim().toLowerCase();
     return users
-      .filter((u) => u.id !== userId)
+      .filter((u) => (newThingWizardKind === "dm" ? true : u.id !== userId))
       .filter(
         (u) =>
           !q ||
@@ -411,10 +448,16 @@ export default function App() {
       )
       .slice()
       .sort((a, b) => a.email.localeCompare(b.email));
-  }, [users, userId, wizardUserQuery]);
+  }, [users, userId, wizardUserQuery, newThingWizardKind]);
 
   const [presenceByUserId, setPresenceByUserId] = useState<Record<string, { status: string; lastSeen?: string }>>({});
   const isCompanyAdmin = viewerRole === "owner" || viewerRole === "admin";
+  useEffect(() => {
+    if (!isCompanyAdmin) {
+      setShowLogs(false);
+      setShowDev(false);
+    }
+  }, [isCompanyAdmin]);
   const displayOrganizationId = useMemo(() => {
     const code = organizationCode.trim().toUpperCase();
     if (/^ID\d{6}$/.test(code)) return code;
@@ -996,9 +1039,13 @@ export default function App() {
       setShowScrollToBottom(!nearBottom);
     };
     el.addEventListener("scroll", onScroll, { passive: true });
+    stickToBottomRef.current = true;
     onScroll();
+    queueMicrotask(() => {
+      messagesEndRef.current?.scrollIntoView({ block: "end" });
+    });
     return () => el.removeEventListener("scroll", onScroll);
-  }, []);
+  }, [activeChannelId, activeGroupChatId, activeDirectChatId, threadRootId, showPins, showSaved]);
 
   const typingRef = useRef<{ started: boolean; stopTimerId: number | null }>({ started: false, stopTimerId: null });
   const localFileMessageIdByFileIdRef = useRef(new Map<string, string>());
@@ -1356,7 +1403,7 @@ export default function App() {
       }
       if (!orgId) {
         throw new Error(
-          "Не указана организация. Нажмите «Заполнить из seed (dev)» или задайте привязку по email.",
+          "Не указана организация. Войдите под корпоративной почтой — организация подставится автоматически, либо уточните ID у администратора.",
         );
       }
       const ident = loginIdentifier.trim();
@@ -1510,9 +1557,9 @@ export default function App() {
       }
 
       const isActive =
-        (mode === "channels" && channelId && channelId === activeChannelId) ||
-        (mode === "groups" && groupChatId && groupChatId === activeGroupChatId) ||
-        (mode === "dms" && directChatId && directChatId === activeDirectChatId);
+        (modeRef.current === "channels" && channelId && channelId === activeChannelIdRef.current) ||
+        (modeRef.current === "groups" && groupChatId && groupChatId === activeGroupChatIdRef.current) ||
+        (modeRef.current === "dms" && directChatId && directChatId === activeDirectChatIdRef.current);
 
       if (!isActive) {
         if (key) {
@@ -1522,6 +1569,27 @@ export default function App() {
             (v && v !== "forever" && !Number.isNaN(Date.parse(v)) && Date.now() < Date.parse(v));
           if (!muted) {
             setUnreadByKey((prev) => ({ ...prev, [key]: (prev[key] ?? 0) + 1 }));
+          }
+          if (
+            !muted &&
+            browserNotifyRef.current &&
+            typeof Notification !== "undefined" &&
+            Notification.permission === "granted"
+          ) {
+            const fromMe = String(msg.author?.email ?? "") === myAccountEmailRef.current;
+            if (!fromMe) {
+              try {
+                const body =
+                  msg.type === "voice"
+                    ? "Голосовое сообщение"
+                    : msg.type === "file"
+                      ? "Файл"
+                      : (msg.content || "Новое сообщение").slice(0, 160);
+                new Notification("sf-communication", { body, tag: key || "dm" });
+              } catch {
+                /* ignore */
+              }
+            }
           }
         }
         return;
@@ -1581,10 +1649,10 @@ export default function App() {
     });
     s.on("typing:start", (evt: any) => {
       const typingId = String(evt?.userId ?? "");
-      if (!typingId || typingId === userId) return;
-      if (mode === "channels" && String(evt?.channelId ?? "") !== activeChannelId) return;
-      if (mode === "groups" && String(evt?.groupChatId ?? "") !== activeGroupChatId) return;
-      if (mode === "dms" && String(evt?.directChatId ?? "") !== activeDirectChatId) return;
+      if (!typingId || typingId === userIdRef.current) return;
+      if (modeRef.current === "channels" && String(evt?.channelId ?? "") !== activeChannelIdRef.current) return;
+      if (modeRef.current === "groups" && String(evt?.groupChatId ?? "") !== activeGroupChatIdRef.current) return;
+      if (modeRef.current === "dms" && String(evt?.directChatId ?? "") !== activeDirectChatIdRef.current) return;
       setTypingUserIds((prev) => (prev.includes(typingId) ? prev : [...prev, typingId].slice(0, 5)));
     });
     s.on("typing:stop", (evt: any) => {
@@ -1634,9 +1702,8 @@ export default function App() {
       const p = data?.payload;
       if (!from || !p || p.type !== "offer" || !p.sdp) return;
       const uid = userIdRef.current;
-      const dms = directChatsRef.current;
-      const allowed = dms.some((d) => d.userIds.includes(from) && d.userIds.includes(uid));
-      if (!allowed) return;
+      if (!uid || from === uid) return;
+      /** Сервер пропускает только участников одной организации; локальный список DM может быть ещё не загружен. */
       if (webrtcBusyRef.current) return;
       const audioOnly = !String(p.sdp).includes("m=video");
       setIncomingCall({ fromUserId: from, offerSdp: p.sdp, audioOnly });
@@ -1799,13 +1866,17 @@ export default function App() {
     }
     if (mode === "dms") {
       if (!activeDirectChat) return;
-      const otherUserId = activeDirectChat.userIds.find((id) => id !== userId) ?? "";
-      if (!otherUserId) return;
+      const isSelfDm =
+        activeDirectChat.userIds.length === 1 && activeDirectChat.userIds[0] === userId;
+      const peerUserId = isSelfDm
+        ? userId
+        : (activeDirectChat.userIds.find((id) => id !== userId) ?? "");
+      if (!peerUserId) return;
       const data = await gql<{ sendDirectMessage: DirectChatMessage }>(
         `mutation($userId: ID!, $content: String!) {
           sendDirectMessage(input: { userId: $userId, content: $content }) { id content createdAt author { email } type directChatId }
         }`,
-        { userId: otherUserId, content },
+        { userId: peerUserId, content },
         token,
       );
       setMessages((prev) => [
@@ -1939,6 +2010,10 @@ export default function App() {
       setChatError("Встроенный звонок доступен в личных сообщениях (DM)");
       return;
     }
+    if (activeDirectChat.userIds.length === 1 && activeDirectChat.userIds[0] === userId) {
+      setChatError("Звонок самому себе недоступен");
+      return;
+    }
     const other = activeDirectChat.userIds.find((id) => id !== userId) ?? "";
     if (!other || !socket) {
       setChatError("Нет собеседника или сокет не подключён");
@@ -1981,8 +2056,8 @@ export default function App() {
         activeCall: ac,
         callPeerId: other,
       });
-      void sendServiceMessageToCurrentChat(`📞 Созвон (WebRTC)`);
-      pushLog("Созвон: WebRTC");
+      void sendServiceMessageToCurrentChat(`📞 Аудиозвонок`);
+      pushLog("Созвон: аудио");
     } catch (e: any) {
       webrtcBusyRef.current = false;
       setChatError(String(e?.message ?? e));
@@ -1996,6 +2071,10 @@ export default function App() {
     }
     if (mode !== "dms" || !activeDirectChat) {
       setChatError("Встроенный видеозвонок доступен в личных сообщениях (DM)");
+      return;
+    }
+    if (activeDirectChat.userIds.length === 1 && activeDirectChat.userIds[0] === userId) {
+      setChatError("Видеозвонок самому себе недоступен");
       return;
     }
     const other = activeDirectChat.userIds.find((id) => id !== userId) ?? "";
@@ -2040,8 +2119,8 @@ export default function App() {
         activeCall: ac,
         callPeerId: other,
       });
-      void sendServiceMessageToCurrentChat(`🎥 Видеовстреча (WebRTC)`);
-      pushLog("Видеовстреча: WebRTC");
+      void sendServiceMessageToCurrentChat(`🎥 Видеозвонок`);
+      pushLog("Видеозвонок");
     } catch (e: any) {
       webrtcBusyRef.current = false;
       setChatError(String(e?.message ?? e));
@@ -2210,6 +2289,16 @@ export default function App() {
     setProfilePhone(data.me.phone || "");
     setViewerRole((data.me.role as any) ?? viewerRole);
   }
+
+  useEffect(() => {
+    if (!moreMenuOpen || !token) return;
+    void loadMyProfile();
+  }, [moreMenuOpen, token]);
+
+  useEffect(() => {
+    if (!token || !isSelfNotesActiveDm) return;
+    void loadMyProfile();
+  }, [token, isSelfNotesActiveDm]);
 
   function applyAvatarFromFile(file: File) {
     const reader = new FileReader();
@@ -2380,7 +2469,8 @@ export default function App() {
   }
 
   function toggleWizardUser(pickId: string) {
-    if (!newThingWizardKind || pickId === userId) return;
+    if (!newThingWizardKind) return;
+    if (pickId === userId && newThingWizardKind !== "dm") return;
     if (newThingWizardKind === "dm") {
       setWizardSelectedUserIds((prev) => (prev[0] === pickId ? [] : [pickId]));
       return;
@@ -2956,8 +3046,12 @@ export default function App() {
           setMessages((prev) => prev.filter((m) => m.id !== tempId));
           return;
         }
-        const otherUserId = activeDirectChat.userIds.find((id) => id !== userId) ?? "";
-        if (!otherUserId) {
+        const isSelfDm =
+          activeDirectChat.userIds.length === 1 && activeDirectChat.userIds[0] === userId;
+        const peerUserId = isSelfDm
+          ? userId
+          : (activeDirectChat.userIds.find((id) => id !== userId) ?? "");
+        if (!peerUserId) {
           setMessages((prev) => prev.filter((m) => m.id !== tempId));
           return;
         }
@@ -2967,7 +3061,7 @@ export default function App() {
               id directChatId content createdAt updatedAt type parentMessageId author { email firstName lastName } reactions { emoji count viewerHasReacted } file { id originalName mimeType size downloadUrl }
             }
           }`,
-          { userId: otherUserId, content, ...(parentMessageId ? { parentMessageId } : {}) },
+          { userId: peerUserId, content, ...(parentMessageId ? { parentMessageId } : {}) },
           token,
         );
         setMessages((prev) =>
@@ -3089,7 +3183,9 @@ export default function App() {
         ? "application/x-bittorrent"
         : nameLower.endsWith(".webm")
           ? "audio/webm"
-          : "application/octet-stream");
+          : nameLower.endsWith(".m4a") || nameLower.endsWith(".mp4")
+            ? "audio/mp4"
+            : "application/octet-stream");
 
     async function sleep(ms: number) {
       await new Promise((r) => setTimeout(r, ms));
@@ -3414,7 +3510,10 @@ export default function App() {
       };
       rec.onstop = async () => {
         try {
-          const blob = new Blob(mediaChunksRef.current, { type: rec.mimeType || "audio/webm" });
+          await new Promise((r) => setTimeout(r, 80));
+          const mime = (rec.mimeType && rec.mimeType !== "" ? rec.mimeType : "audio/webm").toLowerCase();
+          const ext = mime.includes("mp4") || mime.includes("aac") || mime.includes("m4a") ? "m4a" : mime.includes("ogg") ? "ogg" : "webm";
+          const blob = new Blob(mediaChunksRef.current, { type: mime });
           mediaChunksRef.current = [];
           const durationMs = Date.now() - voiceStartAtRef.current;
           if (durationMs < 250) {
@@ -3422,7 +3521,7 @@ export default function App() {
             return;
           }
           if (blob.size > 0) {
-            await uploadAndSend("voice", blob, `voice-${Date.now()}.webm`);
+            await uploadAndSend("voice", blob, `voice-${Date.now()}.${ext}`);
           } else {
             setChatError("Голосовое не записалось. Разрешите доступ к микрофону и попробуйте снова.");
           }
@@ -3661,11 +3760,7 @@ export default function App() {
               <div className="modalPanel" role="dialog" onClick={(e) => e.stopPropagation()}>
                 <div style={{ fontWeight: 700, marginBottom: 8 }}>Восстановление доступа</div>
                 <p style={{ fontSize: 13, lineHeight: 1.4, marginTop: 0 }}>
-                  Если вы забыли пароль, напишите администратору вашей компании. Админ зайдет в раздел
-                  «Админ: пользователи» и задаст вам новый пароль для входа.
-                </p>
-                <p style={{ fontSize: 12, opacity: 0.8 }}>
-                  Для безопасности система не показывает текущие пароли и не рассылает их по почте.
+                  Обратитесь к администратору вашей организации, чтобы сбросить пароль.
                 </p>
                 <button
                   type="button"
@@ -4347,6 +4442,21 @@ export default function App() {
                 </button>
               </div>
               <div className="moreMenuBody">
+                {token ? (
+                  <div className="moreMenuProfileCard">
+                    <div className={`moreMenuProfileAvatar ${profileAvatarUrl ? "moreMenuProfileAvatar--img" : ""}`}>
+                      {profileAvatarUrl ? <img src={profileAvatarUrl} alt="" /> : <span>{initials(myProfileEmail || loginIdentifier)}</span>}
+                    </div>
+                    <div className="moreMenuProfileText">
+                      <div className="moreMenuProfileName">
+                        {[profileFirstName, profileMiddleName, profileLastName].filter(Boolean).join(" ").trim() ||
+                          myProfileEmail ||
+                          loginIdentifier}
+                      </div>
+                      {profilePhone.trim() ? <div className="moreMenuProfilePhone">{profilePhone.trim()}</div> : null}
+                    </div>
+                  </div>
+                ) : null}
                 <div className="moreMenuSection">
                   <button
                     type="button"
@@ -4361,18 +4471,20 @@ export default function App() {
                   >
                     Личный кабинет
                   </button>
-                  <button
-                    type="button"
-                    className="moreMenuWideBtn"
-                    onClick={() => {
-                      setShowCompanyCabinet(true);
-                      void loadUsers();
-                      setMoreMenuOpen(false);
-                    }}
-                    disabled={!token || !organizationId}
-                  >
-                    Кабинет компании
-                  </button>
+                  {isCompanyAdmin ? (
+                    <button
+                      type="button"
+                      className="moreMenuWideBtn"
+                      onClick={() => {
+                        setShowCompanyCabinet(true);
+                        void loadUsers();
+                        setMoreMenuOpen(false);
+                      }}
+                      disabled={!token || !organizationId}
+                    >
+                      Кабинет компании
+                    </button>
+                  ) : null}
                   {isCompanyAdmin ? (
                     <button
                       type="button"
@@ -4386,6 +4498,29 @@ export default function App() {
                       Админ: пользователи
                     </button>
                   ) : null}
+                  <button
+                    type="button"
+                    className="moreMenuWideBtn subtle"
+                    onClick={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
+                  >
+                    {theme === "dark" ? "Светлая тема" : "Тёмная тема"}
+                  </button>
+                  <button
+                    type="button"
+                    className="moreMenuWideBtn subtle"
+                    onClick={() => {
+                      void (async () => {
+                        const next = !browserNotify;
+                        if (next && typeof Notification !== "undefined" && Notification.permission === "default") {
+                          await Notification.requestPermission();
+                        }
+                        setBrowserNotify(next);
+                      })();
+                    }}
+                    disabled={!token || typeof Notification === "undefined"}
+                  >
+                    {browserNotify ? "Отключить уведомления браузера" : "Включить уведомления браузера"}
+                  </button>
                   <button
                     type="button"
                     className="moreMenuWideBtn"
@@ -4409,16 +4544,18 @@ export default function App() {
                   >
                     Избранное — заметки для себя
                   </button>
-                  <button
-                    type="button"
-                    className="moreMenuWideBtn subtle"
-                    onClick={() => {
-                      setShowLogs(true);
-                      setMoreMenuOpen(false);
-                    }}
-                  >
-                    Журнал / отладка
-                  </button>
+                  {isCompanyAdmin ? (
+                    <button
+                      type="button"
+                      className="moreMenuWideBtn subtle"
+                      onClick={() => {
+                        setShowLogs(true);
+                        setMoreMenuOpen(false);
+                      }}
+                    >
+                      Журнал / отладка
+                    </button>
+                  ) : null}
                   <button
                     type="button"
                     className="moreMenuWideBtn danger"
@@ -4433,7 +4570,11 @@ export default function App() {
                 <div className="moreMenuSection">
                   <div className="moreMenuLabel">Пользователи</div>
                   {users.length === 0 ? (
-                    <div className="empty">Загрузите список (раздел «Отладка» ниже → Users)</div>
+                    <div className="empty">
+                      {isCompanyAdmin
+                        ? "Загрузите список (ниже: «Отладка и загрузка данных» → Users)"
+                        : "Список коллег появится после загрузки организацией."}
+                    </div>
                   ) : (
                     <div className="moreMenuUsers">
                       {users.slice(0, 80).map((u) => {
@@ -4456,7 +4597,6 @@ export default function App() {
                             </span>
                             <span className="moreMenuUserLabel">
                               <span className="moreMenuUserName">{displayUserNameForSidebar(u, u.id)}</span>
-                              <span className="moreMenuUserEmail">{u.email}</span>
                             </span>
                           </button>
                         );
@@ -4464,34 +4604,36 @@ export default function App() {
                     </div>
                   )}
                 </div>
-                <div className="moreMenuSection">
-                  <button type="button" className="moreMenuWideBtn subtle" onClick={() => setShowDev((v) => !v)}>
-                    {showDev ? "Скрыть отладку" : "Отладка и загрузка данных"}
-                  </button>
-                  {showDev ? (
-                    <div className="moreMenuDev">
-                      <label>Workspace ID</label>
-                      <input value={workspaceId} onChange={(e) => setWorkspaceId(e.target.value)} placeholder="workspace id" />
-                      <div className="row" style={{ flexWrap: "wrap", marginTop: 8 }}>
-                        <button type="button" onClick={connectSocket} disabled={!token}>
-                          Socket
-                        </button>
-                        <button type="button" onClick={() => void loadChannels()} disabled={!token || !workspaceId}>
-                          Каналы
-                        </button>
-                        <button type="button" onClick={() => void loadGroupChats()} disabled={!token}>
-                          Группы
-                        </button>
-                        <button type="button" onClick={() => void loadDirectChats()} disabled={!token}>
-                          Личка
-                        </button>
-                        <button type="button" onClick={() => void loadUsers()} disabled={!token || !organizationId}>
-                          Users
-                        </button>
+                {isCompanyAdmin ? (
+                  <div className="moreMenuSection">
+                    <button type="button" className="moreMenuWideBtn subtle" onClick={() => setShowDev((v) => !v)}>
+                      {showDev ? "Скрыть отладку" : "Отладка и загрузка данных"}
+                    </button>
+                    {showDev ? (
+                      <div className="moreMenuDev">
+                        <label>Workspace ID</label>
+                        <input value={workspaceId} onChange={(e) => setWorkspaceId(e.target.value)} placeholder="workspace id" />
+                        <div className="row" style={{ flexWrap: "wrap", marginTop: 8 }}>
+                          <button type="button" onClick={connectSocket} disabled={!token}>
+                            Socket
+                          </button>
+                          <button type="button" onClick={() => void loadChannels()} disabled={!token || !workspaceId}>
+                            Каналы
+                          </button>
+                          <button type="button" onClick={() => void loadGroupChats()} disabled={!token}>
+                            Группы
+                          </button>
+                          <button type="button" onClick={() => void loadDirectChats()} disabled={!token}>
+                            Личка
+                          </button>
+                          <button type="button" onClick={() => void loadUsers()} disabled={!token || !organizationId}>
+                            Users
+                          </button>
+                        </div>
                       </div>
-                    </div>
-                  ) : null}
-                </div>
+                    ) : null}
+                  </div>
+                ) : null}
               </div>
             </div>
           </>
@@ -4576,7 +4718,7 @@ export default function App() {
                 ☰
               </button>
               <div
-                className={`tgHeaderAvatar ${mode === "channels" && activeChannel?.avatarUrl ? "tgHeaderAvatar--img" : ""} ${mode === "groups" && activeGroupChat?.avatarUrl ? "tgHeaderAvatar--img" : ""}`}
+                className={`tgHeaderAvatar ${mode === "channels" && activeChannel?.avatarUrl ? "tgHeaderAvatar--img" : ""} ${mode === "groups" && activeGroupChat?.avatarUrl ? "tgHeaderAvatar--img" : ""} ${mode === "dms" && isSelfNotesActiveDm && profileAvatarUrl ? "tgHeaderAvatar--img" : ""}`}
                 role="button"
                 tabIndex={0}
                 onClick={() => setShowRightPanel(true)}
@@ -4601,6 +4743,12 @@ export default function App() {
                   )
                 ) : (
                   (() => {
+                    if (isSelfNotesActiveDm) {
+                      if (profileAvatarUrl) {
+                        return <img src={profileAvatarUrl} alt="" className="tgHeaderAvatarImg" />;
+                      }
+                      return "⭐";
+                    }
                     const otherId = activeDirectChat?.userIds.find((id) => id !== userId) ?? activeDirectChat?.userIds[0] ?? "";
                     const u = users.find((x) => x.id === otherId);
                     return initials(displayUserNameForSidebar(u, otherId || "Л"));
@@ -4629,26 +4777,30 @@ export default function App() {
                         ? activeGroupChat.name
                         : "Выберите группу"
                       : activeDirectChat
-                        ? (() => {
-                            const otherId =
-                              activeDirectChat.userIds.find((id) => id !== userId) ?? activeDirectChat.userIds[0] ?? "";
-                            const u = users.find((x) => x.id === otherId);
-                            return displayUserNameForSidebar(u, otherId || activeDirectChat.id);
-                          })()
+                        ? isSelfNotesActiveDm
+                          ? "Избранное"
+                          : (() => {
+                              const otherId =
+                                activeDirectChat.userIds.find((id) => id !== userId) ?? activeDirectChat.userIds[0] ?? "";
+                              const u = users.find((x) => x.id === otherId);
+                              return displayUserNameForSidebar(u, otherId || activeDirectChat.id);
+                            })()
                         : "Выберите личку"}
                 </div>
                 <div className="tgChatHeaderSub">
                   {mode === "dms" && activeDirectChat
-                    ? (() => {
-                        const otherId =
-                          activeDirectChat.userIds.find((id) => id !== userId) ?? activeDirectChat.userIds[0] ?? "";
-                        const u = users.find((x) => x.id === otherId);
-                        const p = otherId ? presenceByUserId[otherId] : undefined;
-                        const st = p?.status ?? u?.status ?? "unknown";
-                        const presence =
-                          st === "online" ? "в сети" : st === "away" ? "не активен" : st === "dnd" ? "не беспокоить" : "не в сети";
-                        return presence;
-                      })()
+                    ? isSelfNotesActiveDm
+                      ? "Заметки для себя"
+                      : (() => {
+                          const otherId =
+                            activeDirectChat.userIds.find((id) => id !== userId) ?? activeDirectChat.userIds[0] ?? "";
+                          const u = users.find((x) => x.id === otherId);
+                          const p = otherId ? presenceByUserId[otherId] : undefined;
+                          const st = p?.status ?? u?.status ?? "unknown";
+                          const presence =
+                            st === "online" ? "в сети" : st === "away" ? "не активен" : st === "dnd" ? "не беспокоить" : "не в сети";
+                          return presence;
+                        })()
                     : mode === "groups" && activeGroupChat
                       ? `Участников: ${activeGroupChat.memberIds?.length ?? 0}`
                       : mode === "channels" && activeChannel
@@ -4673,14 +4825,14 @@ export default function App() {
               <div className="tgCallMenuAnchor">
                 <button
                   type="button"
-                  className="tgCircleBtn"
-                  title="Созвон WebRTC (только в личке DM)"
-                  disabled={!canStartCalls || mode !== "dms" || !activeDirectChat || !socket}
+                  className="tgCircleBtn tgCircleBtn--call"
+                  title="Звонок (только в личке с собеседником)"
+                  disabled={!canStartCalls || mode !== "dms" || !activeDirectChat || !socket || isSelfNotesActiveDm}
                   onClick={() => setCallMenuOpen((v) => !v)}
                 >
                   📞
                 </button>
-                {callMenuOpen && canStartCalls && mode === "dms" && activeDirectChat && socket ? (
+                {callMenuOpen && canStartCalls && mode === "dms" && activeDirectChat && socket && !isSelfNotesActiveDm ? (
                   <div className="tgPopoverMenu" role="menu">
                     <button
                       type="button"
@@ -4690,7 +4842,7 @@ export default function App() {
                         void startAudioCall();
                       }}
                     >
-                      Аудиозвонок (WebRTC)
+                      Аудиозвонок
                     </button>
                     <button
                       type="button"
@@ -4700,7 +4852,7 @@ export default function App() {
                         void startVideoMeeting();
                       }}
                     >
-                      Видеозвонок (WebRTC)
+                      Видеозвонок
                     </button>
                   </div>
                 ) : null}
@@ -5481,19 +5633,20 @@ export default function App() {
           );})}
           <div ref={messagesEndRef} />
           {messages.length === 0 ? <div className="empty">Сообщений пока нет</div> : null}
+          {showScrollToBottom ? (
+            <button
+              type="button"
+              className="scrollDownBtn"
+              onClick={() => {
+                stickToBottomRef.current = true;
+                messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+              }}
+              title="К последнему сообщению"
+            >
+              ↓
+            </button>
+          ) : null}
         </section>
-        {showScrollToBottom ? (
-          <button
-            className="scrollDownBtn"
-            onClick={() => {
-              stickToBottomRef.current = true;
-              messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-            }}
-            title="Вниз"
-          >
-            ↓
-          </button>
-        ) : null}
 
         {reactionPopover ? (
           <div
@@ -5632,7 +5785,7 @@ export default function App() {
           <div className="webrtcOverlay" role="dialog" aria-label="Звонок">
             <div className="webrtcPanel">
               <div className="webrtcHint">
-                Звонок 1:1 (WebRTC). До ~100 человек в одной комнате нужен отдельный сервер конференций (SFU), не этот пиринг.
+                Звонок 1:1 между двумя участниками. Для больших групп нужен отдельный сервер конференций.
               </div>
               {webrtcPeerHandRaised ? (
                 <div className="webrtcHandBanner" role="status">
@@ -5754,7 +5907,7 @@ export default function App() {
             </div>
             <div className="infoPanelBody">
               <div
-                className={`infoPanelHeroAvatar ${mode === "channels" && activeChannel?.avatarUrl ? "infoPanelHeroAvatar--img" : ""} ${mode === "groups" && activeGroupChat?.avatarUrl ? "infoPanelHeroAvatar--img" : ""}`}
+                className={`infoPanelHeroAvatar ${mode === "channels" && activeChannel?.avatarUrl ? "infoPanelHeroAvatar--img" : ""} ${mode === "groups" && activeGroupChat?.avatarUrl ? "infoPanelHeroAvatar--img" : ""} ${mode === "dms" && isSelfNotesActiveDm && profileAvatarUrl ? "infoPanelHeroAvatar--img" : ""}`}
               >
                 {mode === "channels" ? (
                   activeChannel?.avatarUrl ? (
@@ -5769,7 +5922,11 @@ export default function App() {
                     initials(activeGroupChat?.name ?? "G")
                   )
                 ) : isSelfNotesActiveDm ? (
-                  "⭐"
+                  profileAvatarUrl ? (
+                    <img src={profileAvatarUrl} alt="" className="infoPanelHeroAvatarImg" />
+                  ) : (
+                    "⭐"
+                  )
                 ) : (
                   (() => {
                     const otherId = activeDirectChat?.userIds.find((id) => id !== userId) ?? activeDirectChat?.userIds[0] ?? "";
@@ -5912,17 +6069,19 @@ export default function App() {
 
                   <div className="infoPanelSection">
                     <div className="infoPanelSectionTitle">Действия</div>
-                    <button
-                      type="button"
-                      className="moreMenuWideBtn"
-                      onClick={() => {
-                        setShowCompanyCabinet(true);
-                        void loadUsers();
-                      }}
-                      disabled={!token || !organizationId}
-                    >
-                      Кабинет компании
-                    </button>
+                    {isCompanyAdmin ? (
+                      <button
+                        type="button"
+                        className="moreMenuWideBtn"
+                        onClick={() => {
+                          setShowCompanyCabinet(true);
+                          void loadUsers();
+                        }}
+                        disabled={!token || !organizationId}
+                      >
+                        Кабинет компании
+                      </button>
+                    ) : null}
                     {isCompanyAdmin ? (
                       <button
                         type="button"

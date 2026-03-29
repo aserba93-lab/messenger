@@ -406,28 +406,61 @@ io.on("connection", (socket) => {
                 .catch(() => { });
         }
     });
+    async function assertSameOrganizationPeer(targetUserId) {
+        if (!targetUserId || targetUserId === viewer.userId)
+            return false;
+        const peer = await prisma.organizationMember.findFirst({
+            where: {
+                organizationId: viewer.organizationId,
+                userId: targetUserId,
+                deactivatedAt: null,
+            },
+        });
+        return !!peer;
+    }
     /** WebRTC сигналинг (1:1): клиент шлёт targetUserId + SDP/ICE, сервер пересылает адресату */
-    socket.on("call:signal", (data) => {
+    socket.on("call:signal", async (data) => {
         const targetUserId = String(data?.targetUserId ?? "");
         const payload = data?.payload;
         if (!targetUserId || payload == null)
             return;
+        try {
+            if (!(await assertSameOrganizationPeer(targetUserId)))
+                return;
+        }
+        catch {
+            return;
+        }
         io.to(`user:${targetUserId}`).emit("call:signal", {
             fromUserId: viewer.userId,
             payload,
         });
     });
-    socket.on("call:end", (data) => {
+    socket.on("call:end", async (data) => {
         const targetUserId = String(data?.targetUserId ?? "");
         if (!targetUserId)
             return;
+        try {
+            if (!(await assertSameOrganizationPeer(targetUserId)))
+                return;
+        }
+        catch {
+            return;
+        }
         io.to(`user:${targetUserId}`).emit("call:end", { fromUserId: viewer.userId });
     });
     /** Поднять руку в созвоне (1:1): пересылаем собеседнику */
-    socket.on("call:hand", (data) => {
+    socket.on("call:hand", async (data) => {
         const targetUserId = String(data?.targetUserId ?? "");
         if (!targetUserId)
             return;
+        try {
+            if (!(await assertSameOrganizationPeer(targetUserId)))
+                return;
+        }
+        catch {
+            return;
+        }
         const raised = Boolean(data?.raised);
         io.to(`user:${targetUserId}`).emit("call:hand", {
             fromUserId: viewer.userId,

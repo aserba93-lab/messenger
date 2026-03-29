@@ -30,6 +30,8 @@ function inferMimeFromName(name) {
         return "application/x-bittorrent";
     if (n.endsWith(".webm"))
         return "audio/webm";
+    if (n.endsWith(".m4a") || n.endsWith(".mp4"))
+        return "audio/mp4";
     return "application/octet-stream";
 }
 function s3Credentials() {

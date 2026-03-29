@@ -10,6 +10,24 @@
   --tg-bubble-other: #2c2c33;
   --tg-text: #e8e8ee;
   --tg-muted: #888;
+  --tg-scroll-fab-bg: rgba(8, 12, 20, 0.92);
+  --tg-scroll-fab-border: rgba(255, 255, 255, 0.14);
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --tg-bg-app: #e4e6ed;
+  --tg-bg-sidebar: #f3f4f9;
+  --tg-bg-chat: #ffffff;
+  --tg-bg-elevated: #ffffff;
+  --tg-border-subtle: rgba(0, 0, 0, 0.09);
+  --tg-accent: #168ad0;
+  --tg-bubble-mine: #cfe8fc;
+  --tg-bubble-other: #eceef4;
+  --tg-text: #14141a;
+  --tg-muted: #5a6170;
+  --tg-scroll-fab-bg: rgba(255, 255, 255, 0.96);
+  --tg-scroll-fab-border: rgba(0, 0, 0, 0.1);
 }
 
 html,
@@ -237,6 +255,16 @@ body {
 .tgCircleBtn--danger:hover {
   background: rgba(255, 80, 80, 0.15);
 }
+.tgCircleBtn--call:not(:disabled) {
+  background: rgba(34, 197, 94, 0.2);
+  border-color: rgba(34, 197, 94, 0.45);
+}
+.tgCircleBtn--call:not(:disabled):hover {
+  background: rgba(34, 197, 94, 0.32);
+}
+.tgCircleBtn--call:disabled {
+  opacity: 0.45;
+}
 
 .tgMenuAnchor {
   position: relative;
@@ -247,7 +275,7 @@ body {
   top: calc(100% + 6px);
   right: 0;
   min-width: 180px;
-  background: #252530;
+  background: var(--tg-bg-elevated);
   border: 1px solid var(--tg-border-subtle);
   border-radius: 12px;
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
@@ -843,21 +871,27 @@ button.active {
   flex: 1 1 auto;
 }
 
-.scrollDownBtn {
-  position: fixed;
-  right: 18px;
-  bottom: 86px;
+.mainMessages .scrollDownBtn {
+  position: absolute;
+  right: 16px;
+  bottom: 16px;
+  z-index: 3;
   width: 44px;
   height: 44px;
   border-radius: 999px;
-  background: rgba(8, 12, 20, 0.92);
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+  background: var(--tg-scroll-fab-bg);
+  border: 1px solid var(--tg-scroll-fab-border);
+  color: var(--tg-text);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.22);
   font-size: 18px;
   padding: 0;
+  cursor: pointer;
 }
-.scrollDownBtn:hover {
-  background: rgba(255, 255, 255, 0.06);
+:root[data-theme="light"] .mainMessages .scrollDownBtn {
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+}
+.mainMessages .scrollDownBtn:hover {
+  filter: brightness(1.06);
 }
 
 .typing {
@@ -1649,7 +1683,7 @@ pre {
   bottom: 0;
   width: min(360px, 100vw);
   z-index: 56;
-  background: #252530;
+  background: var(--tg-bg-sidebar);
   border-left: 1px solid var(--tg-border-subtle);
   box-shadow: -12px 0 40px rgba(0, 0, 0, 0.35);
   display: flex;
@@ -1684,6 +1718,55 @@ pre {
   flex: 1;
   overflow: auto;
   padding: 12px;
+}
+
+.moreMenuProfileCard {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 10px;
+  margin-bottom: 14px;
+  border-radius: 12px;
+  background: var(--tg-bg-elevated);
+  border: 1px solid var(--tg-border-subtle);
+}
+.moreMenuProfileAvatar {
+  width: 48px;
+  height: 48px;
+  border-radius: 999px;
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  font-weight: 800;
+  font-size: 15px;
+  background: rgba(38, 165, 228, 0.18);
+  border: 1px solid var(--tg-border-subtle);
+  overflow: hidden;
+}
+.moreMenuProfileAvatar--img {
+  padding: 0;
+  border: none;
+}
+.moreMenuProfileAvatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.moreMenuProfileText {
+  min-width: 0;
+  flex: 1;
+}
+.moreMenuProfileName {
+  font-weight: 700;
+  font-size: 15px;
+  line-height: 1.25;
+  word-break: break-word;
+}
+.moreMenuProfilePhone {
+  margin-top: 4px;
+  font-size: 13px;
+  color: var(--tg-muted);
 }
 
 .moreMenuSection {
