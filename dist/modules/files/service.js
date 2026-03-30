@@ -7,6 +7,7 @@ import { emitToUser } from "../../socket/emitter.js";
 import crypto from "crypto";
 import path from "path";
 import fs from "node:fs/promises";
+import { createReadStream } from "node:fs";
 function normalizeExt(ext) {
     const e = ext.trim().toLowerCase();
     if (!e)
@@ -127,20 +128,44 @@ export class FilesService {
         }), { expiresIn: 60 * 5 });
         return { fileId: file.id, key, uploadUrl: url };
     }
-    /** Метаданные + presigned URL только если clean (для опроса avStatus при pending — без ошибки). */
+    /** Метаданные + URL скачивания только если clean (для pending — downloadUrl null). */
     async getFileForViewer(viewer, fileId) {
         const file = await prisma.file.findUnique({ where: { id: fileId } });
         if (!file || file.organizationId !== viewer.organizationId)
             throw new Error("Not found");
         if (file.avStatus !== "clean")
             return { file, downloadUrl: null };
-        if (file.url && file.url.startsWith("/files/local/"))
-            return { file, downloadUrl: file.url };
-        const url = await getSignedUrl(s3ForPresignedUrls(), new GetObjectCommand({
+        /** Прокси на API: presigned MinIO часто открывается как SPA при неверном nginx. */
+        return { file, downloadUrl: `/files/access/${file.id}` };
+    }
+    /** Поток файла для GET /files/access/:fileId (после JWT). */
+    async openDownloadStream(viewer, fileId) {
+        const file = await prisma.file.findUnique({ where: { id: fileId } });
+        if (!file || file.organizationId !== viewer.organizationId)
+            throw new Error("Not found");
+        if (file.avStatus !== "clean")
+            throw new Error("File not available");
+        const storedMime = (file.mimeType || "").trim();
+        const inferred = inferMimeFromName(file.originalName);
+        const contentType =
+            storedMime && storedMime !== "application/octet-stream"
+                ? storedMime
+                : inferred !== "application/octet-stream"
+                    ? inferred
+                    : storedMime || "application/octet-stream";
+        if (file.url && file.url.startsWith("/files/local/")) {
+            const diskPath = path.resolve(process.cwd(), ".local_uploads", file.id);
+            const stream = createReadStream(diskPath);
+            return { stream, contentType, file };
+        }
+        const out = await s3().send(new GetObjectCommand({
             Bucket: file.bucket,
             Key: file.key,
-        }), { expiresIn: 60 * 10 });
-        return { file, downloadUrl: url };
+        }));
+        const body = out.Body;
+        if (!body)
+            throw new Error("Empty body");
+        return { stream: body, contentType, file };
     }
     async getDownloadUrl(viewer, fileId) {
         const { file, downloadUrl } = await this.getFileForViewer(viewer, fileId);

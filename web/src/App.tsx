@@ -161,6 +161,71 @@ function normalizeDownloadUrl(url?: string | null) {
   return url;
 }
 
+/** Выдача вложений через GET /files/access/:id + Bearer (обходит presigned URL и nginx SPA). */
+function isFilesAccessProxyUrl(url: string): boolean {
+  if (!url) return false;
+  if (url.includes("/files/access/")) return true;
+  try {
+    return new URL(url).pathname.includes("/files/access/");
+  } catch {
+    return false;
+  }
+}
+
+async function fetchAuthorizedFileBlob(url: string, token: string): Promise<Blob> {
+  const r = await fetch(url, { headers: { authorization: `Bearer ${token}` } });
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.blob();
+}
+
+async function triggerBrowserDownloadFromUrl(rawUrl: string | null | undefined, token: string | null, filename: string) {
+  if (!rawUrl) return;
+  const href = normalizeDownloadUrl(rawUrl);
+  if (!href) return;
+  try {
+    if (token && isFilesAccessProxyUrl(href)) {
+      const blob = await fetchAuthorizedFileBlob(href, token);
+      const u = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = u;
+      a.download = filename || "file";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(u);
+      return;
+    }
+    const a = document.createElement("a");
+    a.href = href;
+    a.download = filename || "file";
+    a.target = "_blank";
+    a.rel = "noreferrer";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  } catch {
+    /* ignore */
+  }
+}
+
+async function openMediaInNewTabFromUrl(rawUrl: string | null | undefined, token: string | null) {
+  if (!rawUrl) return;
+  const href = normalizeDownloadUrl(rawUrl);
+  if (!href) return;
+  try {
+    if (token && isFilesAccessProxyUrl(href)) {
+      const blob = await fetchAuthorizedFileBlob(href, token);
+      const u = URL.createObjectURL(blob);
+      const w = window.open(u, "_blank", "noopener,noreferrer");
+      if (w) window.setTimeout(() => URL.revokeObjectURL(u), 120_000);
+      return;
+    }
+    window.open(href, "_blank", "noopener,noreferrer");
+  } catch {
+    window.open(href, "_blank", "noopener,noreferrer");
+  }
+}
+
 function fileExtensionUpper(name: string): string {
   const i = name.lastIndexOf(".");
   return i >= 0 ? name.slice(i + 1).toUpperCase() : "";
@@ -353,7 +418,16 @@ function useAuthenticatedBlobMediaUrl(downloadUrl: string | null | undefined, to
     }
 
     (async () => {
-      if (isOurApi && pageOrigin && !u.startsWith(pageOrigin)) {
+      let pathname = "";
+      try {
+        pathname = new URL(u).pathname;
+      } catch {
+        pathname = "";
+      }
+      const isAccessProxy = pathname.includes("/files/access/");
+      if (token && isAccessProxy) {
+        if (await toBlob(() => fetch(u, { headers: { authorization: `Bearer ${token}` } }))) return;
+      } else if (isOurApi && pageOrigin && !u.startsWith(pageOrigin)) {
         if (await toBlob(() => fetch(u, { headers: { authorization: `Bearer ${token}` } }))) return;
       } else if (!isOurApi && /^https?:\/\//i.test(u) && pageOrigin && !u.startsWith(pageOrigin)) {
         if (await toBlob(() => fetch(u, { mode: "cors", credentials: "omit" }))) return;
@@ -5801,6 +5875,14 @@ export default function App() {
                               rel="noreferrer"
                               title="Скачать"
                               aria-label="Скачать"
+                              onClick={(e) => {
+                                const d = m.file?.downloadUrl;
+                                const h = normalizeDownloadUrl(d);
+                                if (token && h && isFilesAccessProxyUrl(h)) {
+                                  e.preventDefault();
+                                  void triggerBrowserDownloadFromUrl(d, token, attachmentOriginalNameHint(m) || "voice.webm");
+                                }
+                              }}
                             >
                               ⬇
                             </a>
@@ -5817,6 +5899,14 @@ export default function App() {
                             target="_blank"
                             rel="noreferrer"
                             className="chatImageLink"
+                            onClick={(e) => {
+                              const d = m.file?.downloadUrl;
+                              const h = normalizeDownloadUrl(d);
+                              if (token && h && isFilesAccessProxyUrl(h)) {
+                                e.preventDefault();
+                                void openMediaInNewTabFromUrl(d, token);
+                              }
+                            }}
                           >
                             <ChatAttachmentImage
                               downloadUrl={m.file.downloadUrl}
@@ -5846,6 +5936,14 @@ export default function App() {
                             rel="noreferrer"
                             title="Скачать"
                             aria-label="Скачать"
+                            onClick={(e) => {
+                              const d = m.file?.downloadUrl;
+                              const h = normalizeDownloadUrl(d);
+                              if (token && h && isFilesAccessProxyUrl(h)) {
+                                e.preventDefault();
+                                void triggerBrowserDownloadFromUrl(d, token, attachmentOriginalNameHint(m) || "file");
+                              }
+                            }}
                           >
                             ⬇
                           </a>
@@ -6457,6 +6555,13 @@ export default function App() {
                           target="_blank"
                           rel="noreferrer"
                           className="infoPanelPhotoCell"
+                          onClick={(e) => {
+                            const h = normalizeDownloadUrl(m.file?.downloadUrl);
+                            if (token && h && isFilesAccessProxyUrl(h)) {
+                              e.preventDefault();
+                              void openMediaInNewTabFromUrl(m.file?.downloadUrl, token);
+                            }
+                          }}
                         >
                           <ChatAttachmentImage downloadUrl={m.file?.downloadUrl} token={token} alt="" />
                         </a>
@@ -6478,6 +6583,17 @@ export default function App() {
                             target="_blank"
                             rel="noreferrer"
                             className="infoPanelMediaRow infoPanelMediaRow--link"
+                            onClick={(e) => {
+                              const h = normalizeDownloadUrl(m.file?.downloadUrl);
+                              if (token && h && isFilesAccessProxyUrl(h)) {
+                                e.preventDefault();
+                                void triggerBrowserDownloadFromUrl(
+                                  m.file?.downloadUrl,
+                                  token,
+                                  m.file?.originalName || "file",
+                                );
+                              }
+                            }}
                           >
                             <span className="infoPanelMediaRowMain">📎 {m.file?.originalName ?? "Файл"}</span>
                             <span className="infoPanelMediaRowMeta">
@@ -6506,7 +6622,7 @@ export default function App() {
                                 effectiveAudioMimeForElement(
                                   m.type,
                                   m.file?.mimeType,
-                                  m.file?.originalName,
+                                  attachmentOriginalNameHint(m),
                                 ) || "audio/webm"
                               }
                             />

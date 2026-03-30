@@ -132,6 +132,62 @@ app.get("/files/local/:fileId", async (req, res) => {
         return res.status(500).json({ error: e?.message ?? "Read file failed" });
     }
 });
+app.get("/files/access/:fileId", async (req, res) => {
+    try {
+        const authHeader = req.headers.authorization;
+        const token = typeof authHeader === "string" && authHeader.startsWith("Bearer ")
+            ? authHeader.slice("Bearer ".length)
+            : null;
+        if (!token)
+            return res.status(401).json({ error: "Unauthorized" });
+        const payload = verifyAccessToken(token);
+        if (!payload)
+            return res.status(401).json({ error: "Unauthorized" });
+        const membership = await prisma.organizationMember.findUnique({
+            where: {
+                organizationId_userId: {
+                    organizationId: payload.orgId,
+                    userId: payload.sub,
+                },
+            },
+        });
+        if (!membership || membership.deactivatedAt) {
+            return res.status(403).json({ error: "Forbidden" });
+        }
+        const user = await prisma.user.findUnique({ where: { id: payload.sub }, select: { emailVerifiedAt: true } });
+        const viewer = {
+            userId: payload.sub,
+            organizationId: payload.orgId,
+            role: membership.role,
+            systemAccessLevel: payload.sal ?? "organization",
+            emailVerified: env.NODE_ENV !== "production" ? true : !!user?.emailVerifiedAt,
+        };
+        if (env.NODE_ENV === "production" && !viewer.emailVerified)
+            return res.status(403).json({ error: "Email not verified" });
+        const fileId = String(req.params.fileId ?? "");
+        if (!fileId)
+            return res.status(400).json({ error: "fileId required" });
+        const { stream, contentType, file } = await filesService.openDownloadStream(viewer, fileId);
+        res.setHeader("content-type", contentType);
+        res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
+        res.setHeader("Content-Disposition", file.originalName
+            ? `inline; filename*=UTF-8''${encodeURIComponent(file.originalName)}`
+            : "inline");
+        stream.on("error", () => {
+            if (!res.headersSent)
+                res.status(500).json({ error: "Stream failed" });
+        });
+        stream.pipe(res);
+    }
+    catch (e) {
+        const msg = e?.message ?? String(e);
+        if (msg === "Not found")
+            return res.status(404).json({ error: "Not found" });
+        if (msg === "File not available")
+            return res.status(403).json({ error: msg });
+        return res.status(500).json({ error: msg || "Read file failed" });
+    }
+});
 app.put("/files/upload/:fileId", express.raw({ type: "*/*", limit: "200mb" }), async (req, res) => {
     try {
         const authHeader = req.headers.authorization;
