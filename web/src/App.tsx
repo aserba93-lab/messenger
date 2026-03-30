@@ -350,6 +350,11 @@ function orgRoleLabelRu(role: string | null | undefined): string {
   }
 }
 
+function isUnauthorizedError(e: unknown): boolean {
+  const msg = e instanceof Error ? e.message : String(e ?? "");
+  return msg.trim().toLowerCase() === "unauthorized" || msg.toLowerCase().includes("unauthorized");
+}
+
 /** Одна «стикерная» графема (эмодзи) — для увеличенного отображения в чате */
 function isSingleStickerContent(content: string): boolean {
   const t = content.trim();
@@ -2764,6 +2769,10 @@ export default function App() {
         }
       } catch (e) {
         console.error(e);
+        if (isUnauthorizedError(e)) {
+          setAuthError("Сессия истекла. Войдите снова.");
+          await logout();
+        }
       }
     })();
     return () => {
