@@ -508,7 +508,14 @@ export default function App() {
 
   const [mode, setMode] = useState<"channels" | "groups" | "dms">("channels");
   /** Список слева: все чаты сразу или только один тип */
-  const [chatListScope, setChatListScope] = useState<"all" | "dms" | "groups" | "channels">("all");
+  const [chatListScope, setChatListScope] = useState<"all" | "dms" | "groups" | "channels">(() => {
+    try {
+      const v = localStorage.getItem("tg:chatListScope");
+      return (v === "all" || v === "dms" || v === "groups" || v === "channels" ? v : "all") as any;
+    } catch {
+      return "all";
+    }
+  });
   const [chatListFilterOpen, setChatListFilterOpen] = useState(false);
   const chatListFilterAnchorRef = useRef<HTMLDivElement | null>(null);
   const [channels, setChannels] = useState<Channel[]>([]);
@@ -609,6 +616,14 @@ export default function App() {
       /* ignore */
     }
   }, [browserNotify]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("tg:chatListScope", chatListScope);
+    } catch {
+      /* ignore */
+    }
+  }, [chatListScope]);
 
   // Deep-link: #dm=<directChatId>&call=1
   useEffect(() => {
@@ -2020,6 +2035,26 @@ export default function App() {
           /* ignore */
         }
       }
+      if (
+        key &&
+        !muted &&
+        !fromMe &&
+        browserNotifyRef.current &&
+        (typeof window === "undefined" || !(window as any).isSecureContext) &&
+        typeof Notification !== "undefined"
+      ) {
+        // Notification API часто не работает без https/localhost
+        pushLog("⚠️ Уведомления: нужен https (или localhost) для Windows-уведомлений браузера");
+      } else if (
+        key &&
+        !muted &&
+        !fromMe &&
+        browserNotifyRef.current &&
+        typeof Notification !== "undefined" &&
+        Notification.permission !== "granted"
+      ) {
+        pushLog(`⚠️ Уведомления: permission=${Notification.permission}`);
+      }
 
       if (!isActive) {
         if (key && !muted) {
@@ -2269,7 +2304,8 @@ export default function App() {
     const [kind, id] = value.split(":");
     if (!id) return;
     if (kind === "c") {
-      setChatListScope("channels");
+      // Не ломаем выбранный фильтр: если пользователь в "Все чаты" — остаёмся там
+      setChatListScope((prev) => (prev === "all" ? prev : "channels"));
       setMode("channels");
       setActiveChannelId(id);
       setUnreadByKey((prev) => ({ ...prev, [chatKeyFor("c", id)]: 0 }));
@@ -2277,7 +2313,7 @@ export default function App() {
       return;
     }
     if (kind === "g") {
-      setChatListScope("groups");
+      setChatListScope((prev) => (prev === "all" ? prev : "groups"));
       setMode("groups");
       setActiveGroupChatId(id);
       setUnreadByKey((prev) => ({ ...prev, [chatKeyFor("g", id)]: 0 }));
@@ -2285,7 +2321,7 @@ export default function App() {
       return;
     }
     if (kind === "d") {
-      setChatListScope("dms");
+      setChatListScope((prev) => (prev === "all" ? prev : "dms"));
       setMode("dms");
       setActiveDirectChatId(id);
       setUnreadByKey((prev) => ({ ...prev, [chatKeyFor("d", id)]: 0 }));

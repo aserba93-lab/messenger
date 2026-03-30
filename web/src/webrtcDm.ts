@@ -3,6 +3,7 @@ import type { Socket } from "socket.io-client";
 const DEFAULT_ICE: RTCIceServer[] = [
   { urls: "stun:stun.l.google.com:19302" },
   { urls: "stun:stun1.l.google.com:19302" },
+  { urls: "stun:global.stun.twilio.com:3478" },
 ];
 
 export type CallSignalPayload =
@@ -84,13 +85,41 @@ function attachRemoteTracks(pc: RTCPeerConnection, onRemoteStream: (s: MediaStre
   };
 }
 
-async function emitRenegotiationOffer(pc: RTCPeerConnection, socket: Socket, targetUserId: string) {
-  const offer = await pc.createOffer();
+async function emitRenegotiationOffer(
+  pc: RTCPeerConnection,
+  socket: Socket,
+  targetUserId: string,
+  opts?: { iceRestart?: boolean },
+) {
+  const offer = await pc.createOffer(opts?.iceRestart ? { iceRestart: true } : undefined);
   await pc.setLocalDescription(offer);
   socket.emit("call:signal", {
     targetUserId,
     payload: { type: "offer", sdp: offer.sdp || "" },
   });
+}
+
+function setupIceRecovery(pc: RTCPeerConnection, socket: Socket, peerUserId: string) {
+  let lastRestartAt = 0;
+  const tryRestart = () => {
+    const now = Date.now();
+    if (now - lastRestartAt < 4000) return;
+    lastRestartAt = now;
+    try {
+      // перезапуск ICE + renegotiation
+      void emitRenegotiationOffer(pc, socket, peerUserId, { iceRestart: true });
+    } catch {
+      /* ignore */
+    }
+  };
+  pc.oniceconnectionstatechange = () => {
+    const s = pc.iceConnectionState;
+    if (s === "failed" || s === "disconnected") tryRestart();
+  };
+  pc.onconnectionstatechange = () => {
+    const s = pc.connectionState;
+    if (s === "failed" || s === "disconnected") tryRestart();
+  };
 }
 
 /** Исходящий звонок: создаём offer и шлём targetUserId через сокет */
@@ -114,6 +143,7 @@ export async function startOutgoingCall(
   attachRemoteTracks(pc, opts.onRemoteStream);
 
   const target = opts.targetUserId;
+  setupIceRecovery(pc, socket, target);
   pc.onicecandidate = (ev) => {
     if (!ev.candidate) return;
     socket.emit("call:signal", {
@@ -302,6 +332,7 @@ export async function acceptIncomingOffer(
   attachRemoteTracks(pc, opts.onRemoteStream);
 
   const peer = opts.fromUserId;
+  setupIceRecovery(pc, socket, peer);
 
   const onSignal = async (data: { fromUserId?: string; payload?: CallSignalPayload }) => {
     if (String(data?.fromUserId) !== peer) return;
