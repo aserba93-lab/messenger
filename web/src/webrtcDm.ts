@@ -32,6 +32,35 @@ export type ActiveCall = {
   isScreenSharing: () => boolean;
 };
 
+function attachRemoteTracks(pc: RTCPeerConnection, onRemoteStream: (s: MediaStream) => void) {
+  const remoteMediaStream = new MediaStream();
+  pc.ontrack = (ev) => {
+    const t = ev.track;
+    const existing = remoteMediaStream.getTracks().some((x) => x.id === t.id);
+    if (!existing) {
+      remoteMediaStream.addTrack(t);
+    }
+    t.addEventListener("ended", () => {
+      try {
+        remoteMediaStream.removeTrack(t);
+      } catch {
+        /* ignore */
+      }
+      onRemoteStream(remoteMediaStream);
+    });
+    onRemoteStream(remoteMediaStream);
+  };
+}
+
+async function emitRenegotiationOffer(pc: RTCPeerConnection, socket: Socket, targetUserId: string) {
+  const offer = await pc.createOffer();
+  await pc.setLocalDescription(offer);
+  socket.emit("call:signal", {
+    targetUserId,
+    payload: { type: "offer", sdp: offer.sdp || "" },
+  });
+}
+
 /** Исходящий звонок: создаём offer и шлём targetUserId через сокет */
 export async function startOutgoingCall(
   socket: Socket,
@@ -49,9 +78,7 @@ export async function startOutgoingCall(
   });
   const pc = new RTCPeerConnection({ iceServers });
   for (const t of stream.getTracks()) pc.addTrack(t, stream);
-  pc.ontrack = (ev) => {
-    if (ev.streams[0]) opts.onRemoteStream(ev.streams[0]);
-  };
+  attachRemoteTracks(pc, opts.onRemoteStream);
 
   const target = opts.targetUserId;
   pc.onicecandidate = (ev) => {
@@ -78,7 +105,15 @@ export async function startOutgoingCall(
     if (String(data?.fromUserId) !== target) return;
     const p = data.payload;
     if (!p) return;
-    if (p.type === "answer" && p.sdp) {
+    if (p.type === "offer" && p.sdp) {
+      await pc.setRemoteDescription({ type: "offer", sdp: p.sdp });
+      const ans = await pc.createAnswer();
+      await pc.setLocalDescription(ans);
+      socket.emit("call:signal", {
+        targetUserId: target,
+        payload: { type: "answer", sdp: ans.sdp || "" },
+      });
+    } else if (p.type === "answer" && p.sdp) {
       await pc.setRemoteDescription({ type: "answer", sdp: p.sdp });
     } else if (p.type === "ice" && p.candidate) {
       try {
@@ -102,6 +137,7 @@ export async function startOutgoingCall(
   socket.on("call:end", onEnd);
 
   let screenStop: (() => Promise<void>) | null = null;
+  let screenAudioSender: RTCRtpSender | null = null;
 
   function cleanup() {
     socket.off("call:signal", onSignal);
@@ -118,29 +154,72 @@ export async function startOutgoingCall(
   const startScreenShareWrapped = async () => {
     if (opts.audioOnly) throw new Error("Демонстрация экрана доступна в видеозвонке");
     if (screenStop) return;
-    const display = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+
+    const display = await navigator.mediaDevices.getDisplayMedia({
+      video: { frameRate: { ideal: 30 } },
+      audio: true,
+    });
+
     const v = display.getVideoTracks()[0];
     if (!v) {
       display.getTracks().forEach((t) => t.stop());
       throw new Error("Нет видеодорожки экрана");
     }
-    const sender = pc.getSenders().find((s) => s.track?.kind === "video");
+
+    const videoSender = pc.getSenders().find((s) => s.track?.kind === "video");
     const cam = stream.getVideoTracks()[0];
-    if (!sender || !cam) {
+    if (!videoSender || !cam) {
       display.getTracks().forEach((t) => t.stop());
       throw new Error("Нет видеотрека камеры");
     }
-    const saved = cam;
-    await sender.replaceTrack(v);
+
+    const savedCamTrack = cam;
+    await videoSender.replaceTrack(v);
+    try {
+      v.contentHint = "detail";
+    } catch {
+      /* ignore */
+    }
+
     v.addEventListener("ended", () => {
       void stopScreenShareWrapped();
     });
+
+    const displayAudios = display.getAudioTracks().filter((t) => t.readyState === "live");
+    for (const at of displayAudios) {
+      at.addEventListener("ended", () => {
+        if (screenAudioSender && screenAudioSender.track === at) {
+          try {
+            pc.removeTrack(screenAudioSender);
+          } catch {
+            /* ignore */
+          }
+          screenAudioSender = null;
+          void emitRenegotiationOffer(pc, socket, target);
+        }
+      });
+      screenAudioSender = pc.addTrack(at, stream);
+      break;
+    }
+
+    await emitRenegotiationOffer(pc, socket, target);
+
     screenStop = async () => {
       display.getTracks().forEach((t) => t.stop());
-      await sender.replaceTrack(saved);
+      if (screenAudioSender) {
+        try {
+          pc.removeTrack(screenAudioSender);
+        } catch {
+          /* ignore */
+        }
+        screenAudioSender = null;
+      }
+      await videoSender.replaceTrack(savedCamTrack);
       screenStop = null;
+      await emitRenegotiationOffer(pc, socket, target);
     };
   };
+
   const stopScreenShareWrapped = async () => {
     if (screenStop) await screenStop();
   };
@@ -156,6 +235,7 @@ export async function startOutgoingCall(
     },
     setMicEnabled: (on: boolean) => {
       stream.getAudioTracks().forEach((t) => {
+        if (screenAudioSender?.track && t.id === screenAudioSender.track.id) return;
         t.enabled = on;
       });
     },
@@ -189,9 +269,7 @@ export async function acceptIncomingOffer(
   });
   const pc = new RTCPeerConnection({ iceServers });
   for (const t of stream.getTracks()) pc.addTrack(t, stream);
-  pc.ontrack = (ev) => {
-    if (ev.streams[0]) opts.onRemoteStream(ev.streams[0]);
-  };
+  attachRemoteTracks(pc, opts.onRemoteStream);
 
   const peer = opts.fromUserId;
   await pc.setRemoteDescription({ type: "offer", sdp: opts.offerSdp });
@@ -219,7 +297,18 @@ export async function acceptIncomingOffer(
   const onSignal = async (data: { fromUserId?: string; payload?: CallSignalPayload }) => {
     if (String(data?.fromUserId) !== peer) return;
     const p = data.payload;
-    if (p?.type === "ice" && p.candidate) {
+    if (!p) return;
+    if (p.type === "offer" && p.sdp) {
+      await pc.setRemoteDescription({ type: "offer", sdp: p.sdp });
+      const ans = await pc.createAnswer();
+      await pc.setLocalDescription(ans);
+      socket.emit("call:signal", {
+        targetUserId: peer,
+        payload: { type: "answer", sdp: ans.sdp || "" },
+      });
+    } else if (p.type === "answer" && p.sdp) {
+      await pc.setRemoteDescription({ type: "answer", sdp: p.sdp });
+    } else if (p.type === "ice" && p.candidate) {
       try {
         await pc.addIceCandidate(
           new RTCIceCandidate({
@@ -241,6 +330,7 @@ export async function acceptIncomingOffer(
   socket.on("call:end", onEnd);
 
   let screenStop: (() => Promise<void>) | null = null;
+  let screenAudioSender: RTCRtpSender | null = null;
 
   function cleanup() {
     socket.off("call:signal", onSignal);
@@ -257,29 +347,72 @@ export async function acceptIncomingOffer(
   const startScreenShareWrapped = async () => {
     if (opts.audioOnly) throw new Error("Демонстрация экрана доступна в видеозвонке");
     if (screenStop) return;
-    const display = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+
+    const display = await navigator.mediaDevices.getDisplayMedia({
+      video: { frameRate: { ideal: 30 } },
+      audio: true,
+    });
+
     const v = display.getVideoTracks()[0];
     if (!v) {
       display.getTracks().forEach((t) => t.stop());
       throw new Error("Нет видеодорожки экрана");
     }
-    const sender = pc.getSenders().find((s) => s.track?.kind === "video");
+
+    const videoSender = pc.getSenders().find((s) => s.track?.kind === "video");
     const cam = stream.getVideoTracks()[0];
-    if (!sender || !cam) {
+    if (!videoSender || !cam) {
       display.getTracks().forEach((t) => t.stop());
       throw new Error("Нет видеотрека камеры");
     }
-    const saved = cam;
-    await sender.replaceTrack(v);
+
+    const savedCamTrack = cam;
+    await videoSender.replaceTrack(v);
+    try {
+      v.contentHint = "detail";
+    } catch {
+      /* ignore */
+    }
+
     v.addEventListener("ended", () => {
       void stopScreenShareWrapped();
     });
+
+    const displayAudios = display.getAudioTracks().filter((t) => t.readyState === "live");
+    for (const at of displayAudios) {
+      at.addEventListener("ended", () => {
+        if (screenAudioSender && screenAudioSender.track === at) {
+          try {
+            pc.removeTrack(screenAudioSender);
+          } catch {
+            /* ignore */
+          }
+          screenAudioSender = null;
+          void emitRenegotiationOffer(pc, socket, peer);
+        }
+      });
+      screenAudioSender = pc.addTrack(at, stream);
+      break;
+    }
+
+    await emitRenegotiationOffer(pc, socket, peer);
+
     screenStop = async () => {
       display.getTracks().forEach((t) => t.stop());
-      await sender.replaceTrack(saved);
+      if (screenAudioSender) {
+        try {
+          pc.removeTrack(screenAudioSender);
+        } catch {
+          /* ignore */
+        }
+        screenAudioSender = null;
+      }
+      await videoSender.replaceTrack(savedCamTrack);
       screenStop = null;
+      await emitRenegotiationOffer(pc, socket, peer);
     };
   };
+
   const stopScreenShareWrapped = async () => {
     if (screenStop) await screenStop();
   };
@@ -295,6 +428,7 @@ export async function acceptIncomingOffer(
     },
     setMicEnabled: (on: boolean) => {
       stream.getAudioTracks().forEach((t) => {
+        if (screenAudioSender?.track && t.id === screenAudioSender.track.id) return;
         t.enabled = on;
       });
     },
