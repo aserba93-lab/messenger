@@ -113,7 +113,12 @@ function getApiBase(): string {
 }
 const API_BASE = getApiBase();
 const GQL = `${API_BASE}/graphql`;
-const SOCKET_URL = API_BASE || (typeof window !== "undefined" ? window.location.origin : "");
+function getSocketUrl(): string {
+  const env = (import.meta as any).env?.VITE_SOCKET_URL as string | undefined;
+  if (env && String(env).trim()) return String(env).replace(/\/$/, "");
+  return API_BASE || (typeof window !== "undefined" ? window.location.origin : "");
+}
+const SOCKET_URL = getSocketUrl();
 const quickEmojis = ["👍", "❤️", "😂", "🔥", "🎉", "😮"];
 const defaultStickerCatalog = [
   { id: "basic-emoji", title: "Basic Emoji", stickers: ["😀", "😁", "😂", "😍", "🤝", "👍", "🔥", "🎉"] },
@@ -1818,8 +1823,39 @@ export default function App() {
   function connectSocket() {
     if (!token) return;
     if (socket) socket.disconnect();
-    const s = io(SOCKET_URL, { auth: { token } });
-    s.on("server:hello", () => pushLog("Socket подключен."));
+    const s = io(SOCKET_URL, {
+      auth: { token },
+      path: "/socket.io/",
+      transports: ["websocket", "polling"],
+      reconnection: true,
+      reconnectionAttempts: 25,
+      reconnectionDelay: 800,
+    });
+    s.on("connect", () => pushLog("Socket подключен."));
+    s.on("connect_error", (err: Error) => {
+      pushLog(`Socket ошибка: ${err?.message || "connect_error"} (проверьте прокси /socket.io/ на nginx)`);
+    });
+    s.on("disconnect", (reason: string) => {
+      if (reason === "io server disconnect") pushLog("Socket отключён сервером.");
+    });
+    s.on("presence:snapshot", (evt: any) => {
+      const items = Array.isArray(evt?.items) ? evt.items : [];
+      if (!items.length) return;
+      setPresenceByUserId((prev) => {
+        const next = { ...prev };
+        for (const it of items) {
+          const uid = String(it?.userId ?? "");
+          if (!uid) continue;
+          const status = String(it?.status ?? "");
+          if (!status) continue;
+          next[uid] = {
+            status,
+            lastSeen: it?.lastSeen != null ? String(it.lastSeen) : next[uid]?.lastSeen,
+          };
+        }
+        return next;
+      });
+    });
     s.on("presence:update", (evt: any) => {
       const who = String(evt?.userId ?? "");
       const status = String(evt?.status ?? "");
@@ -1864,36 +1900,39 @@ export default function App() {
         (modeRef.current === "groups" && groupChatId && groupChatId === activeGroupChatIdRef.current) ||
         (modeRef.current === "dms" && directChatId && directChatId === activeDirectChatIdRef.current);
 
+      const tabHidden = typeof document !== "undefined" && document.hidden;
+      const fromMe = String(msg.author?.email ?? "") === myAccountEmailRef.current;
+      const v = key ? chatMuteMapRef.current[key] : undefined;
+      const muted =
+        v === "forever" ||
+        (v && v !== "forever" && !Number.isNaN(Date.parse(v)) && Date.now() < Date.parse(v));
+
+      const shouldNotify =
+        key &&
+        !muted &&
+        !fromMe &&
+        browserNotifyRef.current &&
+        typeof Notification !== "undefined" &&
+        Notification.permission === "granted" &&
+        (!isActive || tabHidden);
+
+      if (shouldNotify) {
+        try {
+          const body =
+            msg.type === "voice"
+              ? "Голосовое сообщение"
+              : msg.type === "file"
+                ? "Файл"
+                : (msg.content || "Новое сообщение").slice(0, 160);
+          new Notification("Sales factory", { body, tag: key ? `${key}:${msg.id}` : "dm" });
+        } catch {
+          /* ignore */
+        }
+      }
+
       if (!isActive) {
-        if (key) {
-          const v = chatMuteMapRef.current[key];
-          const muted =
-            v === "forever" ||
-            (v && v !== "forever" && !Number.isNaN(Date.parse(v)) && Date.now() < Date.parse(v));
-          if (!muted) {
-            setUnreadByKey((prev) => ({ ...prev, [key]: (prev[key] ?? 0) + 1 }));
-          }
-          if (
-            !muted &&
-            browserNotifyRef.current &&
-            typeof Notification !== "undefined" &&
-            Notification.permission === "granted"
-          ) {
-            const fromMe = String(msg.author?.email ?? "") === myAccountEmailRef.current;
-            if (!fromMe) {
-              try {
-                const body =
-                  msg.type === "voice"
-                    ? "Голосовое сообщение"
-                    : msg.type === "file"
-                      ? "Файл"
-                      : (msg.content || "Новое сообщение").slice(0, 160);
-                new Notification("Sales factory", { body, tag: key || "dm" });
-              } catch {
-                /* ignore */
-              }
-            }
-          }
+        if (key && !muted) {
+          setUnreadByKey((prev) => ({ ...prev, [key]: (prev[key] ?? 0) + 1 }));
         }
         return;
       }
@@ -2023,7 +2062,11 @@ export default function App() {
         Notification.permission === "granted"
       ) {
         try {
-          new Notification("Sales factory", { body: audioOnly ? "Входящий аудиозвонок" : "Входящий видеозвонок", tag: "call" });
+          new Notification("Sales factory", {
+            body: audioOnly ? "Входящий аудиозвонок" : "Входящий видеозвонок",
+            tag: `call:${from}:${Date.now()}`,
+            requireInteraction: typeof document !== "undefined" && document.hidden,
+          });
         } catch {
           /* ignore */
         }
@@ -2536,6 +2579,18 @@ export default function App() {
       t,
     );
     setUsers(data.users);
+    setPresenceByUserId((prev) => {
+      const next = { ...prev };
+      for (const u of data.users) {
+        if (u.status) {
+          next[u.id] = {
+            status: u.status,
+            lastSeen: u.lastSeen != null ? String(u.lastSeen) : next[u.id]?.lastSeen,
+          };
+        }
+      }
+      return next;
+    });
     pushLog(`Пользователей: ${data.users.length}`);
   }
 

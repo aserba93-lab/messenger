@@ -332,6 +332,23 @@ io.on("connection", (socket) => {
     socket.join(`user:${viewer.userId}`);
     socket.emit("server:hello", { ok: true, userId: viewer.userId });
 
+    /** Актуальные статусы всех участников орг. из БД — иначе клиент видит «не в сети», пока кто-то снова не переподключится. */
+    prisma.organizationMember
+        .findMany({
+        where: { organizationId: viewer.organizationId, deactivatedAt: null },
+        select: { user: { select: { id: true, status: true, lastSeen: true } } },
+    })
+        .then((members) => {
+        socket.emit("presence:snapshot", {
+            items: members.map((m) => ({
+                userId: m.user.id,
+                status: m.user.status,
+                lastSeen: m.user.lastSeen ? m.user.lastSeen.toISOString() : null,
+            })),
+        });
+    })
+        .catch(() => { });
+
     // Presence: mark online on connect
     prisma.user
         .update({ where: { id: viewer.userId }, data: { status: "online", lastSeen: new Date() } })

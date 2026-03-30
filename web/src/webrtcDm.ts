@@ -1,6 +1,9 @@
 import type { Socket } from "socket.io-client";
 
-const DEFAULT_ICE: RTCIceServer[] = [{ urls: "stun:stun.l.google.com:19302" }];
+const DEFAULT_ICE: RTCIceServer[] = [
+  { urls: "stun:stun.l.google.com:19302" },
+  { urls: "stun:stun1.l.google.com:19302" },
+];
 
 export type CallSignalPayload =
   | { type: "offer"; sdp: string }
