@@ -589,6 +589,7 @@ export default function App() {
   const [adminCreateRole, setAdminCreateRole] = useState<"owner" | "admin" | "manager" | "employee" | "guest">("employee");
   const [chatPreviewByKey, setChatPreviewByKey] = useState<Record<string, { text: string; at: string }>>({});
   const [chatError, setChatError] = useState("");
+  const [pendingCallDeepLink, setPendingCallDeepLink] = useState(false);
   const [myProfileId, setMyProfileId] = useState("");
   const [myProfileEmail, setMyProfileEmail] = useState("");
   /** Email текущего пользователя для оптимистичных сообщений (после загрузки профиля — из API). */
@@ -640,7 +641,9 @@ export default function App() {
       void (async () => {
         try {
           await openChatFromList(`d:${dm}`);
-          if (call === "1") queueMicrotask(() => void startVideoMeeting());
+          // На мобильных браузерах getUserMedia часто запрещён без явного клика пользователя.
+          // Поэтому deep-link только открывает чат и показывает кнопку "Начать звонок".
+          setPendingCallDeepLink(call === "1");
         } catch {
           /* ignore */
         }
@@ -2617,7 +2620,17 @@ export default function App() {
       pushLog("Видеозвонок");
     } catch (e: any) {
       webrtcBusyRef.current = false;
-      setChatError(String(e?.message ?? e));
+      const name = String(e?.name ?? "");
+      const msg = String(e?.message ?? e);
+      if (name === "NotAllowedError" || /not allowed|denied|permission/i.test(msg)) {
+        setChatError(
+          "Нет доступа к камере/микрофону. Разрешите доступ в настройках сайта и запускайте звонок кнопкой (на телефоне автозапуск запрещён).",
+        );
+      } else if (name === "NotFoundError") {
+        setChatError("Камера или микрофон не найдены (или заняты другим приложением).");
+      } else {
+        setChatError(msg);
+      }
     }
   }
 
@@ -5291,6 +5304,26 @@ export default function App() {
                     </button>
                   ) : null}
                 </div>
+                {pendingCallDeepLink && mode === "dms" ? (
+                  <div style={{ marginTop: 6, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                    <span style={{ fontSize: 12, opacity: 0.8 }}>
+                      Переход по ссылке на созвон. Нажмите кнопку, чтобы запросить камеру/микрофон.
+                    </span>
+                    <button
+                      type="button"
+                      className="chip"
+                      onClick={() => {
+                        setPendingCallDeepLink(false);
+                        void startVideoMeeting();
+                      }}
+                    >
+                      🎥 Начать звонок
+                    </button>
+                    <button type="button" className="chip" onClick={() => setPendingCallDeepLink(false)}>
+                      Закрыть
+                    </button>
+                  </div>
+                ) : null}
                 <div className="tgChatHeaderSub">
                   {mode === "dms" && activeDirectChat
                     ? isSelfNotesActiveDm
