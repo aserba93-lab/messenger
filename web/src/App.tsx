@@ -286,26 +286,6 @@ function fileWaitLine(kind: "file" | "voice", avStatus?: string | null, blockedR
   return kind === "voice" ? "Подготовка воспроизведения…" : "Получение ссылки…";
 }
 
-/** Подсказка браузеру для декодирования голосовых с «обрезанным» MIME */
-function effectiveAudioMimeForElement(
-  messageType: string | undefined,
-  mimeType: string | null | undefined,
-  originalName: string | null | undefined,
-): string | undefined {
-  const m0 = (mimeType || "").trim().toLowerCase();
-  if (m0.startsWith("audio/")) return m0;
-  const name = (originalName || "").toLowerCase();
-  if (name.endsWith(".webm")) return "audio/webm";
-  if (name.endsWith(".m4a") || name.endsWith(".mp4")) return "audio/mp4";
-  if (name.endsWith(".mp3")) return "audio/mpeg";
-  if (name.endsWith(".ogg") || name.endsWith(".opus")) return "audio/ogg";
-  if (name.endsWith(".wav")) return "audio/wav";
-  if (m0 === "video/webm" || m0 === "application/octet-stream" || !m0) {
-    if (messageType === "voice") return "audio/webm";
-  }
-  return m0 || undefined;
-}
-
 function guessMimeFromOriginalNameForUpload(name: string): string | null {
   const n = name.toLowerCase();
   if (/\.(jpe?g)$/.test(n)) return "image/jpeg";
@@ -381,9 +361,18 @@ function isSingleStickerContent(content: string): boolean {
  * Если UI (например :5173) и API (:3000) на разных origin, <img>/<audio> не шлют Bearer —
  * встраиваемые медиа с /files/… не открываются. Тогда подгружаем байты через fetch + Authorization → blob:.
  * Внешние presigned URL и тот же origin, что у страницы, оставляем прямой ссылкой.
+ *
+ * Для /files/access/ нельзя начинать с прямого URL: первый запрос без заголовка даст 401 и плеер/img «зависнут».
  */
+function initialBlobMediaSrc(downloadUrl: string | null | undefined, token: string | null): string {
+  const u = normalizeDownloadUrl(downloadUrl);
+  if (!u) return "";
+  if (token && isFilesAccessProxyUrl(u)) return "";
+  return u;
+}
+
 function useAuthenticatedBlobMediaUrl(downloadUrl: string | null | undefined, token: string | null): string {
-  const [src, setSrc] = useState(() => normalizeDownloadUrl(downloadUrl));
+  const [src, setSrc] = useState(() => initialBlobMediaSrc(downloadUrl, token));
 
   useEffect(() => {
     const u = normalizeDownloadUrl(downloadUrl);
@@ -407,7 +396,11 @@ function useAuthenticatedBlobMediaUrl(downloadUrl: string | null | undefined, to
       try {
         const r = await getRes();
         if (!r.ok || cancelled) return false;
-        const blob = await r.blob();
+        let blob = await r.blob();
+        const ct = r.headers.get("content-type")?.split(";")[0]?.trim();
+        if (ct && !blob.type) {
+          blob = new Blob([blob], { type: ct });
+        }
         if (cancelled) return false;
         objectUrl = URL.createObjectURL(blob);
         setSrc(objectUrl);
@@ -427,6 +420,8 @@ function useAuthenticatedBlobMediaUrl(downloadUrl: string | null | undefined, to
       const isAccessProxy = pathname.includes("/files/access/");
       if (token && isAccessProxy) {
         if (await toBlob(() => fetch(u, { headers: { authorization: `Bearer ${token}` } }))) return;
+        if (!cancelled) setSrc("");
+        return;
       } else if (isOurApi && pageOrigin && !u.startsWith(pageOrigin)) {
         if (await toBlob(() => fetch(u, { headers: { authorization: `Bearer ${token}` } }))) return;
       } else if (!isOurApi && /^https?:\/\//i.test(u) && pageOrigin && !u.startsWith(pageOrigin)) {
@@ -463,14 +458,24 @@ function ChatAttachmentImage(props: {
   );
 }
 
-function ChatAttachmentAudioSource(props: {
+/** Плеер с blob: после fetch — `src` на `<audio>`, иначе Safari/Chrome не подхватывают `<source>` после 401 на первом URL. */
+function ChatAttachmentAudio(props: {
+  messageKey: string;
   downloadUrl: string | null | undefined;
   token: string | null;
-  mimeType: string;
+  className?: string;
 }) {
   const src = useAuthenticatedBlobMediaUrl(props.downloadUrl, props.token);
-  if (!src) return null;
-  return <source src={src} type={props.mimeType} />;
+  return (
+    <audio
+      className={props.className}
+      controls
+      preload="auto"
+      playsInline
+      key={`${props.messageKey}-${src ? "ready" : "pending"}`}
+      src={src || undefined}
+    />
+  );
 }
 
 export default function App() {
@@ -5851,22 +5856,12 @@ export default function App() {
                       m.type === "voice" ? (
                         <div className="voiceMsgBlock" onClick={(e) => e.stopPropagation()} onPointerDown={(e) => e.stopPropagation()}>
                           <div className="voiceMsgRow">
-                            <audio
-                              key={`${m.id}-audio`}
+                            <ChatAttachmentAudio
+                              messageKey={m.id}
+                              downloadUrl={m.file.downloadUrl}
+                              token={token}
                               className="voiceMsgAudio"
-                              controls
-                              preload="metadata"
-                              playsInline
-                            >
-                              <ChatAttachmentAudioSource
-                                downloadUrl={m.file.downloadUrl}
-                                token={token}
-                                mimeType={
-                                  effectiveAudioMimeForElement(m.type, m.file.mimeType, attachmentOriginalNameHint(m)) ||
-                                  "audio/webm"
-                                }
-                              />
-                            </audio>
+                            />
                             <a
                               className="fileDownloadIconBtn"
                               href={normalizeDownloadUrl(m.file.downloadUrl)}
@@ -6614,19 +6609,11 @@ export default function App() {
                     <ul className="infoPanelVoiceList">
                       {infoPanelVoice.map((m) => (
                         <li key={m.id} className="infoPanelVoiceRow">
-                          <audio controls preload="metadata">
-                            <ChatAttachmentAudioSource
-                              downloadUrl={m.file?.downloadUrl}
-                              token={token}
-                              mimeType={
-                                effectiveAudioMimeForElement(
-                                  m.type,
-                                  m.file?.mimeType,
-                                  attachmentOriginalNameHint(m),
-                                ) || "audio/webm"
-                              }
-                            />
-                          </audio>
+                          <ChatAttachmentAudio
+                            messageKey={`panel-${m.id}`}
+                            downloadUrl={m.file?.downloadUrl}
+                            token={token}
+                          />
                           <div className="infoPanelMediaRowMeta">{timeHHMM(m.createdAt)}</div>
                         </li>
                       ))}
