@@ -21,6 +21,18 @@ function parseIceFromEnv(): RTCIceServer[] {
   return DEFAULT_ICE;
 }
 
+export function debugIceServers() {
+  const raw = (import.meta as any).env?.VITE_ICE_SERVERS as string | undefined;
+  let parsed: RTCIceServer[] | null = null;
+  let error: string | null = null;
+  try {
+    if (raw && raw.trim()) parsed = JSON.parse(raw) as RTCIceServer[];
+  } catch (e: any) {
+    error = String(e?.message ?? e);
+  }
+  return { raw: raw ?? null, parsed, error, fallback: DEFAULT_ICE };
+}
+
 export type ActiveCall = {
   pc: RTCPeerConnection;
   localStream: MediaStream;

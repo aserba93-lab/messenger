@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, FormEvent, MouseEvent } from "react";
 import { io, Socket } from "socket.io-client";
 import * as XLSX from "xlsx";
-import { acceptIncomingOffer, startOutgoingCall, type ActiveCall } from "./webrtcDm";
+import { acceptIncomingOffer, debugIceServers, startOutgoingCall, type ActiveCall } from "./webrtcDm";
 import "./App.css";
 
 const TG_SESSION_KEY = "tg:session";
@@ -1638,6 +1638,18 @@ export default function App() {
       const msg = String(e?.message ?? e);
       const constraint = e?.constraintName ? String(e.constraintName) : "";
       diagLog(`media getUserMedia FAIL: ${name} ${msg}${constraint ? ` constraint=${constraint}` : ""}`);
+    }
+  }
+
+  function dumpIceServersConfig() {
+    try {
+      const dbg = debugIceServers();
+      diagLog(`ice env raw=${dbg.raw ? dbg.raw.slice(0, 400) : "null"}`);
+      if (dbg.error) diagLog(`ice env parse error: ${dbg.error}`);
+      if (dbg.parsed) diagLog(`ice servers parsed: ${JSON.stringify(dbg.parsed)}`);
+      else diagLog(`ice servers fallback: ${JSON.stringify(dbg.fallback)}`);
+    } catch (e: any) {
+      diagLog(`ice debug error: ${String(e?.message ?? e)}`);
     }
   }
 
@@ -6793,6 +6805,9 @@ export default function App() {
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
                 <button type="button" className="chip" onClick={() => void snapshotWebrtcStats()}>
                   Снимок (getStats)
+                </button>
+                <button type="button" className="chip" onClick={dumpIceServersConfig}>
+                  Показать TURN/ICE
                 </button>
                 <button type="button" className="chip" onClick={() => void runMediaSelfTest()}>
                   Проверить камеру/мик
