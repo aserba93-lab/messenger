@@ -1588,6 +1588,59 @@ export default function App() {
     }
   }
 
+  async function runMediaSelfTest() {
+    try {
+      const secure = typeof window !== "undefined" ? (window as any).isSecureContext : false;
+      diagLog(`media secureContext=${secure ? "true" : "false"}`);
+      const md = typeof navigator !== "undefined" ? (navigator.mediaDevices as any) : null;
+      if (!md?.getUserMedia) {
+        diagLog("media error: getUserMedia not supported");
+        return;
+      }
+
+      // Permissions API (not supported everywhere)
+      try {
+        const p = (navigator as any).permissions;
+        if (p?.query) {
+          const cam = await p.query({ name: "camera" });
+          const mic = await p.query({ name: "microphone" });
+          diagLog(`media permissions camera=${cam?.state ?? "?"} microphone=${mic?.state ?? "?"}`);
+        }
+      } catch {
+        diagLog("media permissions: not available");
+      }
+
+      try {
+        const devices = await md.enumerateDevices();
+        const cams = devices.filter((d: any) => d.kind === "videoinput");
+        const mics = devices.filter((d: any) => d.kind === "audioinput");
+        diagLog(`media devices cameras=${cams.length} microphones=${mics.length}`);
+        if (cams.length) diagLog(`media camera[0]=${String(cams[0].label || "(no label)")}`);
+        if (mics.length) diagLog(`media mic[0]=${String(mics[0].label || "(no label)")}`);
+      } catch (e: any) {
+        diagLog(`media enumerateDevices error: ${String(e?.name ?? "")} ${String(e?.message ?? e)}`);
+      }
+
+      // Actual getUserMedia probe
+      diagLog("media getUserMedia probe: requesting audio+video…");
+      const stream = await md.getUserMedia({ audio: true, video: true });
+      const tracks = stream.getTracks();
+      diagLog(`media getUserMedia ok: tracks=${tracks.map((t: any) => `${t.kind}:${t.readyState}:${t.label || ""}`).join(", ")}`);
+      stream.getTracks().forEach((t: any) => {
+        try {
+          t.stop();
+        } catch {
+          /* ignore */
+        }
+      });
+    } catch (e: any) {
+      const name = String(e?.name ?? "");
+      const msg = String(e?.message ?? e);
+      const constraint = e?.constraintName ? String(e.constraintName) : "";
+      diagLog(`media getUserMedia FAIL: ${name} ${msg}${constraint ? ` constraint=${constraint}` : ""}`);
+    }
+  }
+
   useEffect(() => {
     if (!chatListFilterOpen) return;
     const onDown = (e: Event) => {
@@ -6740,6 +6793,9 @@ export default function App() {
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
                 <button type="button" className="chip" onClick={() => void snapshotWebrtcStats()}>
                   Снимок (getStats)
+                </button>
+                <button type="button" className="chip" onClick={() => void runMediaSelfTest()}>
+                  Проверить камеру/мик
                 </button>
                 <button
                   type="button"
