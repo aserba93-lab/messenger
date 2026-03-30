@@ -522,6 +522,7 @@ export default function App() {
   const activeGroupChatIdRef = useRef(activeGroupChatId);
   const activeDirectChatIdRef = useRef(activeDirectChatId);
   const myAccountEmailRef = useRef("");
+  const lastDeepLinkHashRef = useRef("");
 
   const [messages, setMessages] = useState<Message[]>([]);
   const [newMessage, setNewMessage] = useState("");
@@ -608,6 +609,32 @@ export default function App() {
       /* ignore */
     }
   }, [browserNotify]);
+
+  // Deep-link: #dm=<directChatId>&call=1
+  useEffect(() => {
+    if (!token) return;
+    const onHash = () => {
+      const raw = typeof window !== "undefined" ? String(window.location.hash || "") : "";
+      if (!raw || raw === lastDeepLinkHashRef.current) return;
+      if (!raw.startsWith("#")) return;
+      const params = new URLSearchParams(raw.slice(1));
+      const dm = params.get("dm");
+      const call = params.get("call");
+      if (!dm) return;
+      lastDeepLinkHashRef.current = raw;
+      void (async () => {
+        try {
+          await openChatFromList(`d:${dm}`);
+          if (call === "1") queueMicrotask(() => void startVideoMeeting());
+        } catch {
+          /* ignore */
+        }
+      })();
+    };
+    onHash();
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, [token]);
   useEffect(() => {
     document.documentElement.dataset.theme = theme === "light" ? "light" : "dark";
     try {
@@ -1970,7 +1997,25 @@ export default function App() {
               : msg.type === "file"
                 ? "Файл"
                 : (msg.content || "Новое сообщение").slice(0, 160);
-          new Notification("Sales factory", { body, tag: key ? `${key}:${msg.id}` : "dm" });
+          const fromLabel = displayUserNameForSidebar(msg.author as any, String(msg.author?.email ?? "Участник"));
+          const n = new Notification(fromLabel || "Новое сообщение", { body, tag: key ? `${key}:${msg.id}` : "dm" });
+          n.onclick = () => {
+            try {
+              window.focus();
+            } catch {
+              /* ignore */
+            }
+            try {
+              if (key) void openChatFromList(key);
+            } catch {
+              /* ignore */
+            }
+            try {
+              n.close();
+            } catch {
+              /* ignore */
+            }
+          };
         } catch {
           /* ignore */
         }
@@ -6459,7 +6504,7 @@ export default function App() {
                 <ul style={{ margin: 0, paddingLeft: 18 }}>
                   {readReceiptUsers.map((u) => (
                     <li key={u.id} style={{ marginBottom: 4 }}>
-                      {readerDisplayName(u)} <span style={{ opacity: 0.75 }}>({u.email})</span>
+                      {readerDisplayName(u)}
                     </li>
                   ))}
                 </ul>
@@ -6995,7 +7040,8 @@ export default function App() {
                           ? "☑"
                           : "☐"}
                     </span>
-                    <span className="newChatWizardEmail">{u.email}</span>
+                    <span className="newChatWizardEmail">{displayUserNameForSidebar(u, u.id)}</span>
+                    <span className="newChatWizardMeta">{u.email}</span>
                     {u.department ? <span className="newChatWizardMeta">{u.department}</span> : null}
                   </button>
                 ))
