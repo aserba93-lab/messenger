@@ -62,7 +62,15 @@ type GroupChat = { id: string; name: string; memberIds: string[]; createdByUserI
 type DirectChat = { id: string; userIds: string[] };
 
 type Reaction = { emoji: string; count: number; viewerHasReacted: boolean };
-type FileInfo = { id: string; originalName?: string | null; mimeType: string; size: number; downloadUrl?: string };
+type FileInfo = {
+  id: string;
+  originalName?: string | null;
+  mimeType: string;
+  size: number;
+  downloadUrl?: string;
+  avStatus?: string | null;
+  blockedReason?: string | null;
+};
 
 type Message = {
   id: string;
@@ -172,6 +180,45 @@ const IMAGE_FILENAME_RE = /\.(jpe?g|png|gif|webp|bmp|svg|avif|heic|heif)$/i;
 function looksLikeImageAttachment(originalName: string | null | undefined, mimeType: string | null | undefined): boolean {
   if ((mimeType || "").startsWith("image/")) return true;
   return IMAGE_FILENAME_RE.test(originalName || "");
+}
+
+/** В каналах/группах имя файла часто дублируется в content; в ЛС при сокете content пустой — добираем после hydrate. */
+function attachmentOriginalNameHint(m: Message): string | null | undefined {
+  if (m.file?.originalName) return m.file.originalName;
+  if ((m.type === "file" || m.type === "voice") && m.content?.trim()) return m.content.trim();
+  return null;
+}
+
+/**
+ * Сокет присылает только fileId (mapMessage), не вложенный file — иначе нет hydrate и в ЛС вложения «пустые».
+ */
+function mergeSocketFilePayload(
+  existing: FileInfo | null | undefined,
+  m: { file?: FileInfo | null; fileId?: string | null; content?: string; type?: string },
+): FileInfo | null {
+  const embedded = m.file;
+  const fid = embedded?.id ?? m.fileId;
+  if (!fid) return existing ?? null;
+  const id = String(fid);
+  const fromContent =
+    m.content?.trim() && (m.type === "file" || m.type === "voice") ? m.content.trim() : null;
+  return {
+    id,
+    originalName: embedded?.originalName ?? fromContent ?? existing?.originalName ?? null,
+    mimeType: String(embedded?.mimeType ?? existing?.mimeType ?? "application/octet-stream"),
+    size: typeof embedded?.size === "number" ? embedded.size : existing?.size ?? 0,
+    downloadUrl: embedded?.downloadUrl ?? existing?.downloadUrl,
+    avStatus: embedded?.avStatus ?? existing?.avStatus ?? null,
+    blockedReason: embedded?.blockedReason ?? existing?.blockedReason ?? null,
+  };
+}
+
+function fileWaitLine(kind: "file" | "voice", avStatus?: string | null, blockedReason?: string | null): string {
+  const s = String(avStatus || "").toLowerCase();
+  if (s === "pending") return "Проверяется антивирусом…";
+  if (s === "infected") return `Файл заблокирован${blockedReason ? `: ${blockedReason}` : ""}`;
+  if (s === "error") return `Ошибка обработки файла${blockedReason ? `: ${blockedReason}` : ""}`;
+  return kind === "voice" ? "Подготовка воспроизведения…" : "Получение ссылки…";
 }
 
 /** Подсказка браузеру для декодирования голосовых с «обрезанным» MIME */
@@ -1001,7 +1048,7 @@ export default function App() {
       messages.filter(
         (m) =>
           m.type === "file" &&
-          looksLikeImageAttachment(m.file?.originalName, m.file?.mimeType) &&
+          looksLikeImageAttachment(attachmentOriginalNameHint(m), m.file?.mimeType) &&
           m.file?.downloadUrl &&
           !m.isDeleted,
       ),
@@ -1012,7 +1059,7 @@ export default function App() {
       messages.filter(
         (m) =>
           m.type === "file" &&
-          !looksLikeImageAttachment(m.file?.originalName, m.file?.mimeType) &&
+          !looksLikeImageAttachment(attachmentOriginalNameHint(m), m.file?.mimeType) &&
           m.file?.downloadUrl &&
           !m.isDeleted,
       ),
@@ -1462,7 +1509,7 @@ export default function App() {
     const data = await gql<{ savedMessages: Message[] }>(
       `query($limit: Int!) {
         savedMessages(limit: $limit) {
-          id content createdAt editedAt isDeleted type parentMessageId author { email } reactions { emoji count viewerHasReacted } file { id originalName mimeType size downloadUrl }
+          id content createdAt editedAt isDeleted type parentMessageId author { email } reactions { emoji count viewerHasReacted } file { id originalName mimeType size downloadUrl avStatus blockedReason }
         }
       }`,
       { limit: 100 },
@@ -1478,7 +1525,7 @@ export default function App() {
     const data = await gql<{ pinnedMessages: Message[] }>(
       `query($channelId: ID!, $limit: Int!) {
         pinnedMessages(channelId: $channelId, limit: $limit) {
-          id content createdAt editedAt isDeleted type parentMessageId author { email } reactions { emoji count viewerHasReacted } file { id originalName mimeType size downloadUrl }
+          id content createdAt editedAt isDeleted type parentMessageId author { email } reactions { emoji count viewerHasReacted } file { id originalName mimeType size downloadUrl avStatus blockedReason }
         }
       }`,
       { channelId: activeChannelId, limit: 50 },
@@ -1723,7 +1770,7 @@ export default function App() {
         },
         type: m.type,
         parentMessageId: m.parentMessageId ?? null,
-        file: m.file ?? null,
+        file: mergeSocketFilePayload(null, m),
         reactions: Array.isArray(m.reactions) ? m.reactions : [],
       };
 
@@ -1786,8 +1833,9 @@ export default function App() {
     s.on("message:update", (m: any) => {
       const id = String(m?.id ?? "");
       if (!id) return;
-      const nextFile = m.file ?? null;
-      if (nextFile?.id && !nextFile.downloadUrl) void hydrateDownloadUrl(String(nextFile.id));
+      const existingRow = messagesRef.current.find((x) => x.id === id);
+      const mergedFile = mergeSocketFilePayload(existingRow?.file, m);
+      if (mergedFile?.id && !mergedFile.downloadUrl) void hydrateDownloadUrl(String(mergedFile.id));
       setMessages((prev) =>
         prev.map((x) =>
           x.id === id
@@ -1796,7 +1844,7 @@ export default function App() {
                 content: String(m.content ?? ""),
                 type: m.type ?? x.type,
                 parentMessageId: m.parentMessageId ?? x.parentMessageId ?? null,
-                file: m.file ?? x.file ?? null,
+                file: mergeSocketFilePayload(x.file, m),
                 reactions: Array.isArray(m.reactions) ? m.reactions : x.reactions,
                 editedAt: m.editedAt ?? x.editedAt ?? null,
                 isDeleted: typeof m.isDeleted === "boolean" ? m.isDeleted : x.isDeleted,
@@ -1855,6 +1903,9 @@ export default function App() {
             prev.map((m) => (m.id === localId ? { ...m, _localFileState: "failed", _localError: reason || status } : m)),
           );
         }
+      }
+      if (fileId && status === "clean") {
+        void hydrateDownloadUrl(fileId);
       }
     });
     s.on("thread:read", (evt: any) => {
@@ -3096,7 +3147,7 @@ export default function App() {
     const data = await gql<{ messages: { items: Message[] } }>(
       `query($channelId: ID!, $limit: Int!) {
         messages(channelId: $channelId, limit: $limit) {
-          items { id content createdAt editedAt isDeleted type parentMessageId author { email firstName middleName lastName } reactions { emoji count viewerHasReacted } file { id originalName mimeType size downloadUrl } }
+          items { id content createdAt editedAt isDeleted type parentMessageId author { email firstName middleName lastName } reactions { emoji count viewerHasReacted } file { id originalName mimeType size downloadUrl avStatus blockedReason } }
         }
       }`,
       { channelId, limit: 50 },
@@ -3114,7 +3165,7 @@ export default function App() {
     const data = await gql<{ groupChatMessages: Message[] }>(
       `query($groupChatId: ID!, $limit: Int!) {
         groupChatMessages(groupChatId: $groupChatId, limit: $limit) {
-          id content createdAt editedAt isDeleted type parentMessageId author { email firstName middleName lastName } reactions { emoji count viewerHasReacted } file { id originalName mimeType size downloadUrl }
+          id content createdAt editedAt isDeleted type parentMessageId author { email firstName middleName lastName } reactions { emoji count viewerHasReacted } file { id originalName mimeType size downloadUrl avStatus blockedReason }
         }
       }`,
       { groupChatId, limit: 200 },
@@ -3141,7 +3192,7 @@ export default function App() {
           parentMessageId
           author { email firstName middleName lastName }
           reactions { emoji count viewerHasReacted }
-          file { id originalName mimeType size downloadUrl }
+          file { id originalName mimeType size downloadUrl avStatus blockedReason }
         }
       }`,
       { directChatId, limit: 200 },
@@ -3175,7 +3226,7 @@ export default function App() {
     const data = await gql<{ thread: Message[] }>(
       `query($parentMessageId: ID!, $limit: Int!) {
         thread(parentMessageId: $parentMessageId, limit: $limit) {
-          id content createdAt editedAt updatedAt isDeleted type parentMessageId author { email firstName middleName lastName } reactions { emoji count viewerHasReacted } file { id originalName mimeType size downloadUrl }
+          id content createdAt editedAt updatedAt isDeleted type parentMessageId author { email firstName middleName lastName } reactions { emoji count viewerHasReacted } file { id originalName mimeType size downloadUrl avStatus blockedReason }
         }
       }`,
       { parentMessageId, limit: 200 },
@@ -3308,7 +3359,7 @@ export default function App() {
         const data = await gql<{ sendDirectMessage: DirectChatMessage }>(
           `mutation($userId: ID!, $content: String!, $parentMessageId: ID) {
             sendDirectMessage(input: { userId: $userId, content: $content, parentMessageId: $parentMessageId }) {
-              id directChatId content createdAt updatedAt type parentMessageId author { email firstName middleName lastName } reactions { emoji count viewerHasReacted } file { id originalName mimeType size downloadUrl }
+              id directChatId content createdAt updatedAt type parentMessageId author { email firstName middleName lastName } reactions { emoji count viewerHasReacted } file { id originalName mimeType size downloadUrl avStatus blockedReason }
             }
           }`,
           { userId: peerUserId, content, ...(parentMessageId ? { parentMessageId } : {}) },
@@ -3353,7 +3404,7 @@ export default function App() {
     if (mode === "channels") {
       const data = await gql<{ editMessage: any }>(
         `mutation($input: EditMessageInput!) {
-          editMessage(input: $input) { id content createdAt type author { email } reactions { emoji count viewerHasReacted } file { id originalName mimeType size downloadUrl } }
+          editMessage(input: $input) { id content createdAt type author { email } reactions { emoji count viewerHasReacted } file { id originalName mimeType size downloadUrl avStatus blockedReason } }
         }`,
         { input: { messageId, content: next } },
         token,
@@ -3363,7 +3414,7 @@ export default function App() {
       const data = await gql<{ editGroupChatMessage: any }>(
         `mutation($groupChatId: ID!, $messageId: ID!, $content: String!) {
           editGroupChatMessage(groupChatId: $groupChatId, messageId: $messageId, content: $content) {
-            id content createdAt type author { email } reactions { emoji count viewerHasReacted } file { id originalName mimeType size downloadUrl }
+            id content createdAt type author { email } reactions { emoji count viewerHasReacted } file { id originalName mimeType size downloadUrl avStatus blockedReason }
           }
         }`,
         { groupChatId: activeGroupChatId, messageId, content: next },
@@ -3374,7 +3425,7 @@ export default function App() {
       const data = await gql<{ editDirectMessage: any }>(
         `mutation($directChatId: ID!, $messageId: ID!, $content: String!) {
           editDirectMessage(directChatId: $directChatId, messageId: $messageId, content: $content) {
-            id directChatId content createdAt updatedAt type author { email } reactions { emoji count viewerHasReacted } file { id originalName mimeType size downloadUrl }
+            id directChatId content createdAt updatedAt type author { email } reactions { emoji count viewerHasReacted } file { id originalName mimeType size downloadUrl avStatus blockedReason }
           }
         }`,
         { directChatId: activeDirectChatId, messageId, content: next },
@@ -3654,9 +3705,19 @@ export default function App() {
 
   async function hydrateDownloadUrl(fileId: string) {
     if (!token) return;
-    const data = await gql<{ file: { id: string; downloadUrl?: string | null; originalName?: string | null; mimeType: string; size: number } }>(
+    const data = await gql<{
+      file: {
+        id: string;
+        downloadUrl?: string | null;
+        originalName?: string | null;
+        mimeType: string;
+        size: number;
+        avStatus?: string | null;
+        blockedReason?: string | null;
+      };
+    }>(
       `query($id: ID!) {
-        file(id: $id) { id originalName mimeType size downloadUrl }
+        file(id: $id) { id originalName mimeType size downloadUrl avStatus blockedReason }
       }`,
       { id: fileId },
       token,
@@ -3673,6 +3734,8 @@ export default function App() {
                 originalName: data.file.originalName ?? m.file?.originalName ?? null,
                 mimeType: data.file.mimeType,
                 size: data.file.size,
+                avStatus: data.file.avStatus ?? m.file?.avStatus ?? null,
+                blockedReason: data.file.blockedReason ?? m.file?.blockedReason ?? null,
                 ...(url ? { downloadUrl: url } : {}),
               },
             }
@@ -5700,7 +5763,7 @@ export default function App() {
                     m._localFileState ? (
                       <div>
                         <div className="fileLine">
-                          {m.type === "voice" ? "Голосовое" : "Файл"}: {m.file.originalName ?? m.file.id}
+                          {m.type === "voice" ? "Голосовое" : "Файл"}: {attachmentOriginalNameHint(m) ?? m.file.id}
                         </div>
                         <div className="fileState">
                           {m._localFileState === "uploading"
@@ -5725,7 +5788,7 @@ export default function App() {
                                 downloadUrl={m.file.downloadUrl}
                                 token={token}
                                 mimeType={
-                                  effectiveAudioMimeForElement(m.type, m.file.mimeType, m.file.originalName) ||
+                                  effectiveAudioMimeForElement(m.type, m.file.mimeType, attachmentOriginalNameHint(m)) ||
                                   "audio/webm"
                                 }
                               />
@@ -5733,7 +5796,7 @@ export default function App() {
                             <a
                               className="fileDownloadIconBtn"
                               href={normalizeDownloadUrl(m.file.downloadUrl)}
-                              download={m.file.originalName || "voice.webm"}
+                              download={attachmentOriginalNameHint(m) || "voice.webm"}
                               target="_blank"
                               rel="noreferrer"
                               title="Скачать"
@@ -5743,10 +5806,10 @@ export default function App() {
                             </a>
                           </div>
                         </div>
-                      ) : looksLikeImageAttachment(m.file.originalName, m.file.mimeType) ? (
+                      ) : looksLikeImageAttachment(attachmentOriginalNameHint(m), m.file.mimeType) ? (
                         <div className="chatImageWrap" onClick={(e) => e.stopPropagation()} onPointerDown={(e) => e.stopPropagation()}>
                           <div className="fileLineWithBadge">
-                            <span className="fileFormatBadge">{fileFormatLabel(m.file.originalName, m.file.mimeType)}</span>
+                            <span className="fileFormatBadge">{fileFormatLabel(attachmentOriginalNameHint(m), m.file.mimeType)}</span>
                             <span style={{ fontSize: 12, opacity: 0.9 }}>Изображение</span>
                           </div>
                           <a
@@ -5758,7 +5821,7 @@ export default function App() {
                             <ChatAttachmentImage
                               downloadUrl={m.file.downloadUrl}
                               token={token}
-                              alt={m.file.originalName ?? "image"}
+                              alt={attachmentOriginalNameHint(m) ?? "image"}
                               className="chatImage"
                               fileId={m.file.id}
                               onNeedsUrlRefresh={(fid) => void hydrateDownloadUrl(fid)}
@@ -5772,13 +5835,13 @@ export default function App() {
                           onPointerDown={(e) => e.stopPropagation()}
                         >
                           <span className="fileFormatBadge" title={m.file.mimeType}>
-                            {fileFormatLabel(m.file.originalName, m.file.mimeType)}
+                            {fileFormatLabel(attachmentOriginalNameHint(m), m.file.mimeType)}
                           </span>
-                          <span className="fileAttachmentName">{m.file.originalName ?? m.file.id}</span>
+                          <span className="fileAttachmentName">{attachmentOriginalNameHint(m) ?? m.file.id}</span>
                           <a
                             className="fileDownloadIconBtn"
                             href={normalizeDownloadUrl(m.file.downloadUrl)}
-                            download={m.file.originalName || undefined}
+                            download={attachmentOriginalNameHint(m) || undefined}
                             target="_blank"
                             rel="noreferrer"
                             title="Скачать"
@@ -5792,17 +5855,20 @@ export default function App() {
                       m.type === "voice" ? (
                         <div>
                           <div style={{ fontSize: 12, opacity: 0.85, marginBottom: 6 }}>
-                            Голосовое: {m.file.originalName ?? m.file.id}
+                            Голосовое: {attachmentOriginalNameHint(m) ?? m.file.id}
                           </div>
-                          <div className="fileState">Подготовка воспроизведения…</div>
+                          <div className="fileState">{fileWaitLine("voice", m.file.avStatus, m.file.blockedReason)}</div>
                         </div>
                       ) : (
                         <div>
                           <div className="fileLineWithBadge">
-                            <span className="fileFormatBadge">{fileFormatLabel(m.file.originalName, m.file.mimeType)}</span>
-                            <span>{looksLikeImageAttachment(m.file.originalName, m.file.mimeType) ? "Изображение" : "Файл"}: {m.file.originalName ?? m.file.id}</span>
+                            <span className="fileFormatBadge">{fileFormatLabel(attachmentOriginalNameHint(m), m.file.mimeType)}</span>
+                            <span>
+                              {looksLikeImageAttachment(attachmentOriginalNameHint(m), m.file.mimeType) ? "Изображение" : "Файл"}:{" "}
+                              {attachmentOriginalNameHint(m) ?? m.file.id}
+                            </span>
                           </div>
-                          <div className="fileState">Получение ссылки…</div>
+                          <div className="fileState">{fileWaitLine("file", m.file.avStatus, m.file.blockedReason)}</div>
                         </div>
                       )
                     )
