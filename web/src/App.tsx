@@ -1549,18 +1549,39 @@ export default function App() {
     try {
       const stats = await pc.getStats();
       let selectedPair: any = null;
+      const pairStates: Record<string, number> = {};
+      const localTypes: Record<string, number> = {};
+      const remoteTypes: Record<string, number> = {};
       stats.forEach((r: any) => {
         if (r.type === "candidate-pair" && r.nominated && r.state === "succeeded") selectedPair = r;
+        if (r.type === "candidate-pair") {
+          const k = String(r.state ?? "unknown");
+          pairStates[k] = (pairStates[k] ?? 0) + 1;
+        }
+        if (r.type === "local-candidate") {
+          const t = String(r.candidateType ?? "unknown");
+          localTypes[t] = (localTypes[t] ?? 0) + 1;
+        }
+        if (r.type === "remote-candidate") {
+          const t = String(r.candidateType ?? "unknown");
+          remoteTypes[t] = (remoteTypes[t] ?? 0) + 1;
+        }
       });
       const localCand = selectedPair?.localCandidateId ? stats.get(selectedPair.localCandidateId) : null;
       const remoteCand = selectedPair?.remoteCandidateId ? stats.get(selectedPair.remoteCandidateId) : null;
       diagLog(
         `stats conn=${pc.connectionState} ice=${pc.iceConnectionState} selectedPair=${selectedPair ? `rtt=${selectedPair.currentRoundTripTime ?? "?"}` : "none"}`,
       );
+      const fmt = (m: Record<string, number>) =>
+        Object.keys(m).length ? Object.entries(m).map(([k, v]) => `${k}=${v}`).join(" ") : "none";
+      diagLog(`pairs ${fmt(pairStates)} | localCandidates ${fmt(localTypes)} | remoteCandidates ${fmt(remoteTypes)}`);
       if (localCand || remoteCand) {
         diagLog(
           `candidates local=${localCand ? `${localCand.candidateType}/${localCand.protocol} ${localCand.address ?? localCand.ip ?? ""}:${localCand.port ?? ""}` : "?"} remote=${remoteCand ? `${remoteCand.candidateType}/${remoteCand.protocol} ${remoteCand.address ?? remoteCand.ip ?? ""}:${remoteCand.port ?? ""}` : "?"}`,
         );
+      }
+      if (!selectedPair && !(localTypes as any).relay && !(remoteTypes as any).relay) {
+        diagLog("hint: relay candidates отсутствуют → без TURN сеть/файрвол может не пропускать P2P. Добавьте TURN в VITE_ICE_SERVERS.");
       }
     } catch (e: any) {
       diagLog(`getStats error: ${String(e?.message ?? e)}`);
