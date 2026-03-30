@@ -550,6 +550,11 @@ export default function App() {
   const [forwardSelectedIds, setForwardSelectedIds] = useState<Set<string>>(new Set());
   const [showForwardPicker, setShowForwardPicker] = useState(false);
   const [showLogs, setShowLogs] = useState(false);
+  const [webrtcDiagOpen, setWebrtcDiagOpen] = useState(false);
+  const [webrtcDiagLines, setWebrtcDiagLines] = useState<string[]>([]);
+  const webrtcDiagPcRef = useRef<RTCPeerConnection | null>(null);
+  const ringtoneRef = useRef<HTMLAudioElement | null>(null);
+  const audioUnlockedRef = useRef(false);
   const [theme, setTheme] = useState<"dark" | "light">(() => {
     if (typeof window === "undefined") return "dark";
     return localStorage.getItem("tg:theme") === "light" ? "light" : "dark";
@@ -1427,6 +1432,35 @@ export default function App() {
     return () => el.removeEventListener("scroll", onScroll);
   }, [activeChannelId, activeGroupChatId, activeDirectChatId, threadRootId, showPins, showSaved]);
 
+  // Ringtone for incoming calls when tab is hidden / another tab
+  useEffect(() => {
+    const a = ringtoneRef.current;
+    if (!a) return;
+    if (!incomingCall) {
+      try {
+        a.pause();
+        a.currentTime = 0;
+      } catch {
+        /* ignore */
+      }
+      return;
+    }
+    try {
+      a.loop = true;
+      void a.play();
+    } catch {
+      /* ignore */
+    }
+    return () => {
+      try {
+        a.pause();
+        a.currentTime = 0;
+      } catch {
+        /* ignore */
+      }
+    };
+  }, [incomingCall]);
+
   const typingRef = useRef<{ started: boolean; stopTimerId: number | null }>({ started: false, stopTimerId: null });
   const localFileMessageIdByFileIdRef = useRef(new Map<string, string>());
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
@@ -1457,6 +1491,80 @@ export default function App() {
         });
       });
     });
+  }
+
+  // Unlock audio on first user gesture (mobile/desktop autoplay restrictions)
+  useEffect(() => {
+    const unlock = () => {
+      if (audioUnlockedRef.current) return;
+      audioUnlockedRef.current = true;
+      try {
+        const a = ringtoneRef.current;
+        if (a) {
+          a.muted = true;
+          void a.play().finally(() => {
+            a.pause();
+            a.currentTime = 0;
+            a.muted = false;
+          });
+        }
+      } catch {
+        /* ignore */
+      }
+      window.removeEventListener("pointerdown", unlock, true);
+      window.removeEventListener("keydown", unlock, true);
+    };
+    window.addEventListener("pointerdown", unlock, true);
+    window.addEventListener("keydown", unlock, true);
+    return () => {
+      window.removeEventListener("pointerdown", unlock, true);
+      window.removeEventListener("keydown", unlock, true);
+    };
+  }, []);
+
+  function diagLog(line: string) {
+    const msg = `[webrtc] ${line}`;
+    pushLog(msg);
+    setWebrtcDiagLines((prev) => [msg, ...prev].slice(0, 300));
+  }
+
+  function attachWebrtcDiagnostics(pc: RTCPeerConnection, peerLabel: string) {
+    webrtcDiagPcRef.current = pc;
+    setWebrtcDiagLines([]);
+    diagLog(`peer=${peerLabel} created; ua=${typeof navigator !== "undefined" ? navigator.userAgent : ""}`);
+    const safe = (v: any) => (v == null ? "" : String(v));
+    pc.onicegatheringstatechange = () => diagLog(`iceGatheringState=${pc.iceGatheringState}`);
+    pc.oniceconnectionstatechange = () => diagLog(`iceConnectionState=${pc.iceConnectionState}`);
+    pc.onsignalingstatechange = () => diagLog(`signalingState=${pc.signalingState}`);
+    pc.onconnectionstatechange = () => diagLog(`connectionState=${pc.connectionState}`);
+    pc.onnegotiationneeded = () => diagLog(`negotiationneeded`);
+    pc.ontrack = (ev) => {
+      diagLog(`ontrack kind=${safe(ev.track?.kind)} id=${safe(ev.track?.id)} ready=${safe(ev.track?.readyState)}`);
+    };
+  }
+
+  async function snapshotWebrtcStats() {
+    const pc = webrtcDiagPcRef.current;
+    if (!pc) return;
+    try {
+      const stats = await pc.getStats();
+      let selectedPair: any = null;
+      stats.forEach((r: any) => {
+        if (r.type === "candidate-pair" && r.nominated && r.state === "succeeded") selectedPair = r;
+      });
+      const localCand = selectedPair?.localCandidateId ? stats.get(selectedPair.localCandidateId) : null;
+      const remoteCand = selectedPair?.remoteCandidateId ? stats.get(selectedPair.remoteCandidateId) : null;
+      diagLog(
+        `stats conn=${pc.connectionState} ice=${pc.iceConnectionState} selectedPair=${selectedPair ? `rtt=${selectedPair.currentRoundTripTime ?? "?"}` : "none"}`,
+      );
+      if (localCand || remoteCand) {
+        diagLog(
+          `candidates local=${localCand ? `${localCand.candidateType}/${localCand.protocol} ${localCand.address ?? localCand.ip ?? ""}:${localCand.port ?? ""}` : "?"} remote=${remoteCand ? `${remoteCand.candidateType}/${remoteCand.protocol} ${remoteCand.address ?? remoteCand.ip ?? ""}:${remoteCand.port ?? ""}` : "?"}`,
+        );
+      }
+    } catch (e: any) {
+      diagLog(`getStats error: ${String(e?.message ?? e)}`);
+    }
   }
 
   useEffect(() => {
@@ -2190,6 +2298,35 @@ export default function App() {
       if (webrtcBusyRef.current) return;
       const audioOnly = !String(p.sdp).includes("m=video");
       setIncomingCall({ fromUserId: from, offerSdp: p.sdp, audioOnly });
+      // OS notification for incoming call (when tab is hidden / another tab)
+      if (
+        browserNotifyRef.current &&
+        typeof Notification !== "undefined" &&
+        Notification.permission === "granted"
+      ) {
+        try {
+          const caller = displayUser(from);
+          const n = new Notification(caller || "Входящий звонок", {
+            body: audioOnly ? "Входящий аудиозвонок" : "Входящий видеозвонок",
+            tag: `call:${from}:${Date.now()}`,
+            requireInteraction: typeof document !== "undefined" && document.hidden,
+          });
+          n.onclick = () => {
+            try {
+              window.focus();
+            } catch {
+              /* ignore */
+            }
+            try {
+              n.close();
+            } catch {
+              /* ignore */
+            }
+          };
+        } catch {
+          /* ignore */
+        }
+      }
       if (
         browserNotifyRef.current &&
         typeof Notification !== "undefined" &&
@@ -2469,6 +2606,7 @@ export default function App() {
           setWebrtcUi(null);
         },
       });
+      attachWebrtcDiagnostics(ac.pc, `in:${fromUserId}`);
       webrtcPeerRef.current = fromUserId;
       setWebrtcMicOn(true);
       setWebrtcCamOn(!audioOnly);
@@ -2491,6 +2629,7 @@ export default function App() {
     } catch (e: any) {
       webrtcBusyRef.current = false;
       setChatError(String(e?.message ?? e));
+      diagLog(`acceptIncomingCall error: ${String(e?.name ?? "")} ${String(e?.message ?? e)}`);
     }
   }
 
@@ -2531,6 +2670,7 @@ export default function App() {
           setWebrtcUi(null);
         },
       });
+      attachWebrtcDiagnostics(ac.pc, `out:${other}:audio`);
       webrtcPeerRef.current = other;
       setWebrtcMicOn(true);
       setWebrtcCamOn(false);
@@ -2555,6 +2695,7 @@ export default function App() {
     } catch (e: any) {
       webrtcBusyRef.current = false;
       setChatError(String(e?.message ?? e));
+      diagLog(`startAudioCall error: ${String(e?.name ?? "")} ${String(e?.message ?? e)}`);
     }
   }
 
@@ -2602,6 +2743,7 @@ export default function App() {
           setWebrtcUi(null);
         },
       });
+      attachWebrtcDiagnostics(ac.pc, `out:${other}:video`);
       webrtcPeerRef.current = other;
       setWebrtcMicOn(true);
       setWebrtcCamOn(true);
@@ -2636,6 +2778,7 @@ export default function App() {
       } else {
         setChatError(msg);
       }
+      diagLog(`startVideoCall error: ${name} ${msg}`);
     }
   }
 
@@ -6513,6 +6656,17 @@ export default function App() {
                   </div>
                 ) : null}
               <div className="webrtcToolbar">
+                <button
+                  type="button"
+                  className="webrtcToolBtn"
+                  onClick={() => {
+                    setWebrtcDiagOpen(true);
+                    void snapshotWebrtcStats();
+                  }}
+                  title="Показать диагностику WebRTC"
+                >
+                  🧪 Диагн.
+                </button>
                 <button type="button" className={`webrtcToolBtn ${webrtcMicOn ? "webrtcToolBtn--on" : "webrtcToolBtn--off"}`} onClick={toggleWebrtcMic} title="Микрофон">
                   {webrtcMicOn ? "🎤 Мик" : "🎤 Выкл"}
                 </button>
@@ -6555,6 +6709,38 @@ export default function App() {
             </div>
           </div>
         ) : null}
+        {webrtcDiagOpen ? (
+          <div className="modalBackdrop" role="presentation" onClick={() => setWebrtcDiagOpen(false)}>
+            <div className="modalPanel" role="dialog" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 780, width: "min(780px, 95vw)" }}>
+              <div style={{ fontWeight: 700, marginBottom: 8 }}>Диагностика WebRTC</div>
+              <div className="empty" style={{ marginBottom: 8 }}>
+                Нажмите «Снимок» чтобы добавить getStats. Логи обновляются при смене состояний соединения.
+              </div>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
+                <button type="button" className="chip" onClick={() => void snapshotWebrtcStats()}>
+                  Снимок (getStats)
+                </button>
+                <button
+                  type="button"
+                  className="chip"
+                  onClick={() => void navigator.clipboard.writeText(webrtcDiagLines.slice().reverse().join("\n"))}
+                  disabled={webrtcDiagLines.length === 0}
+                >
+                  Копировать
+                </button>
+                <button type="button" className="chip" onClick={() => setWebrtcDiagLines([])}>
+                  Очистить
+                </button>
+                <button type="button" className="chip" onClick={() => setWebrtcDiagOpen(false)}>
+                  Закрыть
+                </button>
+              </div>
+              <pre style={{ margin: 0, maxHeight: "55vh", overflow: "auto", fontSize: 12, whiteSpace: "pre-wrap" }}>
+                {(webrtcDiagLines.length ? webrtcDiagLines.slice().reverse() : ["(пока пусто)"]).join("\n")}
+              </pre>
+            </div>
+          </div>
+        ) : null}
         {incomingCall ? (
           <div className="webrtcOverlay webrtcOverlay--incoming" role="dialog" aria-label="Входящий звонок">
             <div className="webrtcPanel webrtcIncomingCard">
@@ -6594,6 +6780,13 @@ export default function App() {
           </div>
         ) : null}
       </main>
+
+      {/* Рингтон для входящего звонка (воспроизводится при incomingCall) */}
+      <audio
+        ref={ringtoneRef}
+        preload="auto"
+        src="data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAgD4AAAB9AAACABAAZGF0YQAAAAA="
+      />
 
       {showRightPanel ? (
         <div className={viewportW >= 1200 ? "infoPanelHost infoPanelHost--desktop" : "infoPanelHost infoPanelHost--overlay"}>
