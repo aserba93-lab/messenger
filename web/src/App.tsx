@@ -509,6 +509,8 @@ export default function App() {
   const [mode, setMode] = useState<"channels" | "groups" | "dms">("channels");
   /** Список слева: все чаты сразу или только один тип */
   const [chatListScope, setChatListScope] = useState<"all" | "dms" | "groups" | "channels">("all");
+  const [chatListFilterOpen, setChatListFilterOpen] = useState(false);
+  const chatListFilterAnchorRef = useRef<HTMLDivElement | null>(null);
   const [channels, setChannels] = useState<Channel[]>([]);
   const [activeChannelId, setActiveChannelId] = useState("");
   const [groupChats, setGroupChats] = useState<GroupChat[]>([]);
@@ -1070,45 +1072,65 @@ export default function App() {
     return !archived;
   }
 
+  function previewTimeMs(iso?: string) {
+    if (!iso) return 0;
+    const t = Date.parse(iso);
+    return Number.isFinite(t) ? t : 0;
+  }
+
+  function compareChatsByPinThenRecency(ka: string, kb: string): number {
+    const pinA = !!pinnedChatByKey[ka];
+    const pinB = !!pinnedChatByKey[kb];
+    const pinDiff = Number(pinB) - Number(pinA);
+    if (pinDiff !== 0) return pinDiff;
+    if (pinA && pinB) {
+      return (pinnedOrderByKey[ka] ?? 999999) - (pinnedOrderByKey[kb] ?? 999999);
+    }
+    const ta = previewTimeMs(chatPreviewByKey[ka]?.at);
+    const tb = previewTimeMs(chatPreviewByKey[kb]?.at);
+    if (tb !== ta) return tb - ta;
+    return ka.localeCompare(kb);
+  }
+
   const orderedChannels = useMemo(
     () =>
-      [...filteredChannels].sort((a, b) => {
-        const ka = chatKeyFor("c", a.id);
-        const kb = chatKeyFor("c", b.id);
-        const pinDiff = Number(!!pinnedChatByKey[kb]) - Number(!!pinnedChatByKey[ka]);
-        if (pinDiff !== 0) return pinDiff;
-        const ao = pinnedOrderByKey[ka] ?? 999999;
-        const bo = pinnedOrderByKey[kb] ?? 999999;
-        return ao - bo;
-      }).filter((c) => includeByFolder(chatKeyFor("c", c.id))),
-    [filteredChannels, pinnedChatByKey, pinnedOrderByKey, archivedChatByKey, unreadByKey, chatFolder],
+      [...filteredChannels]
+        .sort((a, b) => compareChatsByPinThenRecency(chatKeyFor("c", a.id), chatKeyFor("c", b.id)))
+        .filter((c) => includeByFolder(chatKeyFor("c", c.id))),
+    [filteredChannels, pinnedChatByKey, pinnedOrderByKey, archivedChatByKey, unreadByKey, chatFolder, chatPreviewByKey],
   );
   const orderedGroups = useMemo(
     () =>
-      [...filteredGroups].sort((a, b) => {
-        const ka = chatKeyFor("g", a.id);
-        const kb = chatKeyFor("g", b.id);
-        const pinDiff = Number(!!pinnedChatByKey[kb]) - Number(!!pinnedChatByKey[ka]);
-        if (pinDiff !== 0) return pinDiff;
-        const ao = pinnedOrderByKey[ka] ?? 999999;
-        const bo = pinnedOrderByKey[kb] ?? 999999;
-        return ao - bo;
-      }).filter((g) => includeByFolder(chatKeyFor("g", g.id))),
-    [filteredGroups, pinnedChatByKey, pinnedOrderByKey, archivedChatByKey, unreadByKey, chatFolder],
+      [...filteredGroups]
+        .sort((a, b) => compareChatsByPinThenRecency(chatKeyFor("g", a.id), chatKeyFor("g", b.id)))
+        .filter((g) => includeByFolder(chatKeyFor("g", g.id))),
+    [filteredGroups, pinnedChatByKey, pinnedOrderByKey, archivedChatByKey, unreadByKey, chatFolder, chatPreviewByKey],
   );
   const orderedDMs = useMemo(
     () =>
-      [...filteredDMs].sort((a, b) => {
-        const ka = chatKeyFor("d", a.id);
-        const kb = chatKeyFor("d", b.id);
-        const pinDiff = Number(!!pinnedChatByKey[kb]) - Number(!!pinnedChatByKey[ka]);
-        if (pinDiff !== 0) return pinDiff;
-        const ao = pinnedOrderByKey[ka] ?? 999999;
-        const bo = pinnedOrderByKey[kb] ?? 999999;
-        return ao - bo;
-      }).filter((d) => includeByFolder(chatKeyFor("d", d.id))),
-    [filteredDMs, pinnedChatByKey, pinnedOrderByKey, archivedChatByKey, unreadByKey, chatFolder],
+      [...filteredDMs]
+        .sort((a, b) => compareChatsByPinThenRecency(chatKeyFor("d", a.id), chatKeyFor("d", b.id)))
+        .filter((d) => includeByFolder(chatKeyFor("d", d.id))),
+    [filteredDMs, pinnedChatByKey, pinnedOrderByKey, archivedChatByKey, unreadByKey, chatFolder, chatPreviewByKey],
   );
+
+  const unifiedChatRows = useMemo(() => {
+    type Row =
+      | { kind: "d"; d: (typeof orderedDMs)[number] }
+      | { kind: "g"; g: (typeof orderedGroups)[number] }
+      | { kind: "c"; c: (typeof orderedChannels)[number] };
+    const rows: Row[] = [
+      ...orderedDMs.map((d) => ({ kind: "d" as const, d })),
+      ...orderedGroups.map((g) => ({ kind: "g" as const, g })),
+      ...orderedChannels.map((c) => ({ kind: "c" as const, c })),
+    ];
+    rows.sort((a, b) => {
+      const ka = a.kind === "d" ? chatKeyFor("d", a.d.id) : a.kind === "g" ? chatKeyFor("g", a.g.id) : chatKeyFor("c", a.c.id);
+      const kb = b.kind === "d" ? chatKeyFor("d", b.d.id) : b.kind === "g" ? chatKeyFor("g", b.g.id) : chatKeyFor("c", b.c.id);
+      return compareChatsByPinThenRecency(ka, kb);
+    });
+    return rows;
+  }, [orderedDMs, orderedGroups, orderedChannels, pinnedChatByKey, pinnedOrderByKey, chatPreviewByKey]);
 
   const activeChatKeyForPanel = useMemo(() => {
     if (mode === "channels" && activeChannelId) return chatKeyFor("c", activeChannelId);
@@ -1374,6 +1396,29 @@ export default function App() {
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const stickToBottomRef = useRef(true);
 
+  function scrollMessagesToBottom() {
+    stickToBottomRef.current = true;
+    queueMicrotask(() => {
+      messagesEndRef.current?.scrollIntoView({ block: "end" });
+      requestAnimationFrame(() => {
+        messagesEndRef.current?.scrollIntoView({ block: "end" });
+        requestAnimationFrame(() => {
+          messagesEndRef.current?.scrollIntoView({ block: "end" });
+        });
+      });
+    });
+  }
+
+  useEffect(() => {
+    if (!chatListFilterOpen) return;
+    const onDown = (e: Event) => {
+      const el = chatListFilterAnchorRef.current;
+      if (el && !el.contains(e.target as Node)) setChatListFilterOpen(false);
+    };
+    document.addEventListener("mousedown", onDown, true);
+    return () => document.removeEventListener("mousedown", onDown, true);
+  }, [chatListFilterOpen]);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const k = String(e.key || "").toLowerCase();
@@ -1384,6 +1429,7 @@ export default function App() {
         return;
       }
       if (e.key === "Escape") {
+        setChatListFilterOpen(false);
         setMsgMenu(null);
         setChatMenu(null);
         setShowForwardPicker(false);
@@ -3292,6 +3338,7 @@ export default function App() {
     setChatPreviewByKey((prev) => ({ ...prev, [chatKeyFor("c", channelId)]: p }));
     socket?.emit("channel:join", { channelId });
     await mergeThreadReadStates("c", channelId);
+    scrollMessagesToBottom();
   }
 
   async function loadGroupMessages(groupChatId: string) {
@@ -3310,6 +3357,7 @@ export default function App() {
     setChatPreviewByKey((prev) => ({ ...prev, [chatKeyFor("g", groupChatId)]: p }));
     socket?.emit("group:join", { groupChatId });
     await mergeThreadReadStates("g", groupChatId);
+    scrollMessagesToBottom();
   }
 
   async function loadDirectMessages(directChatId: string) {
@@ -3353,6 +3401,7 @@ export default function App() {
     setChatPreviewByKey((prev) => ({ ...prev, [chatKeyFor("d", directChatId)]: p }));
     socket?.emit("dm:join", { directChatId });
     await mergeThreadReadStates("d", directChatId);
+    scrollMessagesToBottom();
   }
 
   async function openThread(parentMessageId: string) {
@@ -3373,6 +3422,7 @@ export default function App() {
         editedAt: row.editedAt ?? row.updatedAt ?? null,
       })),
     );
+    scrollMessagesToBottom();
   }
 
   async function backFromThread() {
@@ -4330,213 +4380,284 @@ export default function App() {
         </div>
 
         <div className="sidebarChatsBlock">
-          <div className="row tgFolderTabs">
-            <button className={chatFolder === "all" ? "active" : ""} onClick={() => setChatFolder("all")}>
-              Все
+          <div className="tgFolderTabsWithFilter tgMenuAnchor" ref={chatListFilterAnchorRef}>
+            <div className="row tgFolderTabs tgFolderTabs--grow">
+              <button className={chatFolder === "all" ? "active" : ""} onClick={() => setChatFolder("all")}>
+                Все
+              </button>
+              <button className={chatFolder === "unread" ? "active" : ""} onClick={() => setChatFolder("unread")}>
+                Непрочитанные
+              </button>
+              <button className={chatFolder === "archived" ? "active" : ""} onClick={() => setChatFolder("archived")}>
+                Архив
+              </button>
+            </div>
+            <button
+              type="button"
+              className="tgCircleBtn tgChatScopeFilterBtn"
+              title="Показать: все чаты, личные, группы или каналы"
+              aria-expanded={chatListFilterOpen}
+              aria-haspopup="menu"
+              onClick={() => setChatListFilterOpen((v) => !v)}
+            >
+              {chatListScope === "all"
+                ? "Все чаты"
+                : chatListScope === "dms"
+                  ? "Личные"
+                  : chatListScope === "groups"
+                    ? "Группы"
+                    : "Каналы"}{" "}
+              ▾
             </button>
-            <button className={chatFolder === "unread" ? "active" : ""} onClick={() => setChatFolder("unread")}>
-              Непрочитанные
-            </button>
-            <button className={chatFolder === "archived" ? "active" : ""} onClick={() => setChatFolder("archived")}>
-              Архив
-            </button>
+            {chatListFilterOpen ? (
+              <div className="tgPopoverMenu tgChatScopePopover" role="menu">
+                <button
+                  type="button"
+                  className="tgPopoverItem"
+                  role="menuitem"
+                  onClick={() => {
+                    setChatListScope("all");
+                    setChatListFilterOpen(false);
+                  }}
+                >
+                  Все чаты
+                </button>
+                <button
+                  type="button"
+                  className="tgPopoverItem"
+                  role="menuitem"
+                  onClick={() => {
+                    setChatListScope("dms");
+                    setChatListFilterOpen(false);
+                  }}
+                >
+                  Личные чаты
+                </button>
+                <button
+                  type="button"
+                  className="tgPopoverItem"
+                  role="menuitem"
+                  onClick={() => {
+                    setChatListScope("groups");
+                    setChatListFilterOpen(false);
+                  }}
+                >
+                  Группы
+                </button>
+                <button
+                  type="button"
+                  className="tgPopoverItem"
+                  role="menuitem"
+                  onClick={() => {
+                    setChatListScope("channels");
+                    setChatListFilterOpen(false);
+                  }}
+                >
+                  Каналы
+                </button>
+              </div>
+            ) : null}
           </div>
-          {/* Разделение списка (Личка/Группы/Каналы) отключено — всегда единый список */}
           <div className="tgChatList">
             {chatListScope === "all" ? (
               <>
-                {/* Единый список без заголовков секций */}
-                {orderedDMs.map((d) => {
-                  const otherId = d.userIds.find((id) => id !== userId) ?? d.userIds[0] ?? "";
-                  const u = users.find((x) => x.id === otherId);
-                  const p = otherId ? presenceByUserId[otherId] : undefined;
-                  const st = p?.status ?? u?.status ?? "unknown";
-                  const dot = st === "online" ? "●" : st === "away" ? "◐" : st === "dnd" ? "◍" : "○";
-                  const title = displayUserNameForSidebar(u, otherId || d.id);
+                {unifiedChatRows.map((row) => {
+                  if (row.kind === "d") {
+                    const d = row.d;
+                    const isSelfNotesDm = d.userIds.length === 1 && d.userIds[0] === userId;
+                    const otherId = d.userIds.find((id) => id !== userId) ?? d.userIds[0] ?? "";
+                    const u = users.find((x) => x.id === otherId);
+                    const pr = otherId ? presenceByUserId[otherId] : undefined;
+                    const st = pr?.status ?? u?.status ?? "unknown";
+                    const dot = isSelfNotesDm ? "⭐" : st === "online" ? "●" : st === "away" ? "◐" : st === "dnd" ? "◍" : "○";
+                    const title = isSelfNotesDm ? "Избранное" : displayUserNameForSidebar(u, otherId || d.id);
+                    return (
+                      <button
+                        key={`all-d-${d.id}`}
+                        className={`tgChatRow ${activeDirectChatId === d.id ? "active" : ""} ${dragPinnedKey === chatKeyFor("d", d.id) ? "dragging" : ""} ${dragOverPinnedKey === chatKeyFor("d", d.id) ? "dragover" : ""}`}
+                        draggable={isPinned(chatKeyFor("d", d.id))}
+                        onDragStart={() => setDragPinnedKey(chatKeyFor("d", d.id))}
+                        onDragEnd={() => {
+                          setDragPinnedKey("");
+                          setDragOverPinnedKey("");
+                        }}
+                        onDragOver={(e) => {
+                          if (!dragPinnedKey || !isPinned(chatKeyFor("d", d.id))) return;
+                          e.preventDefault();
+                          setDragOverPinnedKey(chatKeyFor("d", d.id));
+                        }}
+                        onDrop={(e) => {
+                          e.preventDefault();
+                          reorderPinned(dragPinnedKey, chatKeyFor("d", d.id));
+                          setDragPinnedKey("");
+                          setDragOverPinnedKey("");
+                        }}
+                        onClick={() => {
+                          setMode("dms");
+                          setActiveDirectChatId(d.id);
+                          setUnreadByKey((prev) => ({ ...prev, [chatKeyFor("d", d.id)]: 0 }));
+                          void loadDirectMessages(d.id);
+                        }}
+                      >
+                        <div className="tgAvatar">{initials(title)}</div>
+                        <div className="tgChatMain">
+                          <div className="tgChatTop">
+                            <div className="tgChatTitle">
+                              {isPinned(chatKeyFor("d", d.id)) ? "📌 " : ""}
+                              <span className="tgPresence">{dot}</span> {title}
+                            </div>
+                            <div className="tgChatTopRight">
+                              <button
+                                type="button"
+                                className="tgChatRowMenuBtn"
+                                title="Чат: закрепить, архив, удалить"
+                                aria-label="Действия с чатом"
+                                onClick={(e) => openChatMenuAtEditButton(e, chatKeyFor("d", d.id))}
+                              >
+                                ⋮
+                              </button>
+                              <div
+                                className="tgChatTime"
+                                onContextMenu={(e) => openChatMenuAtTime(e, chatKeyFor("d", d.id))}
+                              >
+                                {timeHHMM(chatPreviewByKey[chatKeyFor("d", d.id)]?.at)}
+                              </div>
+                            </div>
+                          </div>
+                          <div className="tgChatSub">
+                            {isMuted(chatKeyFor("d", d.id)) ? "🔕 " : ""}
+                            {chatPreviewByKey[chatKeyFor("d", d.id)]?.text || "Личка"}
+                          </div>
+                        </div>
+                        {unreadFor(chatKeyFor("d", d.id)) ? <div className="tgUnread">{unreadFor(chatKeyFor("d", d.id))}</div> : null}
+                      </button>
+                    );
+                  }
+                  if (row.kind === "g") {
+                    const g = row.g;
+                    return (
+                      <button
+                        key={`all-g-${g.id}`}
+                        className={`tgChatRow ${activeGroupChatId === g.id ? "active" : ""} ${dragPinnedKey === chatKeyFor("g", g.id) ? "dragging" : ""} ${dragOverPinnedKey === chatKeyFor("g", g.id) ? "dragover" : ""}`}
+                        draggable={isPinned(chatKeyFor("g", g.id))}
+                        onDragStart={() => setDragPinnedKey(chatKeyFor("g", g.id))}
+                        onDragEnd={() => {
+                          setDragPinnedKey("");
+                          setDragOverPinnedKey("");
+                        }}
+                        onDragOver={(e) => {
+                          if (!dragPinnedKey || !isPinned(chatKeyFor("g", g.id))) return;
+                          e.preventDefault();
+                          setDragOverPinnedKey(chatKeyFor("g", g.id));
+                        }}
+                        onDrop={(e) => {
+                          e.preventDefault();
+                          reorderPinned(dragPinnedKey, chatKeyFor("g", g.id));
+                          setDragPinnedKey("");
+                          setDragOverPinnedKey("");
+                        }}
+                        onClick={() => {
+                          setMode("groups");
+                          setActiveGroupChatId(g.id);
+                          setUnreadByKey((prev) => ({ ...prev, [chatKeyFor("g", g.id)]: 0 }));
+                          void loadGroupMessages(g.id);
+                        }}
+                      >
+                        <div className={`tgAvatar ${g.avatarUrl ? "tgAvatar--img" : ""}`}>
+                          {g.avatarUrl ? <img src={g.avatarUrl} alt="" className="tgAvatarImg" /> : initials(g.name)}
+                        </div>
+                        <div className="tgChatMain">
+                          <div className="tgChatTop">
+                            <div className="tgChatTitle">{isPinned(chatKeyFor("g", g.id)) ? "📌 " : ""}{g.name}</div>
+                            <div className="tgChatTopRight">
+                              <button
+                                type="button"
+                                className="tgChatRowMenuBtn"
+                                title="Чат: закрепить, архив, удалить"
+                                aria-label="Действия с чатом"
+                                onClick={(e) => openChatMenuAtEditButton(e, chatKeyFor("g", g.id))}
+                              >
+                                ⋮
+                              </button>
+                              <div
+                                className="tgChatTime"
+                                onContextMenu={(e) => openChatMenuAtTime(e, chatKeyFor("g", g.id))}
+                              >
+                                {timeHHMM(chatPreviewByKey[chatKeyFor("g", g.id)]?.at)}
+                              </div>
+                            </div>
+                          </div>
+                          <div className="tgChatSub">
+                            {isMuted(chatKeyFor("g", g.id)) ? "🔕 " : ""}
+                            {chatPreviewByKey[chatKeyFor("g", g.id)]?.text || `Группа · участников: ${g.memberIds?.length ?? 0}`}
+                          </div>
+                        </div>
+                        {unreadFor(chatKeyFor("g", g.id)) ? <div className="tgUnread">{unreadFor(chatKeyFor("g", g.id))}</div> : null}
+                      </button>
+                    );
+                  }
+                  const c = row.c;
                   return (
                     <button
-                      key={`all-d-${d.id}`}
-                      className={`tgChatRow ${activeDirectChatId === d.id ? "active" : ""} ${dragPinnedKey === chatKeyFor("d", d.id) ? "dragging" : ""} ${dragOverPinnedKey === chatKeyFor("d", d.id) ? "dragover" : ""}`}
-                      draggable={isPinned(chatKeyFor("d", d.id))}
-                      onDragStart={() => setDragPinnedKey(chatKeyFor("d", d.id))}
+                      key={`all-c-${c.id}`}
+                      className={`tgChatRow ${activeChannelId === c.id ? "active" : ""} ${dragPinnedKey === chatKeyFor("c", c.id) ? "dragging" : ""} ${dragOverPinnedKey === chatKeyFor("c", c.id) ? "dragover" : ""}`}
+                      draggable={isPinned(chatKeyFor("c", c.id))}
+                      onDragStart={() => setDragPinnedKey(chatKeyFor("c", c.id))}
                       onDragEnd={() => {
                         setDragPinnedKey("");
                         setDragOverPinnedKey("");
                       }}
                       onDragOver={(e) => {
-                        if (!dragPinnedKey || !isPinned(chatKeyFor("d", d.id))) return;
+                        if (!dragPinnedKey || !isPinned(chatKeyFor("c", c.id))) return;
                         e.preventDefault();
-                        setDragOverPinnedKey(chatKeyFor("d", d.id));
+                        setDragOverPinnedKey(chatKeyFor("c", c.id));
                       }}
                       onDrop={(e) => {
                         e.preventDefault();
-                        reorderPinned(dragPinnedKey, chatKeyFor("d", d.id));
+                        reorderPinned(dragPinnedKey, chatKeyFor("c", c.id));
                         setDragPinnedKey("");
                         setDragOverPinnedKey("");
                       }}
                       onClick={() => {
-                        setMode("dms");
-                        setActiveDirectChatId(d.id);
-                        setUnreadByKey((prev) => ({ ...prev, [chatKeyFor("d", d.id)]: 0 }));
-                        void loadDirectMessages(d.id);
+                        setMode("channels");
+                        setActiveChannelId(c.id);
+                        setUnreadByKey((prev) => ({ ...prev, [chatKeyFor("c", c.id)]: 0 }));
+                        void loadMessages(c.id);
                       }}
                     >
-                      <div className="tgAvatar">{initials(title)}</div>
+                      <div className={`tgAvatar ${c.avatarUrl ? "tgAvatar--img" : ""}`}>
+                        {c.avatarUrl ? <img src={c.avatarUrl} alt="" className="tgAvatarImg" /> : "#"}
+                      </div>
                       <div className="tgChatMain">
                         <div className="tgChatTop">
-                          <div className="tgChatTitle">
-                            {isPinned(chatKeyFor("d", d.id)) ? "📌 " : ""}
-                            <span className="tgPresence">{dot}</span> {title}
-                          </div>
+                          <div className="tgChatTitle">{isPinned(chatKeyFor("c", c.id)) ? "📌 " : ""}#{c.name}</div>
                           <div className="tgChatTopRight">
                             <button
                               type="button"
                               className="tgChatRowMenuBtn"
                               title="Чат: закрепить, архив, удалить"
                               aria-label="Действия с чатом"
-                              onClick={(e) => openChatMenuAtEditButton(e, chatKeyFor("d", d.id))}
+                              onClick={(e) => openChatMenuAtEditButton(e, chatKeyFor("c", c.id))}
                             >
                               ⋮
                             </button>
                             <div
                               className="tgChatTime"
-                              onContextMenu={(e) => openChatMenuAtTime(e, chatKeyFor("d", d.id))}
+                              onContextMenu={(e) => openChatMenuAtTime(e, chatKeyFor("c", c.id))}
                             >
-                              {timeHHMM(chatPreviewByKey[chatKeyFor("d", d.id)]?.at)}
+                              {timeHHMM(chatPreviewByKey[chatKeyFor("c", c.id)]?.at)}
                             </div>
                           </div>
                         </div>
                         <div className="tgChatSub">
-                          {isMuted(chatKeyFor("d", d.id)) ? "🔕 " : ""}
-                          {chatPreviewByKey[chatKeyFor("d", d.id)]?.text || "Личка"}
+                          {isMuted(chatKeyFor("c", c.id)) ? "🔕 " : ""}
+                          {chatPreviewByKey[chatKeyFor("c", c.id)]?.text || `Канал · ${c.type}`}
                         </div>
                       </div>
-                      {unreadFor(chatKeyFor("d", d.id)) ? <div className="tgUnread">{unreadFor(chatKeyFor("d", d.id))}</div> : null}
+                      {unreadFor(chatKeyFor("c", c.id)) ? <div className="tgUnread">{unreadFor(chatKeyFor("c", c.id))}</div> : null}
                     </button>
                   );
                 })}
-                {/* Единый список без заголовков секций */}
-                {orderedGroups.map((g) => (
-                  <button
-                    key={`all-g-${g.id}`}
-                    className={`tgChatRow ${activeGroupChatId === g.id ? "active" : ""} ${dragPinnedKey === chatKeyFor("g", g.id) ? "dragging" : ""} ${dragOverPinnedKey === chatKeyFor("g", g.id) ? "dragover" : ""}`}
-                    draggable={isPinned(chatKeyFor("g", g.id))}
-                    onDragStart={() => setDragPinnedKey(chatKeyFor("g", g.id))}
-                    onDragEnd={() => {
-                      setDragPinnedKey("");
-                      setDragOverPinnedKey("");
-                    }}
-                    onDragOver={(e) => {
-                      if (!dragPinnedKey || !isPinned(chatKeyFor("g", g.id))) return;
-                      e.preventDefault();
-                      setDragOverPinnedKey(chatKeyFor("g", g.id));
-                    }}
-                    onDrop={(e) => {
-                      e.preventDefault();
-                      reorderPinned(dragPinnedKey, chatKeyFor("g", g.id));
-                      setDragPinnedKey("");
-                      setDragOverPinnedKey("");
-                    }}
-                    onClick={() => {
-                      setMode("groups");
-                      setActiveGroupChatId(g.id);
-                      setUnreadByKey((prev) => ({ ...prev, [chatKeyFor("g", g.id)]: 0 }));
-                      void loadGroupMessages(g.id);
-                    }}
-                  >
-                    <div className={`tgAvatar ${g.avatarUrl ? "tgAvatar--img" : ""}`}>
-                      {g.avatarUrl ? <img src={g.avatarUrl} alt="" className="tgAvatarImg" /> : initials(g.name)}
-                    </div>
-                    <div className="tgChatMain">
-                      <div className="tgChatTop">
-                        <div className="tgChatTitle">{isPinned(chatKeyFor("g", g.id)) ? "📌 " : ""}{g.name}</div>
-                        <div className="tgChatTopRight">
-                          <button
-                            type="button"
-                            className="tgChatRowMenuBtn"
-                            title="Чат: закрепить, архив, удалить"
-                            aria-label="Действия с чатом"
-                            onClick={(e) => openChatMenuAtEditButton(e, chatKeyFor("g", g.id))}
-                          >
-                            ⋮
-                          </button>
-                          <div
-                            className="tgChatTime"
-                            onContextMenu={(e) => openChatMenuAtTime(e, chatKeyFor("g", g.id))}
-                          >
-                            {timeHHMM(chatPreviewByKey[chatKeyFor("g", g.id)]?.at)}
-                          </div>
-                        </div>
-                      </div>
-                      <div className="tgChatSub">
-                        {isMuted(chatKeyFor("g", g.id)) ? "🔕 " : ""}
-                        {chatPreviewByKey[chatKeyFor("g", g.id)]?.text || `Группа · участников: ${g.memberIds?.length ?? 0}`}
-                      </div>
-                    </div>
-                    {unreadFor(chatKeyFor("g", g.id)) ? <div className="tgUnread">{unreadFor(chatKeyFor("g", g.id))}</div> : null}
-                  </button>
-                ))}
-                {/* Единый список без заголовков секций */}
-                {orderedChannels.map((c) => (
-                  <button
-                    key={`all-c-${c.id}`}
-                    className={`tgChatRow ${activeChannelId === c.id ? "active" : ""} ${dragPinnedKey === chatKeyFor("c", c.id) ? "dragging" : ""} ${dragOverPinnedKey === chatKeyFor("c", c.id) ? "dragover" : ""}`}
-                    draggable={isPinned(chatKeyFor("c", c.id))}
-                    onDragStart={() => setDragPinnedKey(chatKeyFor("c", c.id))}
-                    onDragEnd={() => {
-                      setDragPinnedKey("");
-                      setDragOverPinnedKey("");
-                    }}
-                    onDragOver={(e) => {
-                      if (!dragPinnedKey || !isPinned(chatKeyFor("c", c.id))) return;
-                      e.preventDefault();
-                      setDragOverPinnedKey(chatKeyFor("c", c.id));
-                    }}
-                    onDrop={(e) => {
-                      e.preventDefault();
-                      reorderPinned(dragPinnedKey, chatKeyFor("c", c.id));
-                      setDragPinnedKey("");
-                      setDragOverPinnedKey("");
-                    }}
-                    onClick={() => {
-                      setMode("channels");
-                      setActiveChannelId(c.id);
-                      setUnreadByKey((prev) => ({ ...prev, [chatKeyFor("c", c.id)]: 0 }));
-                      void loadMessages(c.id);
-                    }}
-                  >
-                    <div className={`tgAvatar ${c.avatarUrl ? "tgAvatar--img" : ""}`}>
-                      {c.avatarUrl ? <img src={c.avatarUrl} alt="" className="tgAvatarImg" /> : "#"}
-                    </div>
-                    <div className="tgChatMain">
-                      <div className="tgChatTop">
-                        <div className="tgChatTitle">{isPinned(chatKeyFor("c", c.id)) ? "📌 " : ""}#{c.name}</div>
-                        <div className="tgChatTopRight">
-                          <button
-                            type="button"
-                            className="tgChatRowMenuBtn"
-                            title="Чат: закрепить, архив, удалить"
-                            aria-label="Действия с чатом"
-                            onClick={(e) => openChatMenuAtEditButton(e, chatKeyFor("c", c.id))}
-                          >
-                            ⋮
-                          </button>
-                          <div
-                            className="tgChatTime"
-                            onContextMenu={(e) => openChatMenuAtTime(e, chatKeyFor("c", c.id))}
-                          >
-                            {timeHHMM(chatPreviewByKey[chatKeyFor("c", c.id)]?.at)}
-                          </div>
-                        </div>
-                      </div>
-                      <div className="tgChatSub">
-                        {isMuted(chatKeyFor("c", c.id)) ? "🔕 " : ""}
-                        {chatPreviewByKey[chatKeyFor("c", c.id)]?.text || `Канал · ${c.type}`}
-                      </div>
-                    </div>
-                    {unreadFor(chatKeyFor("c", c.id)) ? <div className="tgUnread">{unreadFor(chatKeyFor("c", c.id))}</div> : null}
-                  </button>
-                ))}
               </>
             ) : chatListScope === "channels"
               ? orderedChannels.map((c) => (

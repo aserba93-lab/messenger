@@ -32,6 +32,38 @@ export type ActiveCall = {
   isScreenSharing: () => boolean;
 };
 
+function createPeerConnection(iceServers: RTCIceServer[]): RTCPeerConnection {
+  return new RTCPeerConnection({
+    iceServers,
+    iceCandidatePoolSize: 10,
+    bundlePolicy: "max-bundle",
+    rtcpMuxPolicy: "require",
+  } as RTCConfiguration);
+}
+
+/** ICE иногда приходит до установки remoteDescription — буферизуем и сливаем после setRemote. */
+function makeIceCandidateQueue(pc: RTCPeerConnection) {
+  const pending: RTCIceCandidateInit[] = [];
+  const flush = async () => {
+    if (!pc.remoteDescription) return;
+    while (pending.length) {
+      const init = pending.shift()!;
+      try {
+        await pc.addIceCandidate(new RTCIceCandidate(init));
+      } catch {
+        /* ignore */
+      }
+    }
+  };
+  return {
+    push: async (init: RTCIceCandidateInit) => {
+      pending.push(init);
+      await flush();
+    },
+    flush,
+  };
+}
+
 function attachRemoteTracks(pc: RTCPeerConnection, onRemoteStream: (s: MediaStream) => void) {
   const remoteMediaStream = new MediaStream();
   pc.ontrack = (ev) => {
@@ -76,7 +108,8 @@ export async function startOutgoingCall(
     audio: true,
     video: !opts.audioOnly,
   });
-  const pc = new RTCPeerConnection({ iceServers });
+  const pc = createPeerConnection(iceServers);
+  const iceQueue = makeIceCandidateQueue(pc);
   for (const t of stream.getTracks()) pc.addTrack(t, stream);
   attachRemoteTracks(pc, opts.onRemoteStream);
 
@@ -107,6 +140,7 @@ export async function startOutgoingCall(
     if (!p) return;
     if (p.type === "offer" && p.sdp) {
       await pc.setRemoteDescription({ type: "offer", sdp: p.sdp });
+      await iceQueue.flush();
       const ans = await pc.createAnswer();
       await pc.setLocalDescription(ans);
       socket.emit("call:signal", {
@@ -115,18 +149,13 @@ export async function startOutgoingCall(
       });
     } else if (p.type === "answer" && p.sdp) {
       await pc.setRemoteDescription({ type: "answer", sdp: p.sdp });
+      await iceQueue.flush();
     } else if (p.type === "ice" && p.candidate) {
-      try {
-        await pc.addIceCandidate(
-          new RTCIceCandidate({
-            candidate: p.candidate,
-            sdpMid: p.sdpMid ?? undefined,
-            sdpMLineIndex: p.sdpMLineIndex ?? undefined,
-          }),
-        );
-      } catch {
-        /* ignore */
-      }
+      await iceQueue.push({
+        candidate: p.candidate,
+        sdpMid: p.sdpMid ?? undefined,
+        sdpMLineIndex: p.sdpMLineIndex ?? undefined,
+      });
     }
   };
   const onEnd = (data: { fromUserId?: string }) => {
@@ -267,12 +296,46 @@ export async function acceptIncomingOffer(
     audio: true,
     video: !opts.audioOnly,
   });
-  const pc = new RTCPeerConnection({ iceServers });
+  const pc = createPeerConnection(iceServers);
+  const iceQueue = makeIceCandidateQueue(pc);
   for (const t of stream.getTracks()) pc.addTrack(t, stream);
   attachRemoteTracks(pc, opts.onRemoteStream);
 
   const peer = opts.fromUserId;
+
+  const onSignal = async (data: { fromUserId?: string; payload?: CallSignalPayload }) => {
+    if (String(data?.fromUserId) !== peer) return;
+    const p = data.payload;
+    if (!p) return;
+    if (p.type === "offer" && p.sdp) {
+      await pc.setRemoteDescription({ type: "offer", sdp: p.sdp });
+      await iceQueue.flush();
+      const ans = await pc.createAnswer();
+      await pc.setLocalDescription(ans);
+      socket.emit("call:signal", {
+        targetUserId: peer,
+        payload: { type: "answer", sdp: ans.sdp || "" },
+      });
+    } else if (p.type === "answer" && p.sdp) {
+      await pc.setRemoteDescription({ type: "answer", sdp: p.sdp });
+      await iceQueue.flush();
+    } else if (p.type === "ice" && p.candidate) {
+      await iceQueue.push({
+        candidate: p.candidate,
+        sdpMid: p.sdpMid ?? undefined,
+        sdpMLineIndex: p.sdpMLineIndex ?? undefined,
+      });
+    }
+  };
+  const onEnd = (data: { fromUserId?: string }) => {
+    if (String(data?.fromUserId) === peer) cleanup();
+  };
+
+  socket.on("call:signal", onSignal);
+  socket.on("call:end", onEnd);
+
   await pc.setRemoteDescription({ type: "offer", sdp: opts.offerSdp });
+  await iceQueue.flush();
 
   pc.onicecandidate = (ev) => {
     if (!ev.candidate) return;
@@ -293,41 +356,6 @@ export async function acceptIncomingOffer(
     targetUserId: peer,
     payload: { type: "answer", sdp: answer.sdp || "" },
   });
-
-  const onSignal = async (data: { fromUserId?: string; payload?: CallSignalPayload }) => {
-    if (String(data?.fromUserId) !== peer) return;
-    const p = data.payload;
-    if (!p) return;
-    if (p.type === "offer" && p.sdp) {
-      await pc.setRemoteDescription({ type: "offer", sdp: p.sdp });
-      const ans = await pc.createAnswer();
-      await pc.setLocalDescription(ans);
-      socket.emit("call:signal", {
-        targetUserId: peer,
-        payload: { type: "answer", sdp: ans.sdp || "" },
-      });
-    } else if (p.type === "answer" && p.sdp) {
-      await pc.setRemoteDescription({ type: "answer", sdp: p.sdp });
-    } else if (p.type === "ice" && p.candidate) {
-      try {
-        await pc.addIceCandidate(
-          new RTCIceCandidate({
-            candidate: p.candidate,
-            sdpMid: p.sdpMid ?? undefined,
-            sdpMLineIndex: p.sdpMLineIndex ?? undefined,
-          }),
-        );
-      } catch {
-        /* ignore */
-      }
-    }
-  };
-  const onEnd = (data: { fromUserId?: string }) => {
-    if (String(data?.fromUserId) === peer) cleanup();
-  };
-
-  socket.on("call:signal", onSignal);
-  socket.on("call:end", onEnd);
 
   let screenStop: (() => Promise<void>) | null = null;
   let screenAudioSender: RTCRtpSender | null = null;
