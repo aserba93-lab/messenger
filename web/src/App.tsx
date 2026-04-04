@@ -898,6 +898,7 @@ export default function App() {
     try {
       videoEl.setAttribute("playsinline", "");
       videoEl.setAttribute("webkit-playsinline", "");
+      videoEl.playsInline = true;
     } catch {
       /* ignore */
     }
@@ -3338,17 +3339,20 @@ export default function App() {
       t,
     );
     const socketUp = !!socketRef.current?.connected;
-    const prevP = presenceByUserIdRef.current;
-    setUsers(
-      data.users.map((u) => {
+    setUsers((prevUsers) => {
+      const prevById = new Map(prevUsers.map((u) => [u.id, u]));
+      return data.users.map((u) => {
+        const prevU = prevById.get(u.id);
         let st =
-          u.status != null && String(u.status).trim() !== "" ? String(u.status) : (prevP[u.id]?.status ?? "offline");
-        if (socketUp && prevP[u.id]?.status === "online" && st === "offline") {
+          u.status != null && String(u.status).trim() !== ""
+            ? String(u.status)
+            : (prevU?.status ?? "offline");
+        if (socketUp && prevU?.status === "online" && st === "offline") {
           st = "online";
         }
         return { ...u, status: st as typeof u.status };
-      }),
-    );
+      });
+    });
     setPresenceByUserId((prev) => {
       const next = { ...prev };
       for (const u of data.users) {
@@ -5058,7 +5062,7 @@ export default function App() {
       (isIosLikeBrowser() || isStandaloneWebApp()) ? (
         <div className="notifyPermissionBanner" role="status">
           <span>
-            Чтобы приходили оповещения о сообщениях и звонках, нажмите «Разрешить». На iPhone нужен ярлык с экрана «Домой» и iOS 16.4+; в обычном Safari запрос часто недоступен без нажатия.
+            Нажмите «Разрешить», чтобы показывать баннеры браузера, пока вкладка или PWA открыты. В фоне или при закрытом приложении нужны push-уведомления с сервера (Web Push) — без них сеть доставит событие только когда клиент снова онлайн. iPhone: ярлык «Домой», iOS 16.4+; в Яндекс.Браузере возможности могут отличаться от Safari.
           </span>
           <button
             type="button"

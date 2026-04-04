@@ -283,6 +283,48 @@ const server = http.createServer(app);
 const io = new SocketIOServer(server, {
     cors: { origin: Array.from(corsOriginSet), credentials: true },
 });
+/** Счётчик сокетов на пользователя + отложенный offline (переподключения polling/PWA). Не распределён по нескольким нодам без общего стора. */
+const presenceSocketState = new Map();
+function presenceRegisterSocket(userId, orgId) {
+    let rec = presenceSocketState.get(userId);
+    if (!rec) {
+        rec = { count: 0, orgId, offlineTimer: null };
+        presenceSocketState.set(userId, rec);
+    }
+    if (rec.offlineTimer) {
+        clearTimeout(rec.offlineTimer);
+        rec.offlineTimer = null;
+    }
+    const firstSocket = rec.count === 0;
+    rec.count += 1;
+    rec.orgId = orgId;
+    return { firstSocket };
+}
+function presenceUnregisterSocket(userId) {
+    const rec = presenceSocketState.get(userId);
+    if (!rec || rec.count <= 0)
+        return;
+    rec.count -= 1;
+    if (rec.count > 0)
+        return;
+    const orgId = rec.orgId;
+    rec.offlineTimer = setTimeout(() => {
+        const r = presenceSocketState.get(userId);
+        if (!r || r.count > 0)
+            return;
+        presenceSocketState.delete(userId);
+        prisma.user
+            .update({ where: { id: userId }, data: { status: "offline", lastSeen: new Date() } })
+            .then(() => {
+            io.to(`org:${orgId}`).emit("presence:update", {
+                userId,
+                status: "offline",
+                lastSeen: new Date().toISOString(),
+            });
+        })
+            .catch(() => { });
+    }, 12000);
+}
 setIo(io);
 setupFileStatusBridge(redis);
 // Socket.io Redis adapter (pub/sub for horizontal scaling)
@@ -331,6 +373,7 @@ io.on("connection", (socket) => {
     socket.join(`org:${viewer.organizationId}`);
     socket.join(`user:${viewer.userId}`);
     socket.emit("server:hello", { ok: true, userId: viewer.userId });
+    const { firstSocket } = presenceRegisterSocket(viewer.userId, viewer.organizationId);
 
     /** Актуальные статусы всех участников орг. из БД — иначе клиент видит «не в сети», пока кто-то снова не переподключится. */
     prisma.organizationMember
@@ -349,29 +392,22 @@ io.on("connection", (socket) => {
     })
         .catch(() => { });
 
-    // Presence: mark online on connect
+    // Presence: в БД «online» при каждом подключении; в чат рассылаем «online» только при первом сокете (меньше шума).
     prisma.user
         .update({ where: { id: viewer.userId }, data: { status: "online", lastSeen: new Date() } })
         .then(() => {
-        io.to(`org:${viewer.organizationId}`).emit("presence:update", {
-            userId: viewer.userId,
-            status: "online",
-            lastSeen: new Date().toISOString(),
-        });
+        if (firstSocket) {
+            io.to(`org:${viewer.organizationId}`).emit("presence:update", {
+                userId: viewer.userId,
+                status: "online",
+                lastSeen: new Date().toISOString(),
+            });
+        }
     })
         .catch(() => { });
 
     socket.on("disconnect", () => {
-        prisma.user
-            .update({ where: { id: viewer.userId }, data: { status: "offline", lastSeen: new Date() } })
-            .then(() => {
-            io.to(`org:${viewer.organizationId}`).emit("presence:update", {
-                userId: viewer.userId,
-                status: "offline",
-                lastSeen: new Date().toISOString(),
-            });
-        })
-            .catch(() => { });
+        presenceUnregisterSocket(viewer.userId);
     });
     socket.on("channel:join", async (data) => {
         const channelId = String(data?.channelId ?? "");
