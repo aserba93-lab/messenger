@@ -1,5 +1,5 @@
 import { MessagesRepository } from "./repository.js";
-import { emitToChannel, emitToRoom } from "../../socket/emitter.js";
+import { emitToChannel, emitToRoom, emitDmToMemberUsers } from "../../socket/emitter.js";
 import { prisma } from "../../db/prisma.js";
 import { env } from "../../config/env.js";
 import { NotificationsService } from "../notifications/service.js";
@@ -308,7 +308,7 @@ export class MessagesService {
             emitToRoom(`group:${msg.groupChatId}`, "reaction:update", { messageId: input.messageId, groupChatId: msg.groupChatId, reactions: aggregated });
         }
         else if (msg.directChatId) {
-            emitToRoom(`dm:${msg.directChatId}`, "reaction:update", { messageId: input.messageId, directChatId: msg.directChatId, reactions: aggregated });
+            await emitDmToMemberUsers(msg.directChatId, "reaction:update", { messageId: input.messageId, directChatId: msg.directChatId, reactions: aggregated });
         }
         return aggregated;
     }
@@ -621,7 +621,7 @@ export class MessagesService {
                     },
                     include: { author: true, reactions: true },
                 });
-                emitToRoom(`dm:${targetDirectChatId}`, "message:new", mapMessage(row, viewer.userId));
+                await emitDmToMemberUsers(targetDirectChatId, "message:new", mapMessage(row, viewer.userId));
             }
         }
         return true;
@@ -722,7 +722,7 @@ export class MessagesService {
         else if (groupChatId)
             emitToRoom(`group:${groupChatId}`, "thread:read", payload);
         else if (directChatId)
-            emitToRoom(`dm:${directChatId}`, "thread:read", payload);
+            await emitDmToMemberUsers(directChatId, "thread:read", payload);
         return true;
     }
     async threadReadStates(viewer, input) {

@@ -677,7 +677,7 @@ io.on("connection", async (socket) => {
             raised,
         });
     });
-    /** Поднять руку в групповом созвоне: всем в комнате группы (включая отправителя — дублирует optimistic UI) */
+    /** Поднять руку в групповом созвоне: всем участникам в user:<id> (надёжнее, чем только group:<id>) */
     socket.on("groupCall:hand", async (data) => {
         const groupChatId = String(data?.groupChatId ?? "");
         const raised = Boolean(data?.raised);
@@ -689,11 +689,18 @@ io.on("connection", async (socket) => {
             });
             if (!member)
                 return;
-            io.to(`group:${groupChatId}`).emit("groupCall:hand", {
+            const members = await prisma.groupChatMember.findMany({
+                where: { groupChatId },
+                select: { userId: true },
+            });
+            const payload = {
                 fromUserId: viewer.userId,
                 groupChatId,
                 raised,
-            });
+            };
+            for (const m of members) {
+                io.to(`user:${m.userId}`).emit("groupCall:hand", payload);
+            }
         }
         catch {
             /* ignore */
@@ -712,12 +719,19 @@ io.on("connection", async (socket) => {
             });
             if (!member)
                 return;
-            socket.to(`dm:${directChatId}`).emit("dmCall:notify", {
+            const peers = await prisma.directChatMember.findMany({
+                where: { directChatId },
+                select: { userId: true },
+            });
+            const payload = {
                 fromUserId: viewer.userId,
                 directChatId,
                 meshGroupChatId,
                 audioOnly,
-            });
+            };
+            for (const p of peers) {
+                io.to(`user:${p.userId}`).emit("dmCall:notify", payload);
+            }
         }
         catch {
             /* ignore */
@@ -734,11 +748,18 @@ io.on("connection", async (socket) => {
             });
             if (!member)
                 return;
-            socket.to(`dm:${directChatId}`).emit("dmCall:end", {
+            const peers = await prisma.directChatMember.findMany({
+                where: { directChatId },
+                select: { userId: true },
+            });
+            const payload = {
                 fromUserId: viewer.userId,
                 directChatId,
                 meshGroupChatId,
-            });
+            };
+            for (const p of peers) {
+                io.to(`user:${p.userId}`).emit("dmCall:end", payload);
+            }
         }
         catch {
             /* ignore */

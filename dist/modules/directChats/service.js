@@ -1,4 +1,4 @@
-import { emitToRoom } from "../../socket/emitter.js";
+import { emitDmToMemberUsers } from "../../socket/emitter.js";
 import { DirectChatsRepository } from "./repository.js";
 import { prisma } from "../../db/prisma.js";
 import { NotificationsService } from "../notifications/service.js";
@@ -113,7 +113,7 @@ export class DirectChatsService {
             parentMessageId: input.parentMessageId,
         });
         const msg = mapMessage(row, viewer.userId);
-        emitToRoom(`dm:${chat.id}`, "message:new", msg);
+        await emitDmToMemberUsers(chat.id, "message:new", msg);
         const mentioned = this.extractMentionedEmails(input.content);
         if (mentioned.length) {
             const users = await prisma.user.findMany({ where: { email: { in: mentioned } }, select: { id: true } });
@@ -162,7 +162,7 @@ export class DirectChatsService {
             fileId: input.fileId,
         });
         const msg = mapMessage(row, viewer.userId);
-        emitToRoom(`dm:${input.directChatId}`, "message:new", msg);
+        await emitDmToMemberUsers(input.directChatId, "message:new", msg);
         return msg;
     }
 
@@ -189,7 +189,7 @@ export class DirectChatsService {
             include: { author: true, reactions: true, file: true },
         });
         const msg = mapMessage(row, viewer.userId);
-        emitToRoom(`dm:${input.directChatId}`, "message:update", msg);
+        await emitDmToMemberUsers(input.directChatId, "message:update", msg);
         return msg;
     }
 
@@ -206,7 +206,7 @@ export class DirectChatsService {
         if (row0.isDeleted)
             return true;
         await prisma.message.update({ where: { id: input.messageId }, data: { isDeleted: true, content: "" } });
-        emitToRoom(`dm:${input.directChatId}`, "message:delete", { id: input.messageId, directChatId: input.directChatId });
+        await emitDmToMemberUsers(input.directChatId, "message:delete", { id: input.messageId, directChatId: input.directChatId });
         return true;
     }
 }

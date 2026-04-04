@@ -2988,15 +2988,16 @@ export default function App() {
         v === "forever" ||
         (v && v !== "forever" && !Number.isNaN(Date.parse(v)) && Date.now() < Date.parse(v));
 
-      const isCallOrMeetHint = /🎥|📞|🎬|Видеозвонок|видеовстреч|видео[\s-]?звон|Аудиозвонок|видеовстречи|созвон|созвонились|звонок|групповой|mesh|gcall|videocall|video\s*call|\bmeet(ing)?\b/i.test(
+      const isCallOrMeetHint = /🎥|📞|🎬|Видеозвонок|видеовстреч|видео[\s-]?звон|видеосвяз|Аудиозвонок|видеовстречи|созвон|созвонились|звонок|групповой|личн(ый|ого)\s+созвон|mesh|gcall|#dm=|call=1|dm-mesh|videocall|video\s*call|\bmeet(ing)?\b/i.test(
         String(msg.content ?? ""),
       );
+      const isDmSocketMessage = !!directChatId;
       const wantPing = key && !muted && !fromMe && (!isActive || tabHidden);
       const canBrowserOsNotify =
         wantPing &&
         typeof Notification !== "undefined" &&
         Notification.permission === "granted" &&
-        (browserNotifyRef.current || isCallOrMeetHint);
+        (browserNotifyRef.current || isCallOrMeetHint || isDmSocketMessage);
 
       const bodyPreview =
         msg.type === "voice"
@@ -3348,6 +3349,24 @@ export default function App() {
       const meshId = String(data?.meshGroupChatId ?? "");
       if (!meshId) return;
       setGroupCallLiveAt((prev) => ({ ...prev, [meshId]: Date.now() }));
+      const from = String(data?.fromUserId ?? "");
+      const audioOnly = !!data?.audioOnly;
+      const label = from ? displayUserNameForSidebar(usersRef.current.find((x) => x.id === from), from) : "Собеседник";
+      pushAppToast(`${label} — ${audioOnly ? "аудио" : "видео"} созвон`);
+      try {
+        if (
+          typeof Notification !== "undefined" &&
+          Notification.permission === "granted" &&
+          (browserNotifyRef.current || typeof document === "undefined" || document.hidden)
+        ) {
+          new Notification("Личный созвон", {
+            body: `${label} — ${audioOnly ? "звонок" : "видеозвонок"}`,
+            tag: `dmcall:${meshId}`,
+          });
+        }
+      } catch {
+        /* ignore */
+      }
     });
     s.on("dmCall:end", (data: any) => {
       const meshId = String(data?.meshGroupChatId ?? "");
@@ -5281,6 +5300,7 @@ export default function App() {
       content,
       createdAt: new Date().toISOString(),
       author: {
+        id: userId || "",
         email: selfAuthorEmail || "user",
         firstName: profileFirstName || null,
         middleName: profileMiddleName || null,
@@ -9330,7 +9350,7 @@ export default function App() {
               <input
                 value={wizardUserQuery}
                 onChange={(e) => setWizardUserQuery(e.target.value)}
-                placeholder="Поиск по email или отделу"
+                placeholder="Поиск по имени или отделу"
                 style={{ flex: 1, minWidth: 0 }}
               />
             </div>
@@ -9367,7 +9387,6 @@ export default function App() {
                           : "☐"}
                     </span>
                     <span className="newChatWizardEmail">{displayUserNameForSidebar(u, u.id)}</span>
-                    <span className="newChatWizardMeta">{u.email}</span>
                     {u.department ? <span className="newChatWizardMeta">{u.department}</span> : null}
                   </button>
                 ))
