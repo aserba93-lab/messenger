@@ -420,6 +420,9 @@ export async function createGroupMeshSession(
     myUserId: string;
     peerUserIds: string[];
     audioOnly: boolean;
+    /** После захвата медиа — выключить дорожки до подключения */
+    initialMicEnabled?: boolean;
+    initialCamEnabled?: boolean;
     onRemoteStream: (peerId: string, stream: MediaStream) => void;
     onPeerDisconnected?: (peerId: string) => void;
   },
@@ -429,6 +432,16 @@ export async function createGroupMeshSession(
     audio: true,
     video: !opts.audioOnly,
   });
+  const micOn = opts.initialMicEnabled !== false;
+  const camOn = opts.initialCamEnabled !== false;
+  stream.getAudioTracks().forEach((t) => {
+    t.enabled = micOn;
+  });
+  if (!opts.audioOnly) {
+    stream.getVideoTracks().forEach((t) => {
+      t.enabled = camOn;
+    });
+  }
   const session = new GroupMeshSession(socket, {
     groupChatId: opts.groupChatId,
     myUserId: opts.myUserId,

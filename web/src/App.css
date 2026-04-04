@@ -70,6 +70,59 @@
   border-color: rgba(0, 0, 0, 0.1);
 }
 
+:root[data-theme="light"] .modalBackdrop {
+  background: rgba(20, 24, 32, 0.4);
+}
+:root[data-theme="light"] .modalPanel {
+  background: #f6f7fb;
+  border-color: rgba(0, 0, 0, 0.1);
+  color: var(--tg-text);
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.12);
+}
+:root[data-theme="light"] .logsDrawer {
+  background: #f4f6fb;
+  border-color: rgba(0, 0, 0, 0.12);
+  color: var(--tg-text);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.1);
+}
+:root[data-theme="light"] .logsHeader {
+  border-bottom-color: rgba(0, 0, 0, 0.08);
+}
+:root[data-theme="light"] .logsBody {
+  color: var(--tg-text);
+}
+:root[data-theme="light"] .voiceHoldBar {
+  color: #b00020;
+  background: rgba(255, 88, 110, 0.1);
+  border-color: rgba(255, 88, 110, 0.35);
+}
+:root[data-theme="light"] .msgReactionPopover {
+  background: #f6f7fb;
+  border-color: rgba(0, 0, 0, 0.12);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.12);
+}
+:root[data-theme="light"] .msgReactionEmojiBtn:hover {
+  background: rgba(0, 0, 0, 0.06);
+}
+:root[data-theme="light"] .voiceMsgBlock {
+  background: rgba(0, 0, 0, 0.04);
+  border-radius: 10px;
+  padding: 6px 8px;
+}
+:root[data-theme="light"] .fileDownloadIconBtn {
+  background: rgba(0, 0, 0, 0.05);
+  border-color: rgba(0, 0, 0, 0.12);
+}
+:root[data-theme="light"] .fileDownloadIconBtn:hover {
+  background: rgba(0, 0, 0, 0.08);
+}
+:root[data-theme="light"] .bubbleAuthor {
+  color: rgba(30, 40, 60, 0.92);
+}
+:root[data-theme="light"] .msg.mine .bubbleAuthor {
+  color: rgba(20, 50, 90, 0.95);
+}
+
 html,
 body,
 #root {
@@ -515,6 +568,42 @@ body {
 .chip.chip--compact {
   padding: 4px 10px;
   font-size: 12px;
+}
+
+.tgCallInviteLink {
+  color: var(--tg-accent);
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  word-break: break-all;
+}
+.tgPopoverRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px 6px;
+  font-size: 13px;
+  cursor: pointer;
+  user-select: none;
+}
+.tgPopoverMenu--callJoin {
+  min-width: 240px;
+}
+.callDeepLinkToggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  cursor: pointer;
+  user-select: none;
+}
+.callDeepLinkDmHint {
+  font-size: 12px;
+  line-height: 1.35;
+  color: var(--tg-text);
+  opacity: 0.92;
+  flex: 1 1 200px;
+  min-width: 0;
 }
 
 .tgChatHeaderTitleRow {

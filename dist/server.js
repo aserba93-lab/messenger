@@ -677,6 +677,28 @@ io.on("connection", async (socket) => {
             raised,
         });
     });
+    /** Поднять руку в групповом созвоне: всем в комнате группы, кроме отправителя */
+    socket.on("groupCall:hand", async (data) => {
+        const groupChatId = String(data?.groupChatId ?? "");
+        const raised = Boolean(data?.raised);
+        if (!groupChatId)
+            return;
+        try {
+            const member = await prisma.groupChatMember.findUnique({
+                where: { groupChatId_userId: { groupChatId, userId: viewer.userId } },
+            });
+            if (!member)
+                return;
+            socket.to(`group:${groupChatId}`).emit("groupCall:hand", {
+                fromUserId: viewer.userId,
+                groupChatId,
+                raised,
+            });
+        }
+        catch {
+            /* ignore */
+        }
+    });
 });
 server.listen(env.PORT, () => {
     // eslint-disable-next-line no-console

@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { CSSProperties, FormEvent, MouseEvent } from "react";
+import type { CSSProperties, FormEvent, MouseEvent, ReactNode } from "react";
 import { io, Socket } from "socket.io-client";
 import * as XLSX from "xlsx";
-import { acceptIncomingOffer, debugIceServers, startOutgoingCall, type ActiveCall } from "./webrtcDm";
+import { acceptIncomingOffer, debugIceServers, type ActiveCall } from "./webrtcDm";
 import { createGroupMeshSession, GroupMeshSession, GROUP_MESH_MAX_PEERS } from "./webrtcGroupMesh";
 import {
   createFolderId,
@@ -289,7 +289,7 @@ async function gql<T>(query: string, variables: Record<string, unknown>, token?:
       (data?.message as string | undefined) ||
       (raw ? String(raw).slice(0, 500) : "") ||
       `HTTP ${res.status}`;
-    throw new Error(errMsg);
+    throw new Error(formatGqlUserMessage(errMsg));
   }
   if (data.errors?.length) {
     const first = data.errors[0];
@@ -299,7 +299,7 @@ async function gql<T>(query: string, variables: Record<string, unknown>, token?:
       first?.extensions?.details ||
       "";
     const msg = first?.message ?? "GraphQL error";
-    throw new Error(detail && detail !== msg ? `${msg}: ${detail}` : msg);
+    throw new Error(formatGqlUserMessage(detail && detail !== msg ? `${msg}: ${detail}` : msg));
   }
   return data.data as T;
 }
@@ -498,6 +498,30 @@ function orgRoleLabelRu(role: string | null | undefined): string {
 function isUnauthorizedError(e: unknown): boolean {
   const msg = e instanceof Error ? e.message : String(e ?? "");
   return msg.trim().toLowerCase() === "unauthorized" || msg.toLowerCase().includes("unauthorized");
+}
+
+/** Человекочитаемые формулировки вместо сырого «Unauthorized» из GraphQL */
+function formatGqlUserMessage(msg: string): string {
+  const t = String(msg ?? "").trim();
+  if (!t) return "Ошибка запроса";
+  if (/^unauthorized$/i.test(t) || (/\bunauthorized\b/i.test(t) && t.length < 40)) {
+    return "Нет доступа: сессия истекла или недостаточно прав. Выйдите и войдите снова.";
+  }
+  return t;
+}
+
+/** Сообщение — только ссылка-приглашение на созвон: показываем «Видеосозвон», href полный */
+function bareCallInviteLinkNode(content: string | null | undefined): ReactNode | null {
+  const t = String(content ?? "").trim();
+  if (!t) return null;
+  const isGroup = /^https?:\/\/\S+#group=[^&\s]+&gcall=1\s*$/i.test(t);
+  const isDm = /^https?:\/\/\S+#dm=[^&\s]+&call=1\s*$/i.test(t);
+  if (!isGroup && !isDm) return null;
+  return (
+    <a className="tgCallInviteLink" href={t} onClick={(e) => e.stopPropagation()}>
+      {isGroup ? "Видеосозвон" : "Созвон"}
+    </a>
+  );
 }
 
 /** Одна «стикерная» графема (эмодзи) — для увеличенного отображения в чате */
@@ -952,9 +976,19 @@ export default function App() {
   const [groupMeshMediaTick, setGroupMeshMediaTick] = useState(0);
   /** Крупное видео внизу; миниатюры сверху — при клике переключают «экран». */
   const [groupMeshSpotlightPeerId, setGroupMeshSpotlightPeerId] = useState<string | null>(null);
+  const [groupMeshHands, setGroupMeshHands] = useState<Record<string, boolean>>({});
+  const [groupCallPreJoinMic, setGroupCallPreJoinMic] = useState(true);
+  const [groupCallPreJoinCam, setGroupCallPreJoinCam] = useState(true);
   const groupMeshSessionRef = useRef<GroupMeshSession | null>(null);
+  const groupMeshUiRef = useRef<typeof groupMeshUi>(null);
   useEffect(() => {
-    if (!groupMeshUi) setGroupMeshSpotlightPeerId(null);
+    groupMeshUiRef.current = groupMeshUi;
+  }, [groupMeshUi]);
+  useEffect(() => {
+    if (!groupMeshUi) {
+      setGroupMeshSpotlightPeerId(null);
+      setGroupMeshHands({});
+    }
   }, [groupMeshUi]);
   const groupMeshStagePeerId = useMemo(() => {
     if (!groupMeshUi || groupMeshUi.audioOnly) return null;
@@ -993,7 +1027,6 @@ export default function App() {
   const chatMenuRef = useRef<HTMLDivElement | null>(null);
   const [callMenuOpen, setCallMenuOpen] = useState(false);
   /** В группе: сначала список участников, затем выбор аудио/видео */
-  const [groupCallMenuUserId, setGroupCallMenuUserId] = useState<string | null>(null);
   const [chatMetaPopoverOpen, setChatMetaPopoverOpen] = useState(false);
   const callMenuWrapRef = useRef<HTMLDivElement | null>(null);
   const [msgMenu, setMsgMenu] = useState<null | { x: number; y: number; messageId: string }>(null);
@@ -1365,12 +1398,6 @@ export default function App() {
   const activeChannel = useMemo(() => channels.find((c) => c.id === activeChannelId), [channels, activeChannelId]);
   const activeGroupChat = useMemo(() => groupChats.find((g) => g.id === activeGroupChatId), [groupChats, activeGroupChatId]);
   const activeDirectChat = useMemo(() => directChats.find((d) => d.id === activeDirectChatId), [directChats, activeDirectChatId]);
-
-  const dmCallInviteUrl = useMemo(() => {
-    if (!activeDirectChatId) return "";
-    const base = `${window.location.origin}${window.location.pathname}`;
-    return `${base}#dm=${encodeURIComponent(activeDirectChatId)}&call=1`;
-  }, [activeDirectChatId]);
 
   const groupCallInviteUrlForHeader = useMemo(() => {
     if (!activeGroupChat?.id) return "";
@@ -1926,7 +1953,6 @@ export default function App() {
       const el = callMenuWrapRef.current;
       if (el && !el.contains(e.target as Node)) {
         setCallMenuOpen(false);
-        setGroupCallMenuUserId(null);
       }
     };
     document.addEventListener("mousedown", onDown, true);
@@ -1935,7 +1961,6 @@ export default function App() {
 
   useEffect(() => {
     setCallMenuOpen(false);
-    setGroupCallMenuUserId(null);
   }, [mode, activeChannelId, activeGroupChatId, activeDirectChatId]);
 
   useEffect(() => {
@@ -3170,6 +3195,14 @@ export default function App() {
       if (!from || from !== webrtcPeerRef.current) return;
       setWebrtcPeerHandRaised(!!data?.raised);
     });
+    s.on("groupCall:hand", (data: any) => {
+      const gc = String(data?.groupChatId ?? "");
+      const from = String(data?.fromUserId ?? "");
+      const raised = !!data?.raised;
+      if (!gc || !from) return;
+      if (groupMeshUiRef.current?.groupChatId !== gc) return;
+      setGroupMeshHands((prev) => ({ ...prev, [from]: raised }));
+    });
     s.on("groupCall:invite", (data: any) => {
       const from = String(data?.fromUserId ?? "");
       const gc = String(data?.groupChatId ?? "");
@@ -3599,10 +3632,16 @@ export default function App() {
         myUserId: uid,
         peerUserIds: memberIds,
         audioOnly,
+        initialMicEnabled: true,
+        initialCamEnabled: !audioOnly,
         onRemoteStream: (peerId, stream) => {
           setGroupMeshUi((prev) => (prev ? { ...prev, remotes: { ...prev.remotes, [peerId]: stream } } : prev));
         },
         onPeerDisconnected: (peerId) => {
+          setGroupMeshHands((prev) => {
+            const { [peerId]: _, ...rest } = prev;
+            return rest;
+          });
           setGroupMeshUi((prev) => {
             if (!prev) return prev;
             const { [peerId]: _, ...rest } = prev.remotes;
@@ -3645,7 +3684,7 @@ export default function App() {
   }
   joinGroupMeshFromPeerOfferRef.current = joinGroupMeshFromPeerOffer;
 
-  async function startGroupMesh(audioOnly: boolean) {
+  async function startGroupMesh(prefs: { video: boolean; mic: boolean }) {
     if (!canStartCalls) {
       setChatError("Недостаточно прав для звонков");
       return;
@@ -3661,6 +3700,7 @@ export default function App() {
       setChatError("Нет других участников в группе");
       return;
     }
+    const audioOnly = !prefs.video;
     webrtcBusyRef.current = true;
     try {
       const { session, localStream, peerIds } = await createGroupMeshSession(sock, {
@@ -3668,10 +3708,16 @@ export default function App() {
         myUserId: userId,
         peerUserIds: memberIds,
         audioOnly,
+        initialMicEnabled: prefs.mic,
+        initialCamEnabled: prefs.video,
         onRemoteStream: (peerId, stream) => {
           setGroupMeshUi((prev) => (prev ? { ...prev, remotes: { ...prev.remotes, [peerId]: stream } } : prev));
         },
         onPeerDisconnected: (peerId) => {
+          setGroupMeshHands((prev) => {
+            const { [peerId]: _, ...rest } = prev;
+            return rest;
+          });
           setGroupMeshUi((prev) => {
             if (!prev) return prev;
             const { [peerId]: _, ...rest } = prev.remotes;
@@ -3702,181 +3748,8 @@ export default function App() {
     }
   }
 
-  async function startAudioCallToPeer(other: string) {
-    if (!canStartCalls) {
-      setChatError("Недостаточно прав для звонков");
-      return;
-    }
-    if (!other || !socket) {
-      setChatError("Нет собеседника или сокет не подключён");
-      return;
-    }
-    if (other === userId) {
-      setChatError("Звонок самому себе недоступен");
-      return;
-    }
-    if (webrtcBusyRef.current) return;
-    webrtcBusyRef.current = true;
-    let pendingRemoteStream: MediaStream | null = null;
-    try {
-      const ac = await startOutgoingCall(socket, {
-        targetUserId: other,
-        audioOnly: true,
-        onRemoteStream: (stream) => {
-          setWebrtcUi((prev) => {
-            if (prev) return { ...prev, remoteStream: stream };
-            pendingRemoteStream = stream;
-            return prev;
-          });
-        },
-        onClose: () => {
-          webrtcBusyRef.current = false;
-          webrtcPeerRef.current = "";
-          setWebrtcPeerHandRaised(false);
-          setWebrtcLocalHandRaised(false);
-          setWebrtcScreenSharing(false);
-          setWebrtcUi(null);
-        },
-      });
-      attachWebrtcDiagnostics(ac.pc, `out:${other}:audio`);
-      webrtcPeerRef.current = other;
-      setWebrtcMicOn(true);
-      setWebrtcCamOn(false);
-      setWebrtcPeerHandRaised(false);
-      setWebrtcLocalHandRaised(false);
-      setWebrtcUi({
-        localStream: ac.localStream,
-        remoteStream: pendingRemoteStream,
-        hangup: () => {
-          webrtcPeerRef.current = "";
-          setWebrtcPeerHandRaised(false);
-          setWebrtcLocalHandRaised(false);
-          setWebrtcScreenSharing(false);
-          ac.hangup();
-        },
-        audioOnly: true,
-        activeCall: ac,
-        callPeerId: other,
-      });
-      void sendServiceMessageToCurrentChat(`📞 Аудиозвонок`);
-      pushLog("Созвон: аудио");
-    } catch (e: any) {
-      webrtcBusyRef.current = false;
-      setChatError(String(e?.message ?? e));
-      diagLog(`startAudioCall error: ${String(e?.name ?? "")} ${String(e?.message ?? e)}`);
-    }
-  }
-
-  async function startAudioCall() {
-    if (mode !== "dms" || !activeDirectChat) {
-      setChatError("Откройте личный чат или выберите участника группы в меню звонка");
-      return;
-    }
-    if (activeDirectChat.userIds.length === 1 && activeDirectChat.userIds[0] === userId) {
-      setChatError("Звонок самому себе недоступен");
-      return;
-    }
-    const other = activeDirectChat.userIds.find((id) => id !== userId) ?? "";
-    await startAudioCallToPeer(other);
-  }
-
-  async function startVideoCallToPeer(other: string) {
-    if (!canStartCalls) {
-      setChatError("Недостаточно прав для видеовстреч");
-      return;
-    }
-    if (!other || !socket) {
-      setChatError("Нет собеседника или сокет не подключён");
-      return;
-    }
-    if (other === userId) {
-      setChatError("Видеозвонок самому себе недоступен");
-      return;
-    }
-    if (webrtcBusyRef.current) return;
-    webrtcBusyRef.current = true;
-    let pendingRemoteStream: MediaStream | null = null;
-    try {
-      const ac = await startOutgoingCall(socket, {
-        targetUserId: other,
-        audioOnly: false,
-        onRemoteStream: (stream) => {
-          setWebrtcUi((prev) => {
-            if (prev) return { ...prev, remoteStream: stream };
-            pendingRemoteStream = stream;
-            return prev;
-          });
-        },
-        onClose: () => {
-          webrtcBusyRef.current = false;
-          webrtcPeerRef.current = "";
-          setWebrtcPeerHandRaised(false);
-          setWebrtcLocalHandRaised(false);
-          setWebrtcScreenSharing(false);
-          setWebrtcUi(null);
-        },
-      });
-      attachWebrtcDiagnostics(ac.pc, `out:${other}:video`);
-      webrtcPeerRef.current = other;
-      setWebrtcMicOn(true);
-      setWebrtcCamOn(true);
-      setWebrtcPeerHandRaised(false);
-      setWebrtcLocalHandRaised(false);
-      setWebrtcUi({
-        localStream: ac.localStream,
-        remoteStream: pendingRemoteStream,
-        hangup: () => {
-          webrtcPeerRef.current = "";
-          setWebrtcPeerHandRaised(false);
-          setWebrtcLocalHandRaised(false);
-          setWebrtcScreenSharing(false);
-          ac.hangup();
-        },
-        audioOnly: false,
-        activeCall: ac,
-        callPeerId: other,
-      });
-      void sendServiceMessageToCurrentChat(`🎥 Видеозвонок`);
-      pushLog("Видеозвонок");
-    } catch (e: any) {
-      webrtcBusyRef.current = false;
-      const name = String(e?.name ?? "");
-      const msg = String(e?.message ?? e);
-      if (name === "NotAllowedError" || /not allowed|denied|permission/i.test(msg)) {
-        setChatError(
-          "Нет доступа к камере/микрофону. Разрешите доступ в настройках сайта и запускайте звонок кнопкой (на телефоне автозапуск запрещён).",
-        );
-      } else if (name === "NotFoundError") {
-        setChatError("Камера или микрофон не найдены (или заняты другим приложением).");
-      } else {
-        setChatError(msg);
-      }
-      diagLog(`startVideoCall error: ${name} ${msg}`);
-    }
-  }
-
-  async function startVideoMeeting() {
-    if (mode !== "dms" || !activeDirectChat) {
-      setChatError("Откройте личный чат или выберите участника группы в меню звонка");
-      return;
-    }
-    if (activeDirectChat.userIds.length === 1 && activeDirectChat.userIds[0] === userId) {
-      setChatError("Видеозвонок самому себе недоступен");
-      return;
-    }
-    const other = activeDirectChat.userIds.find((id) => id !== userId) ?? "";
-    await startVideoCallToPeer(other);
-  }
-
   function copyCallInviteLink() {
-    if (mode !== "dms" || !activeDirectChatId) {
-      setChatError("Ссылка на созвон: откройте личный чат с собеседником");
-      return;
-    }
-    const base = `${window.location.origin}${window.location.pathname}`;
-    const link = `${base}#dm=${encodeURIComponent(activeDirectChatId)}&call=1`;
-    void navigator.clipboard.writeText(link);
-    pushLog("Ссылка на чат для созвона скопирована в буфер");
+    setChatError("Видеосозвон по ссылке — только в групповом чате: откройте группу и нажмите «🔗 Ссылка» в панели созвона.");
   }
 
   function copyGroupCallInviteLink() {
@@ -3925,6 +3798,13 @@ export default function App() {
     const next = !webrtcLocalHandRaised;
     setWebrtcLocalHandRaised(next);
     socket.emit("call:hand", { targetUserId: webrtcUi.callPeerId, raised: next });
+  }
+
+  function toggleGroupMeshRaiseHand() {
+    if (!socket || !groupMeshUi || !userId) return;
+    const next = !groupMeshHands[userId];
+    setGroupMeshHands((prev) => ({ ...prev, [userId]: next }));
+    socket.emit("groupCall:hand", { groupChatId: groupMeshUi.groupChatId, raised: next });
   }
 
   async function loadUsers(tokenOverride?: string, orgIdOverride?: string) {
@@ -6110,7 +5990,10 @@ export default function App() {
                           <div className="groupMeshFilmstripPlaceholder">{displayUser(pid)}</div>
                         )}
                       </div>
-                      <span className="groupMeshFilmstripName">{displayUser(pid)}</span>
+                      <span className="groupMeshFilmstripName">
+                        {groupMeshHands[pid] ? "✋ " : ""}
+                        {displayUser(pid)}
+                      </span>
                     </button>
                   ))}
                 </div>
@@ -6196,6 +6079,14 @@ export default function App() {
                   🖥 Экран
                 </button>
               ) : null}
+              <button
+                type="button"
+                className={`webrtcToolBtn ${groupMeshHands[userId] ? "webrtcToolBtn--accent" : ""}`}
+                onClick={() => toggleGroupMeshRaiseHand()}
+                title="Поднять руку"
+              >
+                ✋ Рука
+              </button>
               <button type="button" className="webrtcToolBtn" onClick={() => copyGroupCallInviteLink()} title="Ссылка для новых участников">
                 🔗 Ссылка
               </button>
@@ -7091,28 +6982,9 @@ export default function App() {
                     </button>
                   ) : null}
                 </div>
-                {pendingCallDeepLink && mode === "dms" && dmCallInviteUrl ? (
+                {pendingCallDeepLink && mode === "dms" ? (
                   <div className="callDeepLinkBar">
-                    <a className="callDeepLinkUrl" href={dmCallInviteUrl}>
-                      {dmCallInviteUrl}
-                    </a>
-                    <button
-                      type="button"
-                      className="chip chip--compact"
-                      onClick={() => void navigator.clipboard.writeText(dmCallInviteUrl)}
-                    >
-                      Копировать
-                    </button>
-                    <button
-                      type="button"
-                      className="chip chip--compact"
-                      onClick={() => {
-                        setPendingCallDeepLink(false);
-                        void startVideoMeeting();
-                      }}
-                    >
-                      🎥 Войти в звонок
-                    </button>
+                    <span className="callDeepLinkDmHint">Видеосозвоны доступны в групповом чате. Создайте группу с собеседниками или откройте приглашение по ссылке из группы.</span>
                     <button type="button" className="chip chip--compact" onClick={() => setPendingCallDeepLink(false)}>
                       Закрыть
                     </button>
@@ -7120,8 +6992,8 @@ export default function App() {
                 ) : null}
                 {pendingGroupCallDeepLink && mode === "groups" && activeGroupChat && groupCallInviteUrlForHeader ? (
                   <div className="callDeepLinkBar">
-                    <a className="callDeepLinkUrl" href={groupCallInviteUrlForHeader}>
-                      {groupCallInviteUrlForHeader}
+                    <a className="callDeepLinkUrl" href={groupCallInviteUrlForHeader} title={groupCallInviteUrlForHeader}>
+                      Видеосозвон
                     </a>
                     <button
                       type="button"
@@ -7130,25 +7002,31 @@ export default function App() {
                     >
                       Копировать
                     </button>
+                    <label className="callDeepLinkToggle">
+                      <input
+                        type="checkbox"
+                        checked={groupCallPreJoinMic}
+                        onChange={(e) => setGroupCallPreJoinMic(e.target.checked)}
+                      />{" "}
+                      Мик
+                    </label>
+                    <label className="callDeepLinkToggle">
+                      <input
+                        type="checkbox"
+                        checked={groupCallPreJoinCam}
+                        onChange={(e) => setGroupCallPreJoinCam(e.target.checked)}
+                      />{" "}
+                      Камера
+                    </label>
                     <button
                       type="button"
                       className="chip chip--compact"
                       onClick={() => {
                         setPendingGroupCallDeepLink(false);
-                        void startGroupMesh(false);
+                        void startGroupMesh({ video: groupCallPreJoinCam, mic: groupCallPreJoinMic });
                       }}
                     >
-                      🎥 Видео
-                    </button>
-                    <button
-                      type="button"
-                      className="chip chip--compact"
-                      onClick={() => {
-                        setPendingGroupCallDeepLink(false);
-                        void startGroupMesh(true);
-                      }}
-                    >
-                      📞 Аудио
+                      Присоединиться
                     </button>
                     <button type="button" className="chip chip--compact" onClick={() => setPendingGroupCallDeepLink(false)}>
                       Закрыть
@@ -7194,130 +7072,41 @@ export default function App() {
                 <button
                   type="button"
                   className="tgCircleBtn tgCircleBtn--call"
-                  title="Звонок (личный чат или участник группы)"
+                  title="Групповой видеосозвон (только в группе)"
                   disabled={
                     !canStartCalls ||
                     !socket ||
-                    (mode === "dms" &&
-                      (!activeDirectChat || isSelfNotesActiveDm)) ||
+                    mode === "dms" ||
                     (mode === "groups" &&
-                      (!activeGroupChat ||
-                        !(activeGroupChat.memberIds ?? []).some((id) => id !== userId))) ||
+                      (!activeGroupChat || !(activeGroupChat.memberIds ?? []).some((id) => id !== userId))) ||
                     mode === "channels"
                   }
-                  onClick={() => {
-                    setGroupCallMenuUserId(null);
-                    setCallMenuOpen((v) => !v);
-                  }}
+                  onClick={() => setCallMenuOpen((v) => !v)}
                 >
                   📞
                 </button>
-                {callMenuOpen &&
-                canStartCalls &&
-                socket &&
-                ((mode === "dms" && activeDirectChat && !isSelfNotesActiveDm) ||
-                  (mode === "groups" &&
-                    activeGroupChat &&
-                    (activeGroupChat.memberIds ?? []).some((id) => id !== userId))) ? (
-                  <div className="tgPopoverMenu" role="menu">
-                    {mode === "groups" && activeGroupChat && !groupCallMenuUserId ? (
-                      <>
-                        <div className="tgPopoverHint">Кому позвонить (1:1)</div>
-                        {(activeGroupChat.memberIds ?? []).filter((id) => id !== userId).map((mid) => {
-                          const u = users.find((x) => x.id === mid);
-                          return (
-                            <button
-                              key={mid}
-                              type="button"
-                              className="tgPopoverItem"
-                              onClick={() => setGroupCallMenuUserId(mid)}
-                            >
-                              {displayUserNameForSidebar(u, mid)}
-                            </button>
-                          );
-                        })}
-                        <div className="tgPopoverHint" style={{ marginTop: 8 }}>
-                          Одновременно в эфире — до {GROUP_MESH_MAX_PEERS} участников (не считая вас).
-                        </div>
-                        <button
-                          type="button"
-                          className="tgPopoverItem"
-                          onClick={() => {
-                            setCallMenuOpen(false);
-                            void startGroupMesh(true);
-                          }}
-                        >
-                          📞 Групповой аудиозвонок
-                        </button>
-                        <button
-                          type="button"
-                          className="tgPopoverItem"
-                          onClick={() => {
-                            setCallMenuOpen(false);
-                            void startGroupMesh(false);
-                          }}
-                        >
-                          🎥 Групповой видеозвонок
-                        </button>
-                      </>
-                    ) : mode === "groups" && groupCallMenuUserId ? (
-                      <>
-                        <button
-                          type="button"
-                          className="tgPopoverItem tgPopoverItem--muted"
-                          onClick={() => setGroupCallMenuUserId(null)}
-                        >
-                          ← Участники
-                        </button>
-                        <button
-                          type="button"
-                          className="tgPopoverItem"
-                          onClick={() => {
-                            const uid = groupCallMenuUserId;
-                            setCallMenuOpen(false);
-                            setGroupCallMenuUserId(null);
-                            void startAudioCallToPeer(uid);
-                          }}
-                        >
-                          Аудиозвонок
-                        </button>
-                        <button
-                          type="button"
-                          className="tgPopoverItem"
-                          onClick={() => {
-                            const uid = groupCallMenuUserId;
-                            setCallMenuOpen(false);
-                            setGroupCallMenuUserId(null);
-                            void startVideoCallToPeer(uid);
-                          }}
-                        >
-                          Видеозвонок
-                        </button>
-                      </>
-                    ) : (
-                      <>
-                        <button
-                          type="button"
-                          className="tgPopoverItem"
-                          onClick={() => {
-                            setCallMenuOpen(false);
-                            void startAudioCall();
-                          }}
-                        >
-                          Аудиозвонок
-                        </button>
-                        <button
-                          type="button"
-                          className="tgPopoverItem"
-                          onClick={() => {
-                            setCallMenuOpen(false);
-                            void startVideoMeeting();
-                          }}
-                        >
-                          Видеозвонок
-                        </button>
-                      </>
-                    )}
+                {callMenuOpen && canStartCalls && socket && mode === "groups" && activeGroupChat && (activeGroupChat.memberIds ?? []).some((id) => id !== userId) ? (
+                  <div className="tgPopoverMenu tgPopoverMenu--callJoin" role="menu">
+                    <div className="tgPopoverHint">Перед входом</div>
+                    <label className="tgPopoverRow">
+                      <input type="checkbox" checked={groupCallPreJoinMic} onChange={(e) => setGroupCallPreJoinMic(e.target.checked)} /> Микрофон
+                    </label>
+                    <label className="tgPopoverRow">
+                      <input type="checkbox" checked={groupCallPreJoinCam} onChange={(e) => setGroupCallPreJoinCam(e.target.checked)} /> Камера (без галочки — только звук)
+                    </label>
+                    <div className="tgPopoverHint" style={{ marginTop: 6 }}>
+                      В эфире до {GROUP_MESH_MAX_PEERS} участников (не считая вас).
+                    </div>
+                    <button
+                      type="button"
+                      className="tgPopoverItem"
+                      onClick={() => {
+                        setCallMenuOpen(false);
+                        void startGroupMesh({ video: groupCallPreJoinCam, mic: groupCallPreJoinMic });
+                      }}
+                    >
+                      🎥 Видеосозвон
+                    </button>
                   </div>
                 ) : null}
               </div>
@@ -8113,7 +7902,11 @@ export default function App() {
                     "(файл)"
                   )
                 ) : (
-                  m.content ? m.content : "(удалено)"
+                  (() => {
+                    const invite = bareCallInviteLinkNode(m.content);
+                    if (invite) return invite;
+                    return m.content ? m.content : "(удалено)";
+                  })()
                 )}
                 <span className="bubbleTime">
                   {isMyMessageEmail(m.author?.email) ? (
