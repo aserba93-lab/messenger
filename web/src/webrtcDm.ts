@@ -187,19 +187,35 @@ export async function startOutgoingCall(
     if (String(data?.fromUserId) !== target) return;
     const p = data.payload;
     if (!p) return;
+    // Инициатор: сначала answer (ожидание после своего offer). Иначе ветка offer может перехватить релевантный SDP и сломать видео у звонящего.
+    if (p.type === "answer" && p.sdp) {
+      try {
+        await pc.setRemoteDescription({ type: "answer", sdp: p.sdp });
+        await iceQueue.flush();
+      } catch {
+        /* ignore */
+      }
+      return;
+    }
     if (p.type === "offer" && p.sdp) {
-      await pc.setRemoteDescription({ type: "offer", sdp: p.sdp });
-      await iceQueue.flush();
-      const ans = await pc.createAnswer();
-      await pc.setLocalDescription(ans);
-      socket.emit("call:signal", {
-        targetUserId: target,
-        payload: { type: "answer", sdp: ans.sdp || "" },
-      });
-    } else if (p.type === "answer" && p.sdp) {
-      await pc.setRemoteDescription({ type: "answer", sdp: p.sdp });
-      await iceQueue.flush();
-    } else if (p.type === "ice" && p.candidate) {
+      if (pc.signalingState === "have-local-offer") {
+        return;
+      }
+      try {
+        await pc.setRemoteDescription({ type: "offer", sdp: p.sdp });
+        await iceQueue.flush();
+        const ans = await pc.createAnswer();
+        await pc.setLocalDescription(ans);
+        socket.emit("call:signal", {
+          targetUserId: target,
+          payload: { type: "answer", sdp: ans.sdp || "" },
+        });
+      } catch {
+        /* ignore */
+      }
+      return;
+    }
+    if (p.type === "ice" && p.candidate) {
       await iceQueue.push({
         candidate: p.candidate,
         sdpMid: p.sdpMid ?? undefined,

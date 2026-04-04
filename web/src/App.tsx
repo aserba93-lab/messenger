@@ -510,7 +510,7 @@ function formatGqlUserMessage(msg: string): string {
   return t;
 }
 
-/** Сообщение — только ссылка-приглашение на созвон: показываем «Видеосозвон», href полный */
+/** Сообщение — только ссылка-приглашение на созвон: показываем «Созвон», href полный */
 function bareCallInviteLinkNode(content: string | null | undefined): ReactNode | null {
   const t = String(content ?? "").trim();
   if (!t) return null;
@@ -519,7 +519,7 @@ function bareCallInviteLinkNode(content: string | null | undefined): ReactNode |
   if (!isGroup && !isDm) return null;
   return (
     <a className="tgCallInviteLink" href={t} onClick={(e) => e.stopPropagation()}>
-      {isGroup ? "Видеосозвон" : "Созвон"}
+      Созвон
     </a>
   );
 }
@@ -979,6 +979,8 @@ export default function App() {
   const [groupMeshHands, setGroupMeshHands] = useState<Record<string, boolean>>({});
   const [groupCallPreJoinMic, setGroupCallPreJoinMic] = useState(true);
   const [groupCallPreJoinCam, setGroupCallPreJoinCam] = useState(true);
+  /** Входящий offer группового mesh — подключение только по кнопке «Присоединиться» */
+  const [pendingGroupMeshIncoming, setPendingGroupMeshIncoming] = useState<any>(null);
   const groupMeshSessionRef = useRef<GroupMeshSession | null>(null);
   const groupMeshUiRef = useRef<typeof groupMeshUi>(null);
   useEffect(() => {
@@ -3126,15 +3128,12 @@ export default function App() {
         meshSignalIceBufferRef.current[k].push(data);
         return;
       }
-      if (gc && p.type === "offer" && p.sdp && !mesh && !webrtcBusyRef.current) {
-        void joinGroupMeshFromPeerOfferRef.current(data);
-        return;
-      }
       if (gc && p.type === "offer" && p.sdp && !mesh && webrtcBusyRef.current && groupMeshJoiningRef.current) {
         meshOfferWhileJoiningRef.current.push(data);
         return;
       }
-      if (gc && p.type === "offer" && p.sdp && !mesh && webrtcBusyRef.current) {
+      if (gc && p.type === "offer" && p.sdp && !mesh) {
+        setPendingGroupMeshIncoming(data);
         return;
       }
       // Trickle ICE до принятия входящего: иначе события теряются (слушатель в webrtcDm ещё не зарегистрирован).
@@ -3600,6 +3599,10 @@ export default function App() {
 
   async function joinGroupMeshFromPeerOffer(data: any) {
     if (groupMeshJoiningRef.current || groupMeshSessionRef.current) return;
+    if (webrtcBusyRef.current) {
+      setChatError("Сначала завершите текущий звонок");
+      return;
+    }
     const gc = String(data?.groupChatId ?? "");
     const from = String(data?.fromUserId ?? "");
     const p = data?.payload;
@@ -3694,6 +3697,7 @@ export default function App() {
   joinGroupMeshFromPeerOfferRef.current = joinGroupMeshFromPeerOffer;
 
   async function startGroupMesh(prefs: { video: boolean; mic: boolean }) {
+    setPendingGroupMeshIncoming(null);
     if (!canStartCalls) {
       setChatError("Недостаточно прав для звонков");
       return;
@@ -3836,7 +3840,7 @@ export default function App() {
   }
 
   function copyCallInviteLink() {
-    setChatError("Видеосозвон по ссылке — только в групповом чате: откройте группу и нажмите «🔗 Ссылка» в панели созвона.");
+    setChatError("Созвон по ссылке — только в групповом чате: откройте группу и нажмите «🔗 Ссылка» в панели созвона.");
   }
 
   function copyGroupCallInviteLink() {
@@ -4983,7 +4987,7 @@ export default function App() {
           updatedAt
           type
           parentMessageId
-          author { email firstName middleName lastName }
+          author { id email firstName middleName lastName }
           reactions { emoji count viewerHasReacted }
           file { id originalName mimeType size downloadUrl avStatus blockedReason }
         }
@@ -4997,6 +5001,7 @@ export default function App() {
         createdAt: m.createdAt,
         editedAt: m.updatedAt ?? null,
         author: {
+          id: String((m.author as { id?: string }).id ?? ""),
           email: m.author.email,
           firstName: m.author.firstName ?? null,
           middleName: m.author.middleName ?? null,
@@ -7075,57 +7080,6 @@ export default function App() {
                     </button>
                   ) : null}
                 </div>
-                {pendingCallDeepLink && mode === "dms" ? (
-                  <div className="callDeepLinkBar">
-                    <span className="callDeepLinkDmHint">Видеосозвоны доступны в групповом чате. Создайте группу с собеседниками или откройте приглашение по ссылке из группы.</span>
-                    <button type="button" className="chip chip--compact" onClick={() => setPendingCallDeepLink(false)}>
-                      Закрыть
-                    </button>
-                  </div>
-                ) : null}
-                {pendingGroupCallDeepLink && mode === "groups" && activeGroupChat && groupCallInviteUrlForHeader ? (
-                  <div className="callDeepLinkBar">
-                    <a className="callDeepLinkUrl" href={groupCallInviteUrlForHeader} title={groupCallInviteUrlForHeader}>
-                      Видеосозвон
-                    </a>
-                    <button
-                      type="button"
-                      className="chip chip--compact"
-                      onClick={() => void navigator.clipboard.writeText(groupCallInviteUrlForHeader)}
-                    >
-                      Копировать
-                    </button>
-                    <label className="callDeepLinkToggle">
-                      <input
-                        type="checkbox"
-                        checked={groupCallPreJoinMic}
-                        onChange={(e) => setGroupCallPreJoinMic(e.target.checked)}
-                      />{" "}
-                      Мик
-                    </label>
-                    <label className="callDeepLinkToggle">
-                      <input
-                        type="checkbox"
-                        checked={groupCallPreJoinCam}
-                        onChange={(e) => setGroupCallPreJoinCam(e.target.checked)}
-                      />{" "}
-                      Камера
-                    </label>
-                    <button
-                      type="button"
-                      className="chip chip--compact"
-                      onClick={() => {
-                        setPendingGroupCallDeepLink(false);
-                        void startGroupMesh({ video: groupCallPreJoinCam, mic: groupCallPreJoinMic });
-                      }}
-                    >
-                      Присоединиться
-                    </button>
-                    <button type="button" className="chip chip--compact" onClick={() => setPendingGroupCallDeepLink(false)}>
-                      Закрыть
-                    </button>
-                  </div>
-                ) : null}
                 <div className="tgChatHeaderSub">
                   {mode === "dms" && activeDirectChat
                     ? isSelfNotesActiveDm
@@ -7165,7 +7119,7 @@ export default function App() {
                 <button
                   type="button"
                   className="tgCircleBtn tgCircleBtn--call"
-                  title={mode === "dms" ? "Звонок в личном чате" : "Групповой видеосозвон"}
+                  title={mode === "dms" ? "Звонок в личном чате" : "Групповой созвон"}
                   disabled={
                     !canStartCalls ||
                     !socket ||
@@ -7713,6 +7667,85 @@ export default function App() {
         ) : null}
 
         <section className="messages mainMessages" ref={messagesWrapRef}>
+          {(pendingGroupMeshIncoming ||
+            (pendingCallDeepLink && mode === "dms") ||
+            (pendingGroupCallDeepLink && mode === "groups" && activeGroupChat && groupCallInviteUrlForHeader)) ? (
+            <div className="mainMessagesCallStrip">
+              {pendingGroupMeshIncoming ? (
+                <div className="groupMeshIncomingBar" role="status">
+                  <span className="groupMeshIncomingBarText">Входящий групповой звонок</span>
+                  <button
+                    type="button"
+                    className="chip chip--compact groupMeshIncomingJoin"
+                    onClick={() => {
+                      const d = pendingGroupMeshIncoming;
+                      if (!d) return;
+                      setPendingGroupMeshIncoming(null);
+                      void joinGroupMeshFromPeerOfferRef.current(d);
+                    }}
+                  >
+                    Присоединиться к встрече
+                  </button>
+                  <button type="button" className="chip chip--compact" onClick={() => setPendingGroupMeshIncoming(null)}>
+                    Скрыть
+                  </button>
+                </div>
+              ) : null}
+              {pendingCallDeepLink && mode === "dms" ? (
+                <div className="callDeepLinkBar">
+                  <span className="callDeepLinkDmHint">
+                    Созвоны в групповом чате: создайте группу с собеседниками или откройте приглашение по ссылке из группы.
+                  </span>
+                  <button type="button" className="chip chip--compact" onClick={() => setPendingCallDeepLink(false)}>
+                    Закрыть
+                  </button>
+                </div>
+              ) : null}
+              {pendingGroupCallDeepLink && mode === "groups" && activeGroupChat && groupCallInviteUrlForHeader ? (
+                <div className="callDeepLinkBar">
+                  <a className="callDeepLinkUrl" href={groupCallInviteUrlForHeader} title={groupCallInviteUrlForHeader}>
+                    Созвон
+                  </a>
+                  <button
+                    type="button"
+                    className="chip chip--compact"
+                    onClick={() => void navigator.clipboard.writeText(groupCallInviteUrlForHeader)}
+                  >
+                    Копировать
+                  </button>
+                  <label className="callDeepLinkToggle">
+                    <input
+                      type="checkbox"
+                      checked={groupCallPreJoinMic}
+                      onChange={(e) => setGroupCallPreJoinMic(e.target.checked)}
+                    />{" "}
+                    Мик
+                  </label>
+                  <label className="callDeepLinkToggle">
+                    <input
+                      type="checkbox"
+                      checked={groupCallPreJoinCam}
+                      onChange={(e) => setGroupCallPreJoinCam(e.target.checked)}
+                    />{" "}
+                    Камера
+                  </label>
+                  <button
+                    type="button"
+                    className="chip chip--compact"
+                    onClick={() => {
+                      setPendingGroupCallDeepLink(false);
+                      void startGroupMesh({ video: groupCallPreJoinCam, mic: groupCallPreJoinMic });
+                    }}
+                  >
+                    Присоединиться
+                  </button>
+                  <button type="button" className="chip chip--compact" onClick={() => setPendingGroupCallDeepLink(false)}>
+                    Закрыть
+                  </button>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
           <div ref={chatPullHintRef} className="chatPullHint" aria-hidden />
           {typingUserIds.length ? <div className="typing">Печатает: {typingUserIds.map(displayUser).join(", ")}</div> : null}
           {messages.map((m, idx) => {
@@ -8348,14 +8381,14 @@ export default function App() {
         {incomingCall ? (
           <div className="webrtcOverlay webrtcOverlay--incoming" role="dialog" aria-label="Входящий звонок">
             <div className="webrtcPanel webrtcIncomingCard">
-              <div style={{ marginBottom: 8 }}>
+              <div className="webrtcIncomingTitle">
                 Входящий {incomingCall.audioOnly ? "звонок" : "видеозвонок"}
               </div>
-              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                <button type="button" className="chip" onClick={() => void acceptIncomingCall()}>
+              <div className="webrtcIncomingActions">
+                <button type="button" className="chip webrtcIncomingBtn webrtcIncomingBtn--accept" onClick={() => void acceptIncomingCall()}>
                   Принять
                 </button>
-                <button type="button" className="chip" onClick={declineIncomingCall}>
+                <button type="button" className="chip webrtcIncomingBtn webrtcIncomingBtn--decline" onClick={declineIncomingCall}>
                   Отклонить
                 </button>
               </div>
