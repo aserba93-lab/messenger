@@ -929,6 +929,21 @@ export default function App() {
           .join("|")
       : "",
   ]);
+
+  /** Локальное превью в PWA/iOS: надёжнее держать srcObject и playsInline в эффекте. */
+  useEffect(() => {
+    if (!webrtcUi || webrtcUi.audioOnly) return;
+    const el = webrtcLocalVideoRef.current;
+    if (!el) return;
+    el.srcObject = webrtcUi.localStream;
+    try {
+      el.playsInline = true;
+      el.setAttribute("webkit-playsinline", "");
+    } catch {
+      /* ignore */
+    }
+    void el.play().catch(() => {});
+  }, [webrtcUi?.audioOnly, webrtcUi?.localStream]);
   const userIdRef = useRef("");
   const directChatsRef = useRef<DirectChat[]>([]);
   const webrtcBusyRef = useRef(false);
@@ -938,6 +953,7 @@ export default function App() {
   );
   const webrtcPeerRef = useRef("");
   const webrtcRemoteVideoRef = useRef<HTMLVideoElement | null>(null);
+  const webrtcLocalVideoRef = useRef<HTMLVideoElement | null>(null);
   /** Аудиозвонок: отдельный audio-элемент надёжнее скрытого video в части браузеров/PWA. */
   const webrtcRemoteAudioRef = useRef<HTMLAudioElement | null>(null);
   const [reactionPopover, setReactionPopover] = useState<null | { messageId: string; top: number; left: number }>(null);
@@ -994,6 +1010,7 @@ export default function App() {
   useEffect(() => {
     presenceByUserIdRef.current = presenceByUserId;
   }, [presenceByUserId]);
+  const loadUsersRef = useRef<((tokenOverride?: string, orgIdOverride?: string) => Promise<void>) | null>(null);
   /** Внутриприложенческое всплывающее уведомление, если OS Notification недоступен или не сработал. */
   const [appToast, setAppToast] = useState<null | { text: string; id: number }>(null);
   const pushAppToast = useCallback((text: string) => {
@@ -2433,13 +2450,17 @@ export default function App() {
     s.on("presence:snapshot", (evt: any) => {
       const items = Array.isArray(evt?.items) ? evt.items : [];
       if (!items.length) return;
+      const socketUp = !!socketRef.current?.connected;
       setPresenceByUserId((prev) => {
         const next = { ...prev };
         for (const it of items) {
           const uid = String(it?.userId ?? "");
           if (!uid) continue;
           const raw = it?.status;
-          const status = raw != null && String(raw) !== "" ? String(raw) : "offline";
+          let status = raw != null && String(raw) !== "" ? String(raw) : "offline";
+          if (socketUp && prev[uid]?.status === "online" && status === "offline") {
+            status = "online";
+          }
           next[uid] = {
             status,
             lastSeen: it?.lastSeen != null ? String(it.lastSeen) : next[uid]?.lastSeen,
@@ -2452,7 +2473,10 @@ export default function App() {
         return prev.map((u) => {
           const it = byId.get(u.id) as { status?: string | null } | undefined;
           if (!it) return u;
-          const st = it.status != null && String(it.status) !== "" ? String(it.status) : u.status;
+          let st = it.status != null && String(it.status) !== "" ? String(it.status) : u.status;
+          if (socketUp && u.status === "online" && st === "offline") {
+            st = "online";
+          }
           return { ...u, status: st as typeof u.status };
         });
       });
@@ -3370,6 +3394,17 @@ export default function App() {
     });
     pushLog(`Пользователей: ${data.users.length}`);
   }
+  loadUsersRef.current = loadUsers;
+
+  useEffect(() => {
+    if (!token || !organizationId) return;
+    const onVis = () => {
+      if (document.visibilityState !== "visible") return;
+      void loadUsersRef.current?.();
+    };
+    document.addEventListener("visibilitychange", onVis);
+    return () => document.removeEventListener("visibilitychange", onVis);
+  }, [token, organizationId]);
 
   useEffect(() => {
     if (!token) return;
@@ -5292,7 +5327,18 @@ export default function App() {
                           setUnreadByKey((prev) => ({ ...prev, [chatKeyFor("d", d.id)]: 0 }));
                         }}
                       >
-                        <div className="tgAvatar">{initials(title)}</div>
+                        {(() => {
+                          const avatarHref = isSelfNotesDm
+                            ? normalizeDownloadUrl(profileAvatarUrl)
+                            : normalizeDownloadUrl(u?.avatarUrl);
+                          return avatarHref ? (
+                            <div className="tgAvatar tgAvatar--img">
+                              <img src={avatarHref} alt="" className="tgAvatarImg" />
+                            </div>
+                          ) : (
+                            <div className="tgAvatar">{initials(title)}</div>
+                          );
+                        })()}
                         <div className="tgChatMain">
                           <div className="tgChatTop">
                             <div className="tgChatTitle">
@@ -5605,7 +5651,18 @@ export default function App() {
                           setUnreadByKey((prev) => ({ ...prev, [chatKeyFor("d", d.id)]: 0 }));
                         }}
                       >
-                        <div className="tgAvatar">{initials(title)}</div>
+                        {(() => {
+                          const avatarHref = isSelfNotesDm
+                            ? normalizeDownloadUrl(profileAvatarUrl)
+                            : normalizeDownloadUrl(u?.avatarUrl);
+                          return avatarHref ? (
+                            <div className="tgAvatar tgAvatar--img">
+                              <img src={avatarHref} alt="" className="tgAvatarImg" />
+                            </div>
+                          ) : (
+                            <div className="tgAvatar">{initials(title)}</div>
+                          );
+                        })()}
                         <div className="tgChatMain">
                           <div className="tgChatTop">
                             <div className="tgChatTitle">
@@ -7233,9 +7290,7 @@ export default function App() {
                 {!webrtcUi.audioOnly ? (
                   <div className="webrtcLocalPip">
                     <video
-                      ref={(el) => {
-                        if (el) el.srcObject = webrtcUi.localStream;
-                      }}
+                      ref={webrtcLocalVideoRef}
                       autoPlay
                       playsInline
                       muted

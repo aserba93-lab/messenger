@@ -283,9 +283,26 @@ const server = http.createServer(app);
 const io = new SocketIOServer(server, {
     cors: { origin: Array.from(corsOriginSet), credentials: true },
 });
-/** Счётчик сокетов на пользователя + отложенный offline (переподключения polling/PWA). Не распределён по нескольким нодам без общего стора. */
+/** Локальный счётчик сокетов (одна нода). При ENABLE_SOCKET_REDIS_ADAPTER используется Redis — см. ниже. */
 const presenceSocketState = new Map();
-function presenceRegisterSocket(userId, orgId) {
+const PRESENCE_SOCK_KEY = (userId) => `presence:sockcount:${userId}`;
+const PRESENCE_ORG_KEY = (userId) => `presence:org:${userId}`;
+const PRESENCE_OFFLINE_MS = 12000;
+/** Таймеры отложенного offline только на этой ноде; итог проверяется по Redis или памяти. */
+const presenceRedisOfflineTimers = new Map();
+function presenceEmitOffline(userId, orgId) {
+    prisma.user
+        .update({ where: { id: userId }, data: { status: "offline", lastSeen: new Date() } })
+        .then(() => {
+        io.to(`org:${orgId}`).emit("presence:update", {
+            userId,
+            status: "offline",
+            lastSeen: new Date().toISOString(),
+        });
+    })
+        .catch(() => { });
+}
+function presenceRegisterSocketMemory(userId, orgId) {
     let rec = presenceSocketState.get(userId);
     if (!rec) {
         rec = { count: 0, orgId, offlineTimer: null };
@@ -300,7 +317,7 @@ function presenceRegisterSocket(userId, orgId) {
     rec.orgId = orgId;
     return { firstSocket };
 }
-function presenceUnregisterSocket(userId) {
+function presenceUnregisterSocketMemory(userId) {
     const rec = presenceSocketState.get(userId);
     if (!rec || rec.count <= 0)
         return;
@@ -313,17 +330,41 @@ function presenceUnregisterSocket(userId) {
         if (!r || r.count > 0)
             return;
         presenceSocketState.delete(userId);
-        prisma.user
-            .update({ where: { id: userId }, data: { status: "offline", lastSeen: new Date() } })
-            .then(() => {
-            io.to(`org:${orgId}`).emit("presence:update", {
-                userId,
-                status: "offline",
-                lastSeen: new Date().toISOString(),
-            });
-        })
-            .catch(() => { });
-    }, 12000);
+        presenceEmitOffline(userId, orgId);
+    }, PRESENCE_OFFLINE_MS);
+}
+async function presenceRegisterSocketRedis(userId, orgId) {
+    const t = presenceRedisOfflineTimers.get(userId);
+    if (t) {
+        clearTimeout(t);
+        presenceRedisOfflineTimers.delete(userId);
+    }
+    const count = await redis.incr(PRESENCE_SOCK_KEY(userId));
+    await redis.set(PRESENCE_ORG_KEY(userId), orgId);
+    return { firstSocket: count === 1 };
+}
+async function presenceUnregisterSocketRedis(userId) {
+    const sockKey = PRESENCE_SOCK_KEY(userId);
+    const v = await redis.decr(sockKey);
+    if (v < 0) {
+        await redis.set(sockKey, "0");
+    }
+    if (v > 0)
+        return;
+    const orgId = await redis.get(PRESENCE_ORG_KEY(userId));
+    if (!orgId)
+        return;
+    const timer = setTimeout(() => {
+        presenceRedisOfflineTimers.delete(userId);
+        void (async () => {
+            const raw = await redis.get(sockKey);
+            const n = parseInt(String(raw ?? "0"), 10);
+            if (n > 0)
+                return;
+            presenceEmitOffline(userId, orgId);
+        })();
+    }, PRESENCE_OFFLINE_MS);
+    presenceRedisOfflineTimers.set(userId, timer);
 }
 setIo(io);
 setupFileStatusBridge(redis);
@@ -368,12 +409,25 @@ io.use(async (socket, next) => {
         return next(new Error("Unauthorized"));
     }
 });
-io.on("connection", (socket) => {
+io.on("connection", async (socket) => {
     const viewer = socket.data.viewer;
     socket.join(`org:${viewer.organizationId}`);
     socket.join(`user:${viewer.userId}`);
     socket.emit("server:hello", { ok: true, userId: viewer.userId });
-    const { firstSocket } = presenceRegisterSocket(viewer.userId, viewer.organizationId);
+    let firstSocket = false;
+    try {
+        if (env.ENABLE_SOCKET_REDIS_ADAPTER) {
+            firstSocket = (await presenceRegisterSocketRedis(viewer.userId, viewer.organizationId)).firstSocket;
+        }
+        else {
+            firstSocket = presenceRegisterSocketMemory(viewer.userId, viewer.organizationId).firstSocket;
+        }
+    }
+    catch (e) {
+        // eslint-disable-next-line no-console
+        console.warn("[presence] register failed, memory fallback:", e?.message ?? e);
+        firstSocket = presenceRegisterSocketMemory(viewer.userId, viewer.organizationId).firstSocket;
+    }
 
     /** Актуальные статусы всех участников орг. из БД — иначе клиент видит «не в сети», пока кто-то снова не переподключится. */
     prisma.organizationMember
@@ -407,7 +461,15 @@ io.on("connection", (socket) => {
         .catch(() => { });
 
     socket.on("disconnect", () => {
-        presenceUnregisterSocket(viewer.userId);
+        if (env.ENABLE_SOCKET_REDIS_ADAPTER) {
+            void presenceUnregisterSocketRedis(viewer.userId).catch((e) => {
+                // eslint-disable-next-line no-console
+                console.warn("[presence] unregister redis failed:", e?.message ?? e);
+            });
+        }
+        else {
+            presenceUnregisterSocketMemory(viewer.userId);
+        }
     });
     socket.on("channel:join", async (data) => {
         const channelId = String(data?.channelId ?? "");
