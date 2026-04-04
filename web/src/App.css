@@ -293,7 +293,8 @@ body {
   margin: 10px 0;
 }
 
-.photoLightbox {
+/* Полноэкранный запасной просмотр (если новая вкладка заблокирована) */
+.mediaPageViewer {
   position: fixed;
   inset: 0;
   z-index: 500;
@@ -301,37 +302,31 @@ body {
   place-items: center;
   padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(16px, env(safe-area-inset-bottom))
     max(16px, env(safe-area-inset-left));
-  background: rgba(0, 0, 0, 0.88);
+  background: #000;
   box-sizing: border-box;
 }
-.photoLightboxClose {
+.mediaPageViewerBack {
   position: absolute;
   top: max(12px, env(safe-area-inset-top));
-  right: max(12px, env(safe-area-inset-right));
+  left: max(12px, env(safe-area-inset-left));
   z-index: 2;
-  width: 44px;
-  height: 44px;
+  padding: 10px 14px;
   border-radius: 12px;
   border: 1px solid rgba(255, 255, 255, 0.28);
-  background: rgba(30, 30, 36, 0.85);
+  background: rgba(30, 30, 36, 0.92);
   color: #fff;
-  font-size: 20px;
-  line-height: 1;
+  font-size: 14px;
   cursor: pointer;
-  display: grid;
-  place-items: center;
 }
-.photoLightboxClose:hover {
+.mediaPageViewerBack:hover {
   background: rgba(50, 50, 58, 0.95);
 }
-.photoLightboxImg {
-  max-width: min(96vw, 1200px);
-  max-height: min(88vh, 900px);
+.mediaPageViewerImg {
+  max-width: 100vw;
+  max-height: 100vh;
   width: auto;
   height: auto;
   object-fit: contain;
-  border-radius: 10px;
-  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.45);
 }
 
 .layout {
@@ -2077,6 +2072,57 @@ button.active {
   position: sticky;
   bottom: 0;
   z-index: 8;
+}
+.composerFileInputsHost {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  border: 0;
+}
+.composerAttachWrap {
+  position: relative;
+  align-self: end;
+}
+.composerAttachBtn--open {
+  outline: 2px solid rgba(110, 170, 255, 0.45);
+}
+.composerAttachMenu {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  min-width: 200px;
+  padding: 6px;
+  border-radius: 12px;
+  border: 1px solid var(--tg-border-subtle);
+  background: var(--tg-bg-elevated);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.composerAttachMenuItem {
+  text-align: left;
+  width: 100%;
+  padding: 10px 12px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--tg-text);
+  font-size: 14px;
+  cursor: pointer;
+}
+.composerAttachMenuItem:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+:root[data-theme="light"] .composerAttachMenuItem:hover {
+  background: rgba(0, 0, 0, 0.06);
 }
 .composerInput {
   min-height: 40px;

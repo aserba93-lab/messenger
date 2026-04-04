@@ -390,24 +390,6 @@ async function triggerBrowserDownloadFromUrl(rawUrl: string | null | undefined, 
   }
 }
 
-async function openMediaInNewTabFromUrl(rawUrl: string | null | undefined, token: string | null) {
-  if (!rawUrl) return;
-  const href = normalizeDownloadUrl(rawUrl);
-  if (!href) return;
-  try {
-    if (token && isFilesAccessProxyUrl(href)) {
-      const blob = await fetchAuthorizedFileBlob(href, token);
-      const u = URL.createObjectURL(blob);
-      const w = window.open(u, "_blank", "noopener,noreferrer");
-      if (w) window.setTimeout(() => URL.revokeObjectURL(u), 120_000);
-      return;
-    }
-    window.open(href, "_blank", "noopener,noreferrer");
-  } catch {
-    window.open(href, "_blank", "noopener,noreferrer");
-  }
-}
-
 function fileExtensionUpper(name: string): string {
   const i = name.lastIndexOf(".");
   return i >= 0 ? name.slice(i + 1).toUpperCase() : "";
@@ -1097,7 +1079,14 @@ export default function App() {
   const chatMenuRef = useRef<HTMLDivElement | null>(null);
   /** null | group — mesh; dm — личный 1:1 */
   const [callJoinModalKind, setCallJoinModalKind] = useState<null | "group" | "dm">(null);
-  const [photoLightboxUrl, setPhotoLightboxUrl] = useState<string | null>(null);
+  /** Полноэкранный просмотр фото (если новая вкладка заблокирована — как отдельная «страница» внутри приложения) */
+  const [mediaPageViewer, setMediaPageViewer] = useState<{ url: string; revoke?: () => void } | null>(null);
+  const [composerAttachOpen, setComposerAttachOpen] = useState(false);
+  const composerAttachWrapRef = useRef<HTMLDivElement | null>(null);
+  const attachInputPhotoRef = useRef<HTMLInputElement | null>(null);
+  const attachInputFileRef = useRef<HTMLInputElement | null>(null);
+  const attachInputAudioRef = useRef<HTMLInputElement | null>(null);
+  const attachInputVideoRef = useRef<HTMLInputElement | null>(null);
   /** В группе: сначала список участников, затем выбор аудио/видео */
   const [chatMetaPopoverOpen, setChatMetaPopoverOpen] = useState(false);
   const callMenuWrapRef = useRef<HTMLDivElement | null>(null);
@@ -3533,6 +3522,20 @@ export default function App() {
     };
   }, [token]);
 
+  useEffect(() => {
+    if (!token) return;
+    const onOnline = () => {
+      pushLog("Сеть восстановлена — переподключение сокета…");
+      try {
+        connectSocketRef.current();
+      } catch {
+        /* ignore */
+      }
+    };
+    window.addEventListener("online", onOnline);
+    return () => window.removeEventListener("online", onOnline);
+  }, [token]);
+
   function emitTypingStart() {
     if (!socket) return;
     if (mode === "channels" && activeChannelId) socket.emit("typing:start", { channelId: activeChannelId });
@@ -5915,16 +5918,68 @@ export default function App() {
     };
   }, [reactionPopover]);
 
-  async function pickFile() {
-    const el = document.createElement("input");
-    el.type = "file";
-    el.onchange = async () => {
-      const f = el.files?.[0];
-      if (!f) return;
-      await uploadAndSend("file", f, f.name);
-    };
-    el.click();
+  /** Новая вкладка без features=… — иначе PWA/мобильные открывают крошечное «popup». Если блокируется — полноэкранный просмотр. */
+  async function openMediaInNewPage(rawUrl: string | null | undefined) {
+    if (!rawUrl) return;
+    const href = normalizeDownloadUrl(rawUrl);
+    if (!href) return;
+    try {
+      if (token && isFilesAccessProxyUrl(href)) {
+        const blob = await fetchAuthorizedFileBlob(href, token);
+        const u = URL.createObjectURL(blob);
+        const w = window.open(u, "_blank");
+        if (w) {
+          window.setTimeout(() => URL.revokeObjectURL(u), 120_000);
+          return;
+        }
+        setMediaPageViewer({ url: u, revoke: () => URL.revokeObjectURL(u) });
+        return;
+      }
+      const w = window.open(href, "_blank");
+      if (!w) {
+        setMediaPageViewer({ url: href });
+      }
+    } catch {
+      try {
+        const w = window.open(href, "_blank");
+        if (!w) setMediaPageViewer({ url: href });
+      } catch {
+        setMediaPageViewer({ url: href });
+      }
+    }
   }
+
+  function onComposerAttachmentChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const f = e.target.files?.[0];
+    e.target.value = "";
+    if (!f) return;
+    void uploadAndSend("file", f, f.name);
+    setComposerAttachOpen(false);
+  }
+
+  useEffect(() => {
+    if (!composerAttachOpen) return;
+    const onDown = (ev: globalThis.MouseEvent) => {
+      const el = composerAttachWrapRef.current;
+      const t = ev.target as Node | null;
+      if (el && t && el.contains(t)) return;
+      setComposerAttachOpen(false);
+    };
+    document.addEventListener("mousedown", onDown, true);
+    return () => document.removeEventListener("mousedown", onDown, true);
+  }, [composerAttachOpen]);
+
+  useEffect(() => {
+    if (!mediaPageViewer) return;
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      if (e.key === "Escape") {
+        mediaPageViewer.revoke?.();
+        setMediaPageViewer(null);
+      }
+    };
+    document.addEventListener("keydown", onKey, true);
+    return () => document.removeEventListener("keydown", onKey, true);
+  }, [mediaPageViewer]);
 
   async function startVoiceRecord() {
     if (isRecordingVoice || mediaRecorderRef.current || voiceStartingRef.current) return;
@@ -6975,14 +7030,14 @@ export default function App() {
                       onClick={(e) => {
                         e.stopPropagation();
                         if (!profileAvatarUrl) return;
-                        setPhotoLightboxUrl(String(profileAvatarUrl));
+                        void openMediaInNewPage(String(profileAvatarUrl));
                       }}
                       onKeyDown={(e) => {
                         if (!profileAvatarUrl) return;
                         if (e.key === "Enter" || e.key === " ") {
                           e.preventDefault();
                           e.stopPropagation();
-                          setPhotoLightboxUrl(String(profileAvatarUrl));
+                          void openMediaInNewPage(String(profileAvatarUrl));
                         }
                       }}
                     >
@@ -7323,13 +7378,13 @@ export default function App() {
                 role="button"
                 tabIndex={0}
                 onClick={() => {
-                  if (headerAvatarPhotoUrl) setPhotoLightboxUrl(headerAvatarPhotoUrl);
+                  if (headerAvatarPhotoUrl) void openMediaInNewPage(headerAvatarPhotoUrl);
                   else setShowRightPanel(true);
                 }}
                 onKeyDown={(e) => {
                   if (e.key === "Enter" || e.key === " ") {
                     e.preventDefault();
-                    if (headerAvatarPhotoUrl) setPhotoLightboxUrl(headerAvatarPhotoUrl);
+                    if (headerAvatarPhotoUrl) void openMediaInNewPage(headerAvatarPhotoUrl);
                     else setShowRightPanel(true);
                   }
                 }}
@@ -7890,13 +7945,13 @@ export default function App() {
                     tabIndex={profileAvatarUrl ? 0 : undefined}
                     onClick={() => {
                       if (!profileAvatarUrl) return;
-                      setPhotoLightboxUrl(String(profileAvatarUrl));
+                      void openMediaInNewPage(String(profileAvatarUrl));
                     }}
                     onKeyDown={(e) => {
                       if (!profileAvatarUrl) return;
                       if (e.key === "Enter" || e.key === " ") {
                         e.preventDefault();
-                        setPhotoLightboxUrl(String(profileAvatarUrl));
+                        void openMediaInNewPage(String(profileAvatarUrl));
                       }
                     }}
                   >
@@ -8348,7 +8403,7 @@ export default function App() {
                               const h = normalizeDownloadUrl(d);
                               if (token && h && isFilesAccessProxyUrl(h)) {
                                 e.preventDefault();
-                                void openMediaInNewTabFromUrl(d, token);
+                                void openMediaInNewPage(d);
                               }
                             }}
                           >
@@ -8586,9 +8641,69 @@ export default function App() {
               </button>
             </div>
           ) : null}
-          <button type="button" onClick={() => void pickFile()} disabled={uploadDisabled}>
-            📎
-          </button>
+          <div className="composerFileInputsHost" aria-hidden>
+            <input ref={attachInputPhotoRef} type="file" accept="image/*" tabIndex={-1} onChange={onComposerAttachmentChange} />
+            <input ref={attachInputFileRef} type="file" tabIndex={-1} onChange={onComposerAttachmentChange} />
+            <input ref={attachInputAudioRef} type="file" accept="audio/*" tabIndex={-1} onChange={onComposerAttachmentChange} />
+            <input ref={attachInputVideoRef} type="file" accept="video/*" tabIndex={-1} onChange={onComposerAttachmentChange} />
+          </div>
+          <div className="composerAttachWrap" ref={composerAttachWrapRef}>
+            <button
+              type="button"
+              className={`composerAttachBtn ${composerAttachOpen ? "composerAttachBtn--open" : ""}`}
+              onClick={() => setComposerAttachOpen((v) => !v)}
+              disabled={uploadDisabled}
+              aria-expanded={composerAttachOpen}
+              aria-haspopup="menu"
+              title="Вложение"
+            >
+              📎
+            </button>
+            {composerAttachOpen ? (
+              <div className="composerAttachMenu" role="menu" aria-label="Тип вложения">
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="composerAttachMenuItem"
+                  onClick={() => {
+                    attachInputPhotoRef.current?.click();
+                  }}
+                >
+                  1. Фото
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="composerAttachMenuItem"
+                  onClick={() => {
+                    attachInputFileRef.current?.click();
+                  }}
+                >
+                  2. Файл
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="composerAttachMenuItem"
+                  onClick={() => {
+                    attachInputAudioRef.current?.click();
+                  }}
+                >
+                  3. Аудио
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="composerAttachMenuItem"
+                  onClick={() => {
+                    attachInputVideoRef.current?.click();
+                  }}
+                >
+                  4. Видео
+                </button>
+              </div>
+            ) : null}
+          </div>
           <button
             type="button"
             style={{ touchAction: "manipulation" }}
@@ -8987,29 +9102,33 @@ export default function App() {
             </div>
           </div>
         ) : null}
-        {photoLightboxUrl ? (
+        {mediaPageViewer ? (
           <div
-            className="photoLightbox"
+            className="mediaPageViewer"
             role="dialog"
             aria-modal="true"
-            aria-label="Просмотр фото"
-            onClick={() => setPhotoLightboxUrl(null)}
+            aria-label="Просмотр изображения"
+            onClick={() => {
+              mediaPageViewer.revoke?.();
+              setMediaPageViewer(null);
+            }}
           >
             <button
               type="button"
-              className="photoLightboxClose"
+              className="mediaPageViewerBack"
               aria-label="Закрыть"
               onClick={(e) => {
                 e.stopPropagation();
-                setPhotoLightboxUrl(null);
+                mediaPageViewer.revoke?.();
+                setMediaPageViewer(null);
               }}
             >
-              ✕
+              ← Закрыть
             </button>
             <img
-              src={photoLightboxUrl}
+              src={mediaPageViewer.url}
               alt=""
-              className="photoLightboxImg"
+              className="mediaPageViewerImg"
               onClick={(e) => e.stopPropagation()}
             />
           </div>
@@ -9040,10 +9159,10 @@ export default function App() {
                 className={`infoPanelHeroAvatar ${mode === "channels" && activeChannel?.avatarUrl ? "infoPanelHeroAvatar--img" : ""} ${mode === "groups" && activeGroupChat?.avatarUrl ? "infoPanelHeroAvatar--img" : ""} ${mode === "dms" && isSelfNotesActiveDm && profileAvatarUrl ? "infoPanelHeroAvatar--img" : ""} ${mode === "dms" && dmPeerAvatarUrl ? "infoPanelHeroAvatar--img" : ""}`}
                 role="presentation"
                 onClick={() => {
-                  if (mode === "channels" && activeChannel?.avatarUrl) setPhotoLightboxUrl(String(activeChannel.avatarUrl));
-                  else if (mode === "groups" && activeGroupChat?.avatarUrl) setPhotoLightboxUrl(String(activeGroupChat.avatarUrl));
-                  else if (mode === "dms" && isSelfNotesActiveDm && profileAvatarUrl) setPhotoLightboxUrl(String(profileAvatarUrl));
-                  else if (mode === "dms" && dmPeerAvatarUrl) setPhotoLightboxUrl(dmPeerAvatarUrl);
+                  if (mode === "channels" && activeChannel?.avatarUrl) void openMediaInNewPage(String(activeChannel.avatarUrl));
+                  else if (mode === "groups" && activeGroupChat?.avatarUrl) void openMediaInNewPage(String(activeGroupChat.avatarUrl));
+                  else if (mode === "dms" && isSelfNotesActiveDm && profileAvatarUrl) void openMediaInNewPage(String(profileAvatarUrl));
+                  else if (mode === "dms" && dmPeerAvatarUrl) void openMediaInNewPage(dmPeerAvatarUrl);
                 }}
                 style={{
                   cursor:
@@ -9310,7 +9429,7 @@ export default function App() {
                             const h = normalizeDownloadUrl(m.file?.downloadUrl);
                             if (token && h && isFilesAccessProxyUrl(h)) {
                               e.preventDefault();
-                              void openMediaInNewTabFromUrl(m.file?.downloadUrl, token);
+                              void openMediaInNewPage(m.file?.downloadUrl);
                             }
                           }}
                         >
