@@ -220,10 +220,21 @@ type DirectChatMessage = {
   file?: FileInfo | null;
 };
 
+/** Рантайм-URL API из index.html: `<meta name="tg-api-base" content="https://api.example.com" />` (обёртки, нестандартный origin). */
+function readRuntimeApiBaseFromMeta(): string | null {
+  if (typeof document === "undefined") return null;
+  const m = document.querySelector('meta[name="tg-api-base"]');
+  const c = m?.getAttribute("content")?.trim();
+  if (!c) return null;
+  return c.replace(/\/$/, "");
+}
+
 /** В проде без VITE_API_URL используем origin сайта (тот же хост, что и UI), иначе fetch уйдёт не туда. */
 function getApiBase(): string {
   const env = (import.meta as any).env?.VITE_API_URL as string | undefined;
   if (env && String(env).trim()) return String(env).replace(/\/$/, "");
+  const metaBase = readRuntimeApiBaseFromMeta();
+  if (metaBase) return metaBase;
   if (typeof window === "undefined") return "";
   const h = window.location.hostname;
   if (h === "localhost" || h === "127.0.0.1") return "http://localhost:3000";
@@ -234,6 +245,11 @@ const GQL = `${API_BASE}/graphql`;
 function getSocketUrl(): string {
   const env = (import.meta as any).env?.VITE_SOCKET_URL as string | undefined;
   if (env && String(env).trim()) return String(env).replace(/\/$/, "");
+  if (typeof document !== "undefined") {
+    const m = document.querySelector('meta[name="tg-socket-url"]');
+    const c = m?.getAttribute("content")?.trim();
+    if (c) return c.replace(/\/$/, "");
+  }
   return API_BASE || (typeof window !== "undefined" ? window.location.origin : "");
 }
 const SOCKET_URL = getSocketUrl();
@@ -757,6 +773,8 @@ export default function App() {
   const [log, setLog] = useState<string[]>([]);
   const [socket, setSocket] = useState<Socket | null>(null);
   const socketRef = useRef<Socket | null>(null);
+  /** Последний connectSocket — для переподключения при возврате в PWA/вкладку */
+  const connectSocketRef = useRef<() => void>(() => {});
   const [showSaved, setShowSaved] = useState(false);
   const [savedIds, setSavedIds] = useState<Set<string>>(new Set());
   const [showPins, setShowPins] = useState(false);
@@ -2960,6 +2978,8 @@ export default function App() {
       reconnection: true,
       reconnectionAttempts: 25,
       reconnectionDelay: 800,
+      /** PWA в фоне / смена сети — дольше ждём ответ */
+      timeout: 45000,
     });
     const refreshPresenceFromApi = () => {
       if (!organizationId.trim()) return;
@@ -3468,6 +3488,8 @@ export default function App() {
     setSocket(s);
   }
 
+  connectSocketRef.current = connectSocket;
+
   useEffect(() => {
     if (!token) return;
     const s = socketRef.current as (Socket & { auth?: { token?: string } }) | null;
@@ -3478,6 +3500,17 @@ export default function App() {
 
   useEffect(() => {
     if (!token) return;
+    const tryFullReconnect = () => {
+      if (!token) return;
+      if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
+      if (socketRef.current?.connected) return;
+      pushLog("Сокет не подключён — полное переподключение…");
+      try {
+        connectSocketRef.current();
+      } catch {
+        /* ignore */
+      }
+    };
     const onVisible = () => {
       if (typeof document === "undefined" || document.visibilityState !== "visible") return;
       const s = socketRef.current;
@@ -3488,12 +3521,15 @@ export default function App() {
           /* ignore */
         }
       }
+      window.setTimeout(tryFullReconnect, 500);
     };
     document.addEventListener("visibilitychange", onVisible);
     window.addEventListener("pageshow", onVisible);
+    window.addEventListener("focus", onVisible);
     return () => {
       document.removeEventListener("visibilitychange", onVisible);
       window.removeEventListener("pageshow", onVisible);
+      window.removeEventListener("focus", onVisible);
     };
   }, [token]);
 
@@ -5282,6 +5318,13 @@ export default function App() {
     if (!token) return;
     const softRefresh = () => {
       if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
+      if (token && !socketRef.current?.connected) {
+        try {
+          connectSocketRef.current();
+        } catch {
+          /* ignore */
+        }
+      }
       void loadGroupChats();
       void loadDirectChats();
       if (workspaceId) void loadChannels();

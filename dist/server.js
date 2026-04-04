@@ -452,13 +452,12 @@ io.on("connection", async (socket) => {
     prisma.user
         .update({ where: { id: viewer.userId }, data: { status: "online", lastSeen: new Date() } })
         .then(() => {
-        if (firstSocket) {
-            io.to(`org:${viewer.organizationId}`).emit("presence:update", {
-                userId: viewer.userId,
-                status: "online",
-                lastSeen: new Date().toISOString(),
-            });
-        }
+        /** Всегда шлём в org — иначе коллеги в браузере не видят «онлайн» при втором клиенте (PWA+вкладка) или после переподключения. */
+        io.to(`org:${viewer.organizationId}`).emit("presence:update", {
+            userId: viewer.userId,
+            status: "online",
+            lastSeen: new Date().toISOString(),
+        });
     })
         .catch(() => { });
 
