@@ -677,7 +677,7 @@ io.on("connection", async (socket) => {
             raised,
         });
     });
-    /** Поднять руку в групповом созвоне: всем в комнате группы, кроме отправителя */
+    /** Поднять руку в групповом созвоне: всем в комнате группы (включая отправителя — дублирует optimistic UI) */
     socket.on("groupCall:hand", async (data) => {
         const groupChatId = String(data?.groupChatId ?? "");
         const raised = Boolean(data?.raised);
@@ -689,10 +689,55 @@ io.on("connection", async (socket) => {
             });
             if (!member)
                 return;
-            socket.to(`group:${groupChatId}`).emit("groupCall:hand", {
+            io.to(`group:${groupChatId}`).emit("groupCall:hand", {
                 fromUserId: viewer.userId,
                 groupChatId,
                 raised,
+            });
+        }
+        catch {
+            /* ignore */
+        }
+    });
+    /** Личный mesh-созвон: собеседнику в комнату dm — индикатор «идёт созвон» в чате */
+    socket.on("dmCall:notify", async (data) => {
+        const directChatId = String(data?.directChatId ?? "");
+        const meshGroupChatId = String(data?.meshGroupChatId ?? "");
+        const audioOnly = Boolean(data?.audioOnly);
+        if (!directChatId || !meshGroupChatId)
+            return;
+        try {
+            const member = await prisma.directChatMember.findUnique({
+                where: { directChatId_userId: { directChatId, userId: viewer.userId } },
+            });
+            if (!member)
+                return;
+            socket.to(`dm:${directChatId}`).emit("dmCall:notify", {
+                fromUserId: viewer.userId,
+                directChatId,
+                meshGroupChatId,
+                audioOnly,
+            });
+        }
+        catch {
+            /* ignore */
+        }
+    });
+    socket.on("dmCall:end", async (data) => {
+        const directChatId = String(data?.directChatId ?? "");
+        const meshGroupChatId = String(data?.meshGroupChatId ?? "");
+        if (!directChatId || !meshGroupChatId)
+            return;
+        try {
+            const member = await prisma.directChatMember.findUnique({
+                where: { directChatId_userId: { directChatId, userId: viewer.userId } },
+            });
+            if (!member)
+                return;
+            socket.to(`dm:${directChatId}`).emit("dmCall:end", {
+                fromUserId: viewer.userId,
+                directChatId,
+                meshGroupChatId,
             });
         }
         catch {

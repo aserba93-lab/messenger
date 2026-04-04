@@ -1811,6 +1811,15 @@ export default function App() {
     [mode, userId, activeDirectChat],
   );
 
+  const dmCallStripVisible = useMemo(() => {
+    if (mode !== "dms" || !activeDirectChat || isSelfNotesActiveDm) return false;
+    const meshId = dmMeshGroupChatId(activeDirectChat.id);
+    const t = groupCallLiveAt[meshId];
+    if (t == null || Date.now() - t >= GROUP_CALL_INVITE_LIVE_MS) return false;
+    if (groupMeshUi?.groupChatId === meshId) return false;
+    return true;
+  }, [mode, activeDirectChat, isSelfNotesActiveDm, groupCallLiveAt, groupMeshUi]);
+
   const dmPeerAvatarUrl = useMemo(() => {
     if (mode !== "dms" || isSelfNotesActiveDm || !activeDirectChat || !userId) return null;
     const otherId = activeDirectChat.userIds.find((id) => id !== userId) ?? activeDirectChat.userIds[0] ?? "";
@@ -3300,6 +3309,20 @@ export default function App() {
       }
       pushLog(`Групповой звонок: ${label}`);
     });
+    s.on("dmCall:notify", (data: any) => {
+      const meshId = String(data?.meshGroupChatId ?? "");
+      if (!meshId) return;
+      setGroupCallLiveAt((prev) => ({ ...prev, [meshId]: Date.now() }));
+    });
+    s.on("dmCall:end", (data: any) => {
+      const meshId = String(data?.meshGroupChatId ?? "");
+      if (!meshId) return;
+      setGroupCallLiveAt((prev) => {
+        if (prev[meshId] == null) return prev;
+        const { [meshId]: _, ...rest } = prev;
+        return rest;
+      });
+    });
     socketRef.current = s;
     setSocket(s);
   }
@@ -3633,6 +3656,14 @@ export default function App() {
   }
 
   const hangupGroupMesh = useCallback(() => {
+    const ui = groupMeshUiRef.current;
+    const sock = socketRef.current;
+    if (ui?.groupChatId?.startsWith(DM_MESH_PREFIX) && sock) {
+      sock.emit("dmCall:end", {
+        directChatId: ui.groupChatId.slice(DM_MESH_PREFIX.length),
+        meshGroupChatId: ui.groupChatId,
+      });
+    }
     groupMeshSessionRef.current?.hangupAll();
     groupMeshSessionRef.current = null;
     setGroupMeshUi(null);
@@ -3897,6 +3928,11 @@ export default function App() {
       });
       setGroupCallLiveAt((prev) => ({ ...prev, [meshId]: Date.now() }));
       await session.startOfferers(peerIds);
+      sock.emit("dmCall:notify", {
+        directChatId: activeDirectChat.id,
+        meshGroupChatId: meshId,
+        audioOnly,
+      });
       pushLog("Личный созвон (mesh)");
     } catch (e: any) {
       setChatError(String(e?.message ?? e));
@@ -6142,7 +6178,10 @@ export default function App() {
                     ) : (
                       <div className="groupMeshAudioOnly">{displayUser(pid)}</div>
                     )}
-                    <div className="groupMeshLabel">{displayUser(pid)}</div>
+                    <div className="groupMeshLabel">
+                      {groupMeshHands[pid] ? "✋ " : ""}
+                      {displayUser(pid)}
+                    </div>
                   </div>
                 ))}
               </div>
@@ -6740,8 +6779,25 @@ export default function App() {
               <div className="moreMenuBody">
                 {token ? (
                   <div className="moreMenuProfileCard">
-                    <div className={`moreMenuProfileAvatar ${profileAvatarUrl ? "moreMenuProfileAvatar--img" : ""}`}>
-                      {profileAvatarUrl ? <img src={profileAvatarUrl} alt="" /> : <span>{initials(myProfileEmail || loginIdentifier)}</span>}
+                    <div
+                      className={`moreMenuProfileAvatar ${profileAvatarUrl ? "moreMenuProfileAvatar--img" : ""}`}
+                      role={profileAvatarUrl ? "button" : undefined}
+                      tabIndex={profileAvatarUrl ? 0 : undefined}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (!profileAvatarUrl) return;
+                        setPhotoLightboxUrl(String(profileAvatarUrl));
+                      }}
+                      onKeyDown={(e) => {
+                        if (!profileAvatarUrl) return;
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setPhotoLightboxUrl(String(profileAvatarUrl));
+                        }
+                      }}
+                    >
+                      {profileAvatarUrl ? <img src={profileAvatarUrl} alt="" draggable={false} /> : <span>{initials(myProfileEmail || loginIdentifier)}</span>}
                     </div>
                     <div className="moreMenuProfileText">
                       <div className="moreMenuProfileName">
@@ -7612,8 +7668,23 @@ export default function App() {
               {profileMsg ? <div className="empty userCabinetMsg">{profileMsg}</div> : null}
               <div className="companyBody userCabinetBody">
                 <div className="profileHeaderRow userCabinetProfileHeader">
-                  <div className="profileAvatarPreview userCabinetAvatar">
-                    {profileAvatarUrl ? <img src={profileAvatarUrl} alt="avatar" /> : <span>{initials(myProfileEmail || loginIdentifier)}</span>}
+                  <div
+                    className="profileAvatarPreview userCabinetAvatar"
+                    role={profileAvatarUrl ? "button" : undefined}
+                    tabIndex={profileAvatarUrl ? 0 : undefined}
+                    onClick={() => {
+                      if (!profileAvatarUrl) return;
+                      setPhotoLightboxUrl(String(profileAvatarUrl));
+                    }}
+                    onKeyDown={(e) => {
+                      if (!profileAvatarUrl) return;
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        setPhotoLightboxUrl(String(profileAvatarUrl));
+                      }
+                    }}
+                  >
+                    {profileAvatarUrl ? <img src={profileAvatarUrl} alt="avatar" draggable={false} /> : <span>{initials(myProfileEmail || loginIdentifier)}</span>}
                   </div>
                   <div className="userCabinetIdentity">
                     <div className="userCabinetDisplayName">
@@ -7754,7 +7825,8 @@ export default function App() {
         <section className="messages mainMessages" ref={messagesWrapRef}>
           {(pendingGroupMeshIncoming ||
             (pendingCallDeepLink && mode === "dms") ||
-            (pendingGroupCallDeepLink && mode === "groups" && activeGroupChat && groupCallInviteUrlForHeader)) ? (
+            (pendingGroupCallDeepLink && mode === "groups" && activeGroupChat && groupCallInviteUrlForHeader) ||
+            dmCallStripVisible) ? (
             <div className="mainMessagesCallStrip">
               {pendingGroupMeshIncoming ? (
                 <div className="groupMeshIncomingBar" role="status">
@@ -7779,10 +7851,36 @@ export default function App() {
               {pendingCallDeepLink && mode === "dms" ? (
                 <div className="callDeepLinkBar">
                   <span className="callDeepLinkDmHint">
-                    Созвоны в групповом чате: создайте группу с собеседниками или откройте приглашение по ссылке из группы.
+                    Ссылка на личный созвон: выберите микрофон и камеру и присоединитесь.
                   </span>
+                  <button type="button" className="chip chip--compact" onClick={() => setCallJoinModalKind("dm")}>
+                    Настроить и позвонить
+                  </button>
                   <button type="button" className="chip chip--compact" onClick={() => setPendingCallDeepLink(false)}>
                     Закрыть
+                  </button>
+                </div>
+              ) : null}
+              {dmCallStripVisible ? (
+                <div className="callDeepLinkBar" role="status">
+                  <span className="callDeepLinkDmHint">Собеседник в созвоне или встреча ещё активна</span>
+                  <button type="button" className="chip chip--compact" onClick={() => setCallJoinModalKind("dm")}>
+                    Присоединиться
+                  </button>
+                  <button
+                    type="button"
+                    className="chip chip--compact"
+                    onClick={() => {
+                      if (!activeDirectChat) return;
+                      const m = dmMeshGroupChatId(activeDirectChat.id);
+                      setGroupCallLiveAt((prev) => {
+                        if (prev[m] == null) return prev;
+                        const { [m]: _, ...rest } = prev;
+                        return rest;
+                      });
+                    }}
+                  >
+                    Скрыть
                   </button>
                 </div>
               ) : null}

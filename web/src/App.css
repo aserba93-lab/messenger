@@ -1827,6 +1827,11 @@ button.active {
 .typing {
   font-size: 12px;
   opacity: 0.8;
+  color: var(--tg-muted);
+}
+:root[data-theme="light"] .mainMessages .typing {
+  color: var(--tg-muted);
+  opacity: 1;
 }
 
 .msg {
@@ -2024,6 +2029,21 @@ button.active {
 .composerInput:focus {
   border-color: rgba(110, 170, 255, 0.35);
   box-shadow: 0 0 0 3px rgba(110, 170, 255, 0.12);
+}
+:root[data-theme="light"] .composerInput {
+  background: #fff;
+  color: var(--tg-text);
+  border-color: var(--tg-border-subtle);
+}
+:root[data-theme="light"] .composer button {
+  background: rgba(255, 255, 255, 0.92);
+  border-color: var(--tg-border-subtle);
+  color: var(--tg-text);
+}
+:root[data-theme="light"] .composer button[type="submit"] {
+  background: #6f5acd;
+  border-color: rgba(90, 60, 180, 0.35);
+  color: #fff;
 }
 
 .voiceHoldBar {
@@ -3198,6 +3218,20 @@ pre {
 .moreMenuProfileAvatar--img {
   padding: 0;
   border: none;
+}
+.moreMenuProfileAvatar[role="button"] {
+  cursor: pointer;
+}
+.moreMenuProfileAvatar[role="button"]:focus-visible {
+  outline: 2px solid var(--tg-accent);
+  outline-offset: 2px;
+}
+.userCabinetAvatar.profileAvatarPreview[role="button"] {
+  cursor: pointer;
+}
+.userCabinetAvatar.profileAvatarPreview[role="button"]:focus-visible {
+  outline: 2px solid var(--tg-accent);
+  outline-offset: 2px;
 }
 .moreMenuProfileAvatar img {
   width: 100%;
