@@ -796,10 +796,36 @@ export default function App() {
     tick();
     return () => window.clearInterval(id);
   }, [webrtcUi]);
+
+  /** Удалённое видео/аудио: при добавлении второго трека в тот же MediaStream <video> иногда не обновляется без play() и addtrack. */
+  useEffect(() => {
+    const stream = webrtcUi?.remoteStream ?? null;
+    const el = webrtcRemoteVideoRef.current;
+    if (!el) return;
+    if (!stream) {
+      el.srcObject = null;
+      return;
+    }
+    el.srcObject = stream;
+    const tryPlay = () => void el.play().catch(() => {});
+    tryPlay();
+    stream.addEventListener("addtrack", tryPlay);
+    stream.addEventListener("removetrack", tryPlay);
+    return () => {
+      stream.removeEventListener("addtrack", tryPlay);
+      stream.removeEventListener("removetrack", tryPlay);
+    };
+  }, [
+    webrtcUi?.remoteStream,
+    webrtcUi?.remoteStream
+      ? webrtcUi.remoteStream.getTracks().map((t) => `${t.id}:${t.readyState}`).join("|")
+      : "",
+  ]);
   const userIdRef = useRef("");
   const directChatsRef = useRef<DirectChat[]>([]);
   const webrtcBusyRef = useRef(false);
   const webrtcPeerRef = useRef("");
+  const webrtcRemoteVideoRef = useRef<HTMLVideoElement | null>(null);
   const [reactionPopover, setReactionPopover] = useState<null | { messageId: string; top: number; left: number }>(null);
   const reactionPopoverRef = useRef<HTMLDivElement | null>(null);
   const [isRecordingVoice, setIsRecordingVoice] = useState(false);
@@ -2171,20 +2197,20 @@ export default function App() {
     socketRef.current = null;
     const iosLike = isIosLikeBrowser();
     const standalone = isStandaloneWebApp();
-    const pwaIos = iosLike && standalone;
+    // Любое приложение с экрана «Домой» (iOS/Android): WebSocket к Socket.IO часто нестабилен — только long-polling.
+    const pwaStandalone = standalone;
     const s = io(SOCKET_URL, {
       auth: { token },
       path: "/socket.io/",
-      // PWA на iOS: только polling + без upgrade — иначе после connect сессия часто обрывается и presence не приходит.
-      transports: pwaIos ? ["polling"] : iosLike ? ["polling", "websocket"] : ["websocket", "polling"],
-      upgrade: !pwaIos,
+      transports: pwaStandalone ? ["polling"] : iosLike ? ["polling", "websocket"] : ["websocket", "polling"],
+      upgrade: !pwaStandalone,
       reconnection: true,
       reconnectionAttempts: 25,
       reconnectionDelay: 800,
     });
     s.on("connect", () => {
-      pushLog(pwaIos ? "Socket подключен (PWA, long-polling)." : "Socket подключен.");
-      if (pwaIos && organizationId.trim()) {
+      pushLog(pwaStandalone ? "Socket подключен (ярлык на Домой, long-polling)." : "Socket подключен.");
+      if (pwaStandalone && organizationId.trim()) {
         window.setTimeout(() => void loadUsers(), 700);
       }
     });
@@ -3835,7 +3861,7 @@ export default function App() {
       void loadGroupChats();
       void loadDirectChats();
       if (workspaceId) void loadChannels();
-      if (isIosLikeBrowser() && isStandaloneWebApp() && organizationId) void loadUsers();
+      if (isStandaloneWebApp() && organizationId) void loadUsers();
       if (threadRootId || showPins || showSaved) return;
       if (mode === "channels" && activeChannelId) void loadMessages(activeChannelId);
       else if (mode === "groups" && activeGroupChatId) void loadGroupMessages(activeGroupChatId);
@@ -3847,6 +3873,17 @@ export default function App() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token, workspaceId, organizationId, mode, activeChannelId, activeGroupChatId, activeDirectChatId, threadRootId, showPins, showSaved]);
+
+  /** Ярлык на экран «Домой»: периодически подтягиваем статусы из API (резерв, если сокет снова отвалится). */
+  useEffect(() => {
+    if (!token || !organizationId.trim()) return;
+    if (!isStandaloneWebApp()) return;
+    const id = window.setInterval(() => {
+      if (document.visibilityState === "visible") void loadUsers();
+    }, 20000);
+    return () => window.clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token, organizationId]);
 
   async function openThread(parentMessageId: string) {
     if (!token) return;
@@ -6845,9 +6882,7 @@ export default function App() {
             <div className="webrtcPanel webrtcPanel--fullscreen">
               <div className="webrtcStage">
                 <video
-                  ref={(el) => {
-                    if (el) el.srcObject = webrtcUi.remoteStream;
-                  }}
+                  ref={webrtcRemoteVideoRef}
                   autoPlay
                   playsInline
                   className={`webrtcRemote ${webrtcUi.audioOnly ? "webrtcRemote--audioOnly" : ""}`}

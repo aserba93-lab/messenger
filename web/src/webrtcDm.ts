@@ -48,8 +48,9 @@ export type ActiveCall = {
 function createPeerConnection(iceServers: RTCIceServer[]): RTCPeerConnection {
   return new RTCPeerConnection({
     iceServers,
-    iceCandidatePoolSize: 10,
-    bundlePolicy: "max-bundle",
+    iceCandidatePoolSize: 5,
+    // max-bundle иногда рвёт весь звонок, если один m-line не проходит; balanced стабильнее в «чужих» сетях.
+    bundlePolicy: "balanced",
     rtcpMuxPolicy: "require",
   } as RTCConfiguration);
 }
