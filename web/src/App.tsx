@@ -789,6 +789,10 @@ export default function App() {
   const [incomingCall, setIncomingCall] = useState<null | { fromUserId: string; offerSdp: string; audioOnly: boolean }>(
     null,
   );
+  const incomingCallRef = useRef<null | { fromUserId: string; offerSdp: string; audioOnly: boolean }>(null);
+  useEffect(() => {
+    incomingCallRef.current = incomingCall;
+  }, [incomingCall]);
   useEffect(() => {
     if (!webrtcUi || webrtcUi.audioOnly) return;
     const tick = () => setWebrtcScreenSharing(webrtcUi.activeCall.isScreenSharing());
@@ -824,6 +828,10 @@ export default function App() {
   const userIdRef = useRef("");
   const directChatsRef = useRef<DirectChat[]>([]);
   const webrtcBusyRef = useRef(false);
+  /** Пока звонок не принят, ICE только здесь — обработчик webrtcDm ещё не подписан. */
+  const incomingCallIceBufferRef = useRef<Array<{ candidate: string; sdpMid?: string | null; sdpMLineIndex?: number | null }>>(
+    [],
+  );
   const webrtcPeerRef = useRef("");
   const webrtcRemoteVideoRef = useRef<HTMLVideoElement | null>(null);
   const [reactionPopover, setReactionPopover] = useState<null | { messageId: string; top: number; left: number }>(null);
@@ -2484,11 +2492,25 @@ export default function App() {
     s.on("call:signal", (data: any) => {
       const from = String(data?.fromUserId ?? "");
       const p = data?.payload;
-      if (!from || !p || p.type !== "offer" || !p.sdp) return;
+      if (!from || !p) return;
+      // Trickle ICE до принятия входящего: иначе события теряются (слушатель в webrtcDm ещё не зарегистрирован).
+      if (p.type === "ice" && p.candidate) {
+        const ic = incomingCallRef.current;
+        if (ic && from === ic.fromUserId) {
+          incomingCallIceBufferRef.current.push({
+            candidate: p.candidate,
+            sdpMid: p.sdpMid,
+            sdpMLineIndex: p.sdpMLineIndex,
+          });
+        }
+        return;
+      }
+      if (p.type !== "offer" || !p.sdp) return;
       const uid = userIdRef.current;
       if (!uid || from === uid) return;
       /** Сервер пропускает только участников одной организации; локальный список DM может быть ещё не загружен. */
       if (webrtcBusyRef.current) return;
+      incomingCallIceBufferRef.current = [];
       const audioOnly = !String(p.sdp).includes("m=video");
       setIncomingCall({ fromUserId: from, offerSdp: p.sdp, audioOnly });
       // OS notification for incoming call (when tab is hidden / another tab)
@@ -2801,11 +2823,13 @@ export default function App() {
     webrtcBusyRef.current = true;
     const { fromUserId, offerSdp, audioOnly } = incomingCall;
     setIncomingCall(null);
+    const preBufferedIceCandidates = incomingCallIceBufferRef.current.splice(0, incomingCallIceBufferRef.current.length);
     try {
       const ac = await acceptIncomingOffer(socket, {
         fromUserId,
         offerSdp,
         audioOnly,
+        preBufferedIceCandidates,
         onRemoteStream: (stream) => {
           setWebrtcUi((prev) => (prev ? { ...prev, remoteStream: stream } : null));
         },
@@ -2848,6 +2872,7 @@ export default function App() {
   function declineIncomingCall() {
     if (!incomingCall || !socket) return;
     socket.emit("call:end", { targetUserId: incomingCall.fromUserId });
+    incomingCallIceBufferRef.current = [];
     setIncomingCall(null);
   }
 

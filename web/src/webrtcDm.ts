@@ -332,6 +332,8 @@ export async function acceptIncomingOffer(
     fromUserId: string;
     offerSdp: string;
     audioOnly: boolean;
+    /** ICE, пришедшие по сокету до создания PC (пока шёл входящий звонок). */
+    preBufferedIceCandidates?: RTCIceCandidateInit[];
     onRemoteStream: (s: MediaStream) => void;
     onClose: () => void;
   },
@@ -395,6 +397,11 @@ export async function acceptIncomingOffer(
 
   await pc.setRemoteDescription({ type: "offer", sdp: opts.offerSdp });
   await iceQueue.flush();
+  if (opts.preBufferedIceCandidates?.length) {
+    for (const init of opts.preBufferedIceCandidates) {
+      await iceQueue.push(init);
+    }
+  }
 
   const answer = await pc.createAnswer();
   await pc.setLocalDescription(answer);

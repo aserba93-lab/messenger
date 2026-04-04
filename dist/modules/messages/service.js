@@ -668,7 +668,7 @@ export class MessagesService {
                 birthDate: u.birthDate,
                 avatarUrl: u.avatarUrl,
                 phone: null,
-                status: (org?.status ?? u.status),
+                status: u.status ?? org?.status ?? "offline",
                 statusEmoji: null,
                 statusText: null,
                 title: org?.title ?? null,

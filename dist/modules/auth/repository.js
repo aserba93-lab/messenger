@@ -298,7 +298,8 @@ export class AuthRepository {
             birthDate: m.user.birthDate,
             avatarUrl: m.user.avatarUrl,
             phone: m.user.phone ?? null,
-            status: m.status,
+            // Сокет обновляет User.status; OrganizationMember.status по умолчанию offline и не синхронизируется.
+            status: m.user.status,
             department: m.department,
             title: m.title,
             role: m.role,
