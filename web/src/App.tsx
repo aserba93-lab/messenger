@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, FormEvent, MouseEvent, ReactNode } from "react";
 import { io, Socket } from "socket.io-client";
 import * as XLSX from "xlsx";
-import { acceptIncomingOffer, debugIceServers, type ActiveCall } from "./webrtcDm";
+import { acceptIncomingOffer, debugIceServers, startOutgoingCall, type ActiveCall } from "./webrtcDm";
 import { createGroupMeshSession, GroupMeshSession, GROUP_MESH_MAX_PEERS } from "./webrtcGroupMesh";
 import {
   createFolderId,
@@ -1025,7 +1025,9 @@ export default function App() {
   }, [userChatFolderLayout, token, userId]);
   const [chatMenu, setChatMenu] = useState<null | { x: number; y: number; key: string; sub: "main" | "notify" | "folder" }>(null);
   const chatMenuRef = useRef<HTMLDivElement | null>(null);
-  const [groupCallJoinModalOpen, setGroupCallJoinModalOpen] = useState(false);
+  /** null | group — mesh; dm — личный 1:1 */
+  const [callJoinModalKind, setCallJoinModalKind] = useState<null | "group" | "dm">(null);
+  const [photoLightboxUrl, setPhotoLightboxUrl] = useState<string | null>(null);
   /** В группе: сначала список участников, затем выбор аудио/видео */
   const [chatMetaPopoverOpen, setChatMetaPopoverOpen] = useState(false);
   const callMenuWrapRef = useRef<HTMLDivElement | null>(null);
@@ -1778,6 +1780,24 @@ export default function App() {
     [mode, userId, activeDirectChat],
   );
 
+  const dmPeerAvatarUrl = useMemo(() => {
+    if (mode !== "dms" || isSelfNotesActiveDm || !activeDirectChat || !userId) return null;
+    const otherId = activeDirectChat.userIds.find((id) => id !== userId) ?? activeDirectChat.userIds[0] ?? "";
+    if (!otherId) return null;
+    const u = users.find((x) => x.id === otherId);
+    return u?.avatarUrl ? String(u.avatarUrl) : null;
+  }, [mode, isSelfNotesActiveDm, activeDirectChat, userId, users]);
+
+  const headerAvatarPhotoUrl = useMemo(() => {
+    if (mode === "channels") return activeChannel?.avatarUrl ? String(activeChannel.avatarUrl) : null;
+    if (mode === "groups") return activeGroupChat?.avatarUrl ? String(activeGroupChat.avatarUrl) : null;
+    if (mode === "dms") {
+      if (isSelfNotesActiveDm) return profileAvatarUrl ? String(profileAvatarUrl) : null;
+      return dmPeerAvatarUrl;
+    }
+    return null;
+  }, [mode, activeChannel, activeGroupChat, isSelfNotesActiveDm, profileAvatarUrl, dmPeerAvatarUrl]);
+
   const infoPanelPhotos = useMemo(
     () =>
       messages.filter(
@@ -1948,7 +1968,7 @@ export default function App() {
   }, [chatMenu]);
 
   useEffect(() => {
-    setGroupCallJoinModalOpen(false);
+    setCallJoinModalKind(null);
   }, [mode, activeChannelId, activeGroupChatId, activeDirectChatId]);
 
   useEffect(() => {
@@ -3734,6 +3754,84 @@ export default function App() {
       groupMeshSessionRef.current = null;
       setGroupMeshUi(null);
       webrtcBusyRef.current = false;
+    }
+  }
+
+  async function startDmCall(prefs: { video: boolean; mic: boolean }) {
+    if (!canStartCalls) {
+      setChatError("Недостаточно прав для звонков");
+      return;
+    }
+    const sock = socketRef.current;
+    if (!activeDirectChat || !userId || !sock) {
+      setChatError("Откройте личный чат и дождитесь подключения");
+      return;
+    }
+    if (isSelfNotesActiveDm) {
+      setChatError("Нельзя позвонить в «Избранное»");
+      return;
+    }
+    const otherId = activeDirectChat.userIds.find((id) => id !== userId) ?? activeDirectChat.userIds[0] ?? "";
+    if (!otherId || otherId === userId) {
+      setChatError("Нет собеседника для звонка");
+      return;
+    }
+    if (webrtcBusyRef.current) return;
+    const audioOnly = !prefs.video;
+    webrtcBusyRef.current = true;
+    let pendingRemoteStream: MediaStream | null = null;
+    try {
+      const ac = await startOutgoingCall(sock, {
+        targetUserId: otherId,
+        audioOnly,
+        onRemoteStream: (stream) => {
+          setWebrtcUi((prev) => {
+            if (prev) return { ...prev, remoteStream: stream };
+            pendingRemoteStream = stream;
+            return prev;
+          });
+        },
+        onClose: () => {
+          webrtcBusyRef.current = false;
+          webrtcPeerRef.current = "";
+          setWebrtcPeerHandRaised(false);
+          setWebrtcLocalHandRaised(false);
+          setWebrtcScreenSharing(false);
+          setWebrtcUi(null);
+        },
+      });
+      ac.localStream.getAudioTracks().forEach((t) => {
+        t.enabled = prefs.mic;
+      });
+      if (!audioOnly) {
+        ac.localStream.getVideoTracks().forEach((t) => {
+          t.enabled = prefs.video;
+        });
+      }
+      attachWebrtcDiagnostics(ac.pc, `out:${otherId}`);
+      webrtcPeerRef.current = otherId;
+      setWebrtcMicOn(prefs.mic);
+      setWebrtcCamOn(!audioOnly && prefs.video);
+      setWebrtcPeerHandRaised(false);
+      setWebrtcLocalHandRaised(false);
+      setWebrtcUi({
+        localStream: ac.localStream,
+        remoteStream: pendingRemoteStream,
+        hangup: () => {
+          webrtcPeerRef.current = "";
+          setWebrtcPeerHandRaised(false);
+          setWebrtcLocalHandRaised(false);
+          setWebrtcScreenSharing(false);
+          ac.hangup();
+        },
+        audioOnly,
+        activeCall: ac,
+        callPeerId: otherId,
+      });
+    } catch (e: any) {
+      webrtcBusyRef.current = false;
+      setChatError(String(e?.message ?? e));
+      diagLog(`startDmCall error: ${String(e?.name ?? "")} ${String(e?.message ?? e)}`);
     }
   }
 
@@ -6886,14 +6984,18 @@ export default function App() {
                 ☰
               </button>
               <div
-                className={`tgHeaderAvatar ${mode === "channels" && activeChannel?.avatarUrl ? "tgHeaderAvatar--img" : ""} ${mode === "groups" && activeGroupChat?.avatarUrl ? "tgHeaderAvatar--img" : ""} ${mode === "dms" && isSelfNotesActiveDm && profileAvatarUrl ? "tgHeaderAvatar--img" : ""}`}
+                className={`tgHeaderAvatar ${mode === "channels" && activeChannel?.avatarUrl ? "tgHeaderAvatar--img" : ""} ${mode === "groups" && activeGroupChat?.avatarUrl ? "tgHeaderAvatar--img" : ""} ${mode === "dms" && isSelfNotesActiveDm && profileAvatarUrl ? "tgHeaderAvatar--img" : ""} ${mode === "dms" && dmPeerAvatarUrl ? "tgHeaderAvatar--img" : ""}`}
                 role="button"
                 tabIndex={0}
-                onClick={() => setShowRightPanel(true)}
+                onClick={() => {
+                  if (headerAvatarPhotoUrl) setPhotoLightboxUrl(headerAvatarPhotoUrl);
+                  else setShowRightPanel(true);
+                }}
                 onKeyDown={(e) => {
                   if (e.key === "Enter" || e.key === " ") {
                     e.preventDefault();
-                    setShowRightPanel(true);
+                    if (headerAvatarPhotoUrl) setPhotoLightboxUrl(headerAvatarPhotoUrl);
+                    else setShowRightPanel(true);
                   }
                 }}
               >
@@ -7063,18 +7165,27 @@ export default function App() {
                 <button
                   type="button"
                   className="tgCircleBtn tgCircleBtn--call"
-                  title="Групповой видеосозвон (только в группе)"
+                  title={mode === "dms" ? "Звонок в личном чате" : "Групповой видеосозвон"}
                   disabled={
                     !canStartCalls ||
                     !socket ||
-                    mode === "dms" ||
+                    mode === "channels" ||
                     (mode === "groups" &&
                       (!activeGroupChat || !(activeGroupChat.memberIds ?? []).some((id) => id !== userId))) ||
-                    mode === "channels"
+                    (mode === "dms" &&
+                      (!activeDirectChat ||
+                        isSelfNotesActiveDm ||
+                        !(activeDirectChat.userIds ?? []).some((id) => id !== userId)))
                   }
                   onClick={() => {
-                    if (canStartCalls && socket && mode === "groups" && activeGroupChat && (activeGroupChat.memberIds ?? []).some((id) => id !== userId)) {
-                      setGroupCallJoinModalOpen(true);
+                    if (!canStartCalls || !socket) return;
+                    if (mode === "groups" && activeGroupChat && (activeGroupChat.memberIds ?? []).some((id) => id !== userId)) {
+                      setCallJoinModalKind("group");
+                      return;
+                    }
+                    if (mode === "dms" && activeDirectChat && !isSelfNotesActiveDm) {
+                      const other = activeDirectChat.userIds.find((id) => id !== userId);
+                      if (other) setCallJoinModalKind("dm");
                     }
                   }}
                 >
@@ -8272,8 +8383,8 @@ export default function App() {
             </div>
           </div>
         ) : null}
-        {groupCallJoinModalOpen ? (
-          <div className="modalBackdrop" role="presentation" onClick={() => setGroupCallJoinModalOpen(false)}>
+        {callJoinModalKind ? (
+          <div className="modalBackdrop" role="presentation" onClick={() => setCallJoinModalKind(null)}>
             <div
               className="modalPanel groupCallJoinModal"
               role="dialog"
@@ -8285,7 +8396,7 @@ export default function App() {
                 📹
               </div>
               <h2 id="groupCallJoinTitle" className="groupCallJoinModalTitle">
-                Подключение к встрече
+                {callJoinModalKind === "dm" ? "Личный звонок" : "Подключение к встрече"}
               </h2>
               <p className="groupCallJoinModalHint">Включите или выключите камеру и микрофон до входа</p>
               <div className="groupCallJoinToggles">
@@ -8304,23 +8415,58 @@ export default function App() {
                   {groupCallPreJoinMic ? "🎤 Микрофон включён" : "🎤 Микрофон выключен"}
                 </button>
               </div>
-              <p className="groupCallJoinModalMeta">Одновременно до {GROUP_MESH_MAX_PEERS} участников (не считая вас)</p>
+              {callJoinModalKind === "group" ? (
+                <p className="groupCallJoinModalMeta">Одновременно до {GROUP_MESH_MAX_PEERS} участников (не считая вас)</p>
+              ) : (
+                <p className="groupCallJoinModalMeta" style={{ opacity: 0.65 }}>
+                  Собеседник получит входящий звонок
+                </p>
+              )}
               <div className="groupCallJoinActions">
-                <button type="button" className="chip" onClick={() => setGroupCallJoinModalOpen(false)}>
+                <button type="button" className="chip" onClick={() => setCallJoinModalKind(null)}>
                   Отмена
                 </button>
                 <button
                   type="button"
                   className="chip groupCallJoinPrimary"
                   onClick={() => {
-                    setGroupCallJoinModalOpen(false);
-                    void startGroupMesh({ video: groupCallPreJoinCam, mic: groupCallPreJoinMic });
+                    const kind = callJoinModalKind;
+                    setCallJoinModalKind(null);
+                    if (kind === "group") void startGroupMesh({ video: groupCallPreJoinCam, mic: groupCallPreJoinMic });
+                    if (kind === "dm") void startDmCall({ video: groupCallPreJoinCam, mic: groupCallPreJoinMic });
                   }}
                 >
-                  Присоединиться к встрече
+                  {callJoinModalKind === "dm" ? "Позвонить" : "Присоединиться к встрече"}
                 </button>
               </div>
             </div>
+          </div>
+        ) : null}
+        {photoLightboxUrl ? (
+          <div
+            className="photoLightbox"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Просмотр фото"
+            onClick={() => setPhotoLightboxUrl(null)}
+          >
+            <button
+              type="button"
+              className="photoLightboxClose"
+              aria-label="Закрыть"
+              onClick={(e) => {
+                e.stopPropagation();
+                setPhotoLightboxUrl(null);
+              }}
+            >
+              ✕
+            </button>
+            <img
+              src={photoLightboxUrl}
+              alt=""
+              className="photoLightboxImg"
+              onClick={(e) => e.stopPropagation()}
+            />
           </div>
         ) : null}
       </main>
@@ -8346,7 +8492,23 @@ export default function App() {
             </div>
             <div className="infoPanelBody">
               <div
-                className={`infoPanelHeroAvatar ${mode === "channels" && activeChannel?.avatarUrl ? "infoPanelHeroAvatar--img" : ""} ${mode === "groups" && activeGroupChat?.avatarUrl ? "infoPanelHeroAvatar--img" : ""} ${mode === "dms" && isSelfNotesActiveDm && profileAvatarUrl ? "infoPanelHeroAvatar--img" : ""}`}
+                className={`infoPanelHeroAvatar ${mode === "channels" && activeChannel?.avatarUrl ? "infoPanelHeroAvatar--img" : ""} ${mode === "groups" && activeGroupChat?.avatarUrl ? "infoPanelHeroAvatar--img" : ""} ${mode === "dms" && isSelfNotesActiveDm && profileAvatarUrl ? "infoPanelHeroAvatar--img" : ""} ${mode === "dms" && dmPeerAvatarUrl ? "infoPanelHeroAvatar--img" : ""}`}
+                role="presentation"
+                onClick={() => {
+                  if (mode === "channels" && activeChannel?.avatarUrl) setPhotoLightboxUrl(String(activeChannel.avatarUrl));
+                  else if (mode === "groups" && activeGroupChat?.avatarUrl) setPhotoLightboxUrl(String(activeGroupChat.avatarUrl));
+                  else if (mode === "dms" && isSelfNotesActiveDm && profileAvatarUrl) setPhotoLightboxUrl(String(profileAvatarUrl));
+                  else if (mode === "dms" && dmPeerAvatarUrl) setPhotoLightboxUrl(dmPeerAvatarUrl);
+                }}
+                style={{
+                  cursor:
+                    (mode === "channels" && activeChannel?.avatarUrl) ||
+                    (mode === "groups" && activeGroupChat?.avatarUrl) ||
+                    (mode === "dms" && isSelfNotesActiveDm && profileAvatarUrl) ||
+                    (mode === "dms" && dmPeerAvatarUrl)
+                      ? "zoom-in"
+                      : undefined,
+                }}
               >
                 {mode === "channels" ? (
                   activeChannel?.avatarUrl ? (
@@ -8370,6 +8532,9 @@ export default function App() {
                   (() => {
                     const otherId = activeDirectChat?.userIds.find((id) => id !== userId) ?? activeDirectChat?.userIds[0] ?? "";
                     const u = users.find((x) => x.id === otherId);
+                    if (dmPeerAvatarUrl) {
+                      return <img src={dmPeerAvatarUrl} alt="" className="infoPanelHeroAvatarImg" />;
+                    }
                     return initials(displayUserNameForSidebar(u, otherId || "Л"));
                   })()
                 )}
