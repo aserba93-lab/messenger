@@ -676,10 +676,11 @@ export default function App() {
     }
   }, [browserNotify]);
 
-  /** Ярлык «Домой» (PWA): один раз запросить разрешение на уведомления — иначе нет баннеров о сообщениях и входящем звонке в фоне. */
+  /** PWA на ПК/Android: один раз авто-запрос разрешения. На iPhone запрос без нажатия обычно игнорируется — там баннер с кнопкой «Разрешить». */
   useEffect(() => {
     if (!token) return;
     if (!isStandaloneWebApp()) return;
+    if (isIosLikeBrowser()) return;
     if (typeof Notification === "undefined") return;
     if (Notification.permission !== "default") return;
     try {
@@ -858,7 +859,7 @@ export default function App() {
     return () => window.clearInterval(id);
   }, [webrtcUi]);
 
-  /** Удалённое видео/аудио: при добавлении второго трека в тот же MediaStream <video> иногда не обновляется без play() и addtrack. */
+  /** Удалённое видео/аудио: Safari/iOS часто даёт чёрный экран при смешанном потоке — для видеозвонка разделяем дорожки: video только видео (muted), audio отдельно. */
   useEffect(() => {
     const stream = webrtcUi?.remoteStream ?? null;
     const videoEl = webrtcRemoteVideoRef.current;
@@ -884,15 +885,33 @@ export default function App() {
       };
     }
 
-    if (audioEl) audioEl.srcObject = null;
-    if (!videoEl) return;
+    if (!videoEl || !audioEl) return;
     if (!stream) {
       videoEl.srcObject = null;
+      audioEl.srcObject = null;
       return;
     }
-    videoEl.srcObject = stream;
+    const vTracks = stream.getVideoTracks();
+    const aTracks = stream.getAudioTracks();
+    videoEl.srcObject = vTracks.length ? new MediaStream(vTracks) : null;
+    audioEl.srcObject = aTracks.length ? new MediaStream(aTracks) : null;
+    try {
+      videoEl.setAttribute("playsinline", "");
+      videoEl.setAttribute("webkit-playsinline", "");
+    } catch {
+      /* ignore */
+    }
+    videoEl.muted = true;
     tryPlay(videoEl);
-    const onTrack = () => tryPlay(videoEl);
+    tryPlay(audioEl);
+    const onTrack = () => {
+      const v = stream.getVideoTracks();
+      const a = stream.getAudioTracks();
+      videoEl.srcObject = v.length ? new MediaStream(v) : null;
+      audioEl.srcObject = a.length ? new MediaStream(a) : null;
+      tryPlay(videoEl);
+      tryPlay(audioEl);
+    };
     stream.addEventListener("addtrack", onTrack);
     stream.addEventListener("removetrack", onTrack);
     return () => {
@@ -2489,7 +2508,9 @@ export default function App() {
         v === "forever" ||
         (v && v !== "forever" && !Number.isNaN(Date.parse(v)) && Date.now() < Date.parse(v));
 
-      const isCallOrMeetHint = /🎥|📞|Видеозвонок|видеовстреч|Аудиозвонок|видеовстречи/i.test(String(msg.content ?? ""));
+      const isCallOrMeetHint = /🎥|📞|🎬|Видеозвонок|видеовстреч|видео[\s-]?звон|Аудиозвонок|видеовстречи|созвон|созвонились|звонок|videocall|video\s*call|\bmeet(ing)?\b/i.test(
+        String(msg.content ?? ""),
+      );
       const shouldNotify =
         key &&
         !muted &&
@@ -5031,6 +5052,26 @@ export default function App() {
           <div className="appToastText">{appToast.text}</div>
         </div>
       ) : null}
+      {token &&
+      typeof Notification !== "undefined" &&
+      Notification.permission === "default" &&
+      (isIosLikeBrowser() || isStandaloneWebApp()) ? (
+        <div className="notifyPermissionBanner" role="status">
+          <span>
+            Чтобы приходили оповещения о сообщениях и звонках, нажмите «Разрешить». На iPhone нужен ярлык с экрана «Домой» и iOS 16.4+; в обычном Safari запрос часто недоступен без нажатия.
+          </span>
+          <button
+            type="button"
+            onClick={() => {
+              void Notification.requestPermission().then((r) => {
+                if (r === "granted") setBrowserNotify(true);
+              });
+            }}
+          >
+            Разрешить
+          </button>
+        </div>
+      ) : null}
       {viewportW < 800 && mobileSidebarOpen ? (
         <button type="button" className="sidebarBackdrop" aria-label="Закрыть список чатов" onClick={() => setMobileSidebarOpen(false)} />
       ) : null}
@@ -7161,21 +7202,29 @@ export default function App() {
                     className="webrtcRemote webrtcRemote--audioOnly"
                   />
                 ) : (
-                  <video
-                    key={
-                      webrtcUi.remoteStream
-                        ? `${webrtcUi.callPeerId}-${webrtcUi.remoteStream.id}-${webrtcUi.remoteStream
-                            .getTracks()
-                            .map((t) => `${t.id}:${t.muted ? "m" : "u"}`)
-                            .join("|")}`
-                        : `${webrtcUi.callPeerId}-nor`
-                    }
-                    ref={webrtcRemoteVideoRef}
-                    autoPlay
-                    playsInline
-                    muted={false}
-                    className="webrtcRemote"
-                  />
+                  <>
+                    <video
+                      key={
+                        webrtcUi.remoteStream
+                          ? `${webrtcUi.callPeerId}-${webrtcUi.remoteStream.id}-${webrtcUi.remoteStream
+                              .getTracks()
+                              .map((t) => `${t.id}:${t.muted ? "m" : "u"}`)
+                              .join("|")}`
+                          : `${webrtcUi.callPeerId}-nor`
+                      }
+                      ref={webrtcRemoteVideoRef}
+                      autoPlay
+                      playsInline
+                      muted
+                      className="webrtcRemote"
+                    />
+                    <audio
+                      ref={webrtcRemoteAudioRef}
+                      autoPlay
+                      playsInline
+                      className="webrtcRemote webrtcRemote--videoCallAudio"
+                    />
+                  </>
                 )}
                 {!webrtcUi.audioOnly ? (
                   <div className="webrtcLocalPip">

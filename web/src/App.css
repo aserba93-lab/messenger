@@ -50,7 +50,7 @@ body {
   top: max(12px, env(safe-area-inset-top, 12px));
   left: 50%;
   transform: translateX(-50%);
-  z-index: 100002;
+  z-index: 2147483000;
   max-width: min(92vw, 440px);
   padding: 12px 38px 12px 14px;
   border-radius: 12px;
@@ -75,6 +75,49 @@ body {
 }
 .appToastText {
   word-break: break-word;
+}
+
+.notifyPermissionBanner {
+  position: fixed;
+  top: max(8px, env(safe-area-inset-top, 8px));
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 2147482000;
+  max-width: min(94vw, 480px);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: 12px;
+  background: rgba(30, 30, 46, 0.96);
+  border: 1px solid var(--tg-border-subtle);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+  font-size: 13px;
+  line-height: 1.35;
+  color: var(--tg-text);
+}
+:root[data-theme="light"] .notifyPermissionBanner {
+  background: rgba(255, 255, 255, 0.97);
+}
+.notifyPermissionBanner button {
+  border: none;
+  border-radius: 8px;
+  padding: 6px 12px;
+  background: var(--tg-accent);
+  color: #fff;
+  font-weight: 600;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+/* Удалённый звук при видеозвонке (отдельный audio от video-треков) */
+.webrtcRemote--videoCallAudio {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
 }
 
 .authPage {
