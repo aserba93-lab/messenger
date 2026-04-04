@@ -598,6 +598,30 @@ io.on("connection", async (socket) => {
         });
         return !!peer;
     }
+    /** Уведомление участников группы о начале созвона (без SDP): ссылка и toast на клиенте */
+    socket.on("groupCall:invite", async (data) => {
+        const groupChatId = String(data?.groupChatId ?? "");
+        const audioOnly = Boolean(data?.audioOnly);
+        const inviteUrl = String(data?.inviteUrl ?? "");
+        if (!groupChatId)
+            return;
+        try {
+            const member = await prisma.groupChatMember.findUnique({
+                where: { groupChatId_userId: { groupChatId, userId: viewer.userId } },
+            });
+            if (!member)
+                return;
+            socket.to(`group:${groupChatId}`).emit("groupCall:invite", {
+                fromUserId: viewer.userId,
+                groupChatId,
+                audioOnly,
+                inviteUrl,
+            });
+        }
+        catch {
+            /* ignore */
+        }
+    });
     /** WebRTC сигналинг (1:1): клиент шлёт targetUserId + SDP/ICE, сервер пересылает адресату */
     socket.on("call:signal", async (data) => {
         const targetUserId = String(data?.targetUserId ?? "");

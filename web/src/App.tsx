@@ -657,6 +657,7 @@ export default function App() {
   const [chatPreviewByKey, setChatPreviewByKey] = useState<Record<string, { text: string; at: string }>>({});
   const [chatError, setChatError] = useState("");
   const [pendingCallDeepLink, setPendingCallDeepLink] = useState(false);
+  const [pendingGroupCallDeepLink, setPendingGroupCallDeepLink] = useState(false);
   const [myProfileId, setMyProfileId] = useState("");
   const [myProfileEmail, setMyProfileEmail] = useState("");
   /** Email текущего пользователя для оптимистичных сообщений (после загрузки профиля — из API). */
@@ -735,7 +736,7 @@ export default function App() {
     }
   }, [chatListScope]);
 
-  // Deep-link: #dm=<directChatId>&call=1
+  // Deep-link: #dm=<directChatId>&call=1 | #group=<groupChatId>&gcall=1
   useEffect(() => {
     if (!token) return;
     const onHash = () => {
@@ -745,11 +746,27 @@ export default function App() {
       const params = new URLSearchParams(raw.slice(1));
       const dm = params.get("dm");
       const call = params.get("call");
+      const group = params.get("group");
+      const gcall = params.get("gcall");
+      if (group) {
+        lastDeepLinkHashRef.current = raw;
+        void (async () => {
+          try {
+            await openChatFromList(`g:${group}`);
+            setPendingGroupCallDeepLink(gcall === "1");
+            setPendingCallDeepLink(false);
+          } catch {
+            /* ignore */
+          }
+        })();
+        return;
+      }
       if (!dm) return;
       lastDeepLinkHashRef.current = raw;
       void (async () => {
         try {
           await openChatFromList(`d:${dm}`);
+          setPendingGroupCallDeepLink(false);
           // На мобильных браузерах getUserMedia часто запрещён без явного клика пользователя.
           // Поэтому deep-link только открывает чат и показывает кнопку "Начать звонок".
           setPendingCallDeepLink(call === "1");
@@ -811,11 +828,13 @@ export default function App() {
   /** Внутренний групповой mesh WebRTC (несколько peer connections; лимит см. GROUP_MESH_MAX_PEERS). */
   const [groupMeshUi, setGroupMeshUi] = useState<null | {
     title: string;
+    groupChatId: string;
     audioOnly: boolean;
     localStream: MediaStream;
     remotes: Record<string, MediaStream | undefined>;
     hangup: () => void;
   }>(null);
+  const [groupMeshMediaTick, setGroupMeshMediaTick] = useState(0);
   const groupMeshSessionRef = useRef<GroupMeshSession | null>(null);
   const groupMeshJoiningRef = useRef(false);
   const meshSignalIceBufferRef = useRef<Record<string, unknown[]>>({});
@@ -827,6 +846,7 @@ export default function App() {
     saveChatFolders(userChatFolderLayout);
   }, [userChatFolderLayout]);
   const [chatMenu, setChatMenu] = useState<null | { x: number; y: number; key: string; sub: "main" | "notify" | "folder" }>(null);
+  const chatMenuRef = useRef<HTMLDivElement | null>(null);
   const [callMenuOpen, setCallMenuOpen] = useState(false);
   /** В группе: сначала список участников, затем выбор аудио/видео */
   const [groupCallMenuUserId, setGroupCallMenuUserId] = useState<string | null>(null);
@@ -965,17 +985,43 @@ export default function App() {
   /** Локальное превью в PWA/iOS: надёжнее держать srcObject и playsInline в эффекте. */
   useEffect(() => {
     if (!webrtcUi || webrtcUi.audioOnly) return;
+    const stream = webrtcUi.localStream;
     const el = webrtcLocalVideoRef.current;
-    if (!el) return;
-    el.srcObject = webrtcUi.localStream;
+    if (!el || !stream) return;
+    el.srcObject = stream;
     try {
       el.playsInline = true;
       el.setAttribute("webkit-playsinline", "");
     } catch {
       /* ignore */
     }
-    void el.play().catch(() => {});
-  }, [webrtcUi?.audioOnly, webrtcUi?.localStream]);
+    const bump = () => void el.play().catch(() => {});
+    bump();
+    requestAnimationFrame(bump);
+    window.setTimeout(bump, 120);
+    const tracks = stream.getVideoTracks();
+    for (const t of tracks) {
+      t.addEventListener("unmute", bump);
+      t.addEventListener("mute", bump);
+      t.addEventListener("ended", bump);
+    }
+    return () => {
+      for (const t of tracks) {
+        t.removeEventListener("unmute", bump);
+        t.removeEventListener("mute", bump);
+        t.removeEventListener("ended", bump);
+      }
+    };
+  }, [
+    webrtcUi?.audioOnly,
+    webrtcUi?.localStream,
+    webrtcUi?.localStream
+      ? webrtcUi.localStream
+          .getVideoTracks()
+          .map((t) => `${t.id}:${t.readyState}:${t.muted ? "m" : "u"}`)
+          .join("|")
+      : "",
+  ]);
   const userIdRef = useRef("");
   const directChatsRef = useRef<DirectChat[]>([]);
   const webrtcBusyRef = useRef(false);
@@ -1013,6 +1059,10 @@ export default function App() {
       lastSeen?: string | null;
     }[]
   >([]);
+  const usersRef = useRef(users);
+  useEffect(() => {
+    usersRef.current = users;
+  }, [users]);
   const companyUsersFiltered = useMemo(() => {
     const q = companyUserQuery.trim().toLowerCase();
     return users.filter((u) => {
@@ -1673,7 +1723,11 @@ export default function App() {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") setChatMenu(null);
     };
-    const onClick = () => setChatMenu(null);
+    const onClick = (e: Event) => {
+      const t = e.target;
+      if (t instanceof Node && chatMenuRef.current?.contains(t)) return;
+      setChatMenu(null);
+    };
     const onScroll = () => setChatMenu(null);
     window.addEventListener("keydown", onKey);
     window.addEventListener("click", onClick);
@@ -2637,7 +2691,7 @@ export default function App() {
         v === "forever" ||
         (v && v !== "forever" && !Number.isNaN(Date.parse(v)) && Date.now() < Date.parse(v));
 
-      const isCallOrMeetHint = /🎥|📞|🎬|Видеозвонок|видеовстреч|видео[\s-]?звон|Аудиозвонок|видеовстречи|созвон|созвонились|звонок|videocall|video\s*call|\bmeet(ing)?\b/i.test(
+      const isCallOrMeetHint = /🎥|📞|🎬|Видеозвонок|видеовстреч|видео[\s-]?звон|Аудиозвонок|видеовстречи|созвон|созвонились|звонок|групповой|mesh|gcall|videocall|video\s*call|\bmeet(ing)?\b/i.test(
         String(msg.content ?? ""),
       );
       const shouldNotify =
@@ -2932,6 +2986,52 @@ export default function App() {
       const from = String(data?.fromUserId ?? "");
       if (!from || from !== webrtcPeerRef.current) return;
       setWebrtcPeerHandRaised(!!data?.raised);
+    });
+    s.on("groupCall:invite", (data: any) => {
+      const from = String(data?.fromUserId ?? "");
+      const gc = String(data?.groupChatId ?? "");
+      const audioOnly = !!data?.audioOnly;
+      if (!from || !gc) return;
+      if (from === userIdRef.current) return;
+      const u = usersRef.current.find((x) => x.id === from);
+      const label = displayUserNameForSidebar(u, from);
+      const tabHidden = typeof document !== "undefined" && document.hidden;
+      let showed = false;
+      if (typeof Notification !== "undefined" && Notification.permission === "granted") {
+        try {
+          const n = new Notification("Групповой звонок", {
+            body: `${label} — ${audioOnly ? "аудио" : "видео"}. Откройте приложение.`,
+            tag: `gcall-inv:${gc}`,
+            requireInteraction: tabHidden,
+          });
+          showed = true;
+          n.onclick = () => {
+            try {
+              window.focus();
+            } catch {
+              /* ignore */
+            }
+            try {
+              n.close();
+            } catch {
+              /* ignore */
+            }
+          };
+        } catch {
+          /* ignore */
+        }
+      }
+      if (!showed) {
+        pushAppToast(`Групповой звонок: ${label} (${audioOnly ? "аудио" : "видео"})`);
+      }
+      try {
+        if (typeof navigator !== "undefined" && typeof (navigator as Navigator & { vibrate?: (p: number | number[]) => boolean }).vibrate === "function") {
+          (navigator as Navigator & { vibrate?: (p: number | number[]) => boolean }).vibrate?.([80, 50, 80]);
+        }
+      } catch {
+        /* ignore */
+      }
+      pushLog(`Групповой звонок: ${label}`);
     });
     socketRef.current = s;
     setSocket(s);
@@ -3322,6 +3422,7 @@ export default function App() {
       groupMeshSessionRef.current = session;
       setGroupMeshUi({
         title: g.name,
+        groupChatId: gc,
         audioOnly,
         localStream,
         remotes: {},
@@ -3388,15 +3489,21 @@ export default function App() {
         },
       });
       groupMeshSessionRef.current = session;
+      const base = `${window.location.origin}${window.location.pathname}`;
+      const inviteUrl = `${base}#group=${encodeURIComponent(activeGroupChat.id)}&gcall=1`;
       setGroupMeshUi({
         title: activeGroupChat.name,
+        groupChatId: activeGroupChat.id,
         audioOnly,
         localStream,
         remotes: {},
         hangup: hangupGroupMesh,
       });
       await session.startOfferers(peerIds);
-      void sendServiceMessageToCurrentChat(audioOnly ? `📞 Групповой звонок` : `🎥 Групповой видеозвонок`);
+      sock.emit("groupCall:invite", { groupChatId: activeGroupChat.id, audioOnly, inviteUrl });
+      void sendServiceMessageToCurrentChat(
+        `${audioOnly ? "📞" : "🎥"} Групповой ${audioOnly ? "аудио" : "видео"}звонок. Присоединиться по ссылке (войдите в аккаунт): ${inviteUrl}`,
+      );
       pushLog("Групповой mesh-созвон");
     } catch (e: any) {
       setChatError(String(e?.message ?? e));
@@ -3582,6 +3689,19 @@ export default function App() {
     const text = `${link}\n\nОткройте ссылку, войдите в аккаунт и этот личный чат — затем можно начать звонок из меню чата.`;
     void navigator.clipboard.writeText(text);
     pushLog("Ссылка на чат для созвона скопирована в буфер");
+  }
+
+  function copyGroupCallInviteLink() {
+    const gid = groupMeshUi?.groupChatId ?? (mode === "groups" ? activeGroupChatId : "");
+    if (!gid) {
+      setChatError("Ссылка на групповой созвон: откройте группу или начните групповой звонок");
+      return;
+    }
+    const base = `${window.location.origin}${window.location.pathname}`;
+    const link = `${base}#group=${encodeURIComponent(gid)}&gcall=1`;
+    const text = `${link}\n\nОткройте ссылку, войдите в аккаунт — откроется группа; в шапке чата нажмите «Присоединиться к созвону».`;
+    void navigator.clipboard.writeText(text);
+    pushLog("Ссылка на групповой созвон скопирована в буфер");
   }
 
   function toggleWebrtcMic() {
@@ -5734,19 +5854,56 @@ export default function App() {
             {!groupMeshUi.audioOnly ? (
               <div className="groupMeshLocalPip">
                 <video
+                  key={`gml-${groupMeshUi.groupChatId}-${groupMeshMediaTick}`}
                   className="webrtcLocal"
                   autoPlay
                   playsInline
                   muted
                   ref={(el) => {
-                    if (el && groupMeshUi.localStream) el.srcObject = groupMeshUi.localStream;
+                    if (el && groupMeshUi.localStream) {
+                      el.srcObject = groupMeshUi.localStream;
+                      void el.play().catch(() => {});
+                    }
                   }}
                 />
               </div>
             ) : null}
-            <div className="webrtcToolbar" style={{ justifyContent: "center" }}>
+            <div className="webrtcToolbar groupMeshToolbar">
+              <button
+                type="button"
+                className={`webrtcToolBtn ${
+                  groupMeshUi.localStream.getAudioTracks()[0]?.enabled !== false ? "webrtcToolBtn--on" : "webrtcToolBtn--off"
+                }`}
+                onClick={() => {
+                  groupMeshUi.localStream.getAudioTracks().forEach((t) => {
+                    t.enabled = !t.enabled;
+                  });
+                  setGroupMeshMediaTick((x) => x + 1);
+                }}
+              >
+                🎤 Мик
+              </button>
+              {!groupMeshUi.audioOnly ? (
+                <button
+                  type="button"
+                  className={`webrtcToolBtn ${
+                    groupMeshUi.localStream.getVideoTracks()[0]?.enabled !== false ? "webrtcToolBtn--on" : "webrtcToolBtn--off"
+                  }`}
+                  onClick={() => {
+                    groupMeshUi.localStream.getVideoTracks().forEach((t) => {
+                      t.enabled = !t.enabled;
+                    });
+                    setGroupMeshMediaTick((x) => x + 1);
+                  }}
+                >
+                  📷 Кам
+                </button>
+              ) : null}
+              <button type="button" className="webrtcToolBtn" onClick={() => copyGroupCallInviteLink()} title="Ссылка для новых участников">
+                🔗 Ссылка
+              </button>
               <button type="button" className="webrtcToolBtn webrtcToolBtn--danger" onClick={() => groupMeshUi.hangup()}>
-                Завершить для всех
+                Завершить
               </button>
             </div>
           </div>
@@ -6379,7 +6536,13 @@ export default function App() {
         ) : null}
 
         {chatMenu ? (
-          <div className="chatMenu chatMenu--wide" style={{ top: chatMenu.y, left: chatMenu.x }} role="menu">
+          <div
+            ref={chatMenuRef}
+            className="chatMenu chatMenu--wide"
+            style={{ top: chatMenu.y, left: chatMenu.x }}
+            role="menu"
+            onClick={(e) => e.stopPropagation()}
+          >
             {chatMenu.sub === "main" ? (
               <>
                 <button type="button" className="msgMenuItem" onClick={() => { togglePin(chatMenu.key); setChatMenu(null); }}>
@@ -6420,6 +6583,11 @@ export default function App() {
                 </button>
                 <div className="msgMenuSep" />
                 <div className="msgMenuSub">Переместить в папку (локально на устройстве)</div>
+                {userChatFolderLayout.folders.length === 0 ? (
+                  <div className="msgMenuSub" style={{ textTransform: "none", fontWeight: 400, lineHeight: 1.35 }}>
+                    Папок пока нет. Нажмите 📁 над списком чатов, создайте папку, затем снова откройте «Папка…» здесь.
+                  </div>
+                ) : null}
                 <button type="button" className="msgMenuItem" onClick={() => assignChatToFolderKey(chatMenu.key, null)}>
                   Без папки
                 </button>
@@ -6623,6 +6791,36 @@ export default function App() {
                       🎥 Начать звонок
                     </button>
                     <button type="button" className="chip" onClick={() => setPendingCallDeepLink(false)}>
+                      Закрыть
+                    </button>
+                  </div>
+                ) : null}
+                {pendingGroupCallDeepLink && mode === "groups" && activeGroupChat ? (
+                  <div style={{ marginTop: 6, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                    <span style={{ fontSize: 12, opacity: 0.8 }}>
+                      Ссылка на групповой созвон. Нажмите, чтобы запросить микрофон/камеру и подключиться к mesh.
+                    </span>
+                    <button
+                      type="button"
+                      className="chip"
+                      onClick={() => {
+                        setPendingGroupCallDeepLink(false);
+                        void startGroupMesh(false);
+                      }}
+                    >
+                      🎥 Видео
+                    </button>
+                    <button
+                      type="button"
+                      className="chip"
+                      onClick={() => {
+                        setPendingGroupCallDeepLink(false);
+                        void startGroupMesh(true);
+                      }}
+                    >
+                      📞 Аудио
+                    </button>
+                    <button type="button" className="chip" onClick={() => setPendingGroupCallDeepLink(false)}>
                       Закрыть
                     </button>
                   </div>

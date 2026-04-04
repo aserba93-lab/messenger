@@ -785,6 +785,12 @@ body {
   background: linear-gradient(transparent, rgba(0, 0, 0, 0.75));
   color: #fff;
 }
+.groupMeshToolbar {
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: center;
+  padding: 10px 12px 12px;
+}
 .groupMeshLocalPip {
   position: absolute;
   right: 12px;
