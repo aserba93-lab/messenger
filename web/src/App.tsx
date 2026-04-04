@@ -2564,7 +2564,6 @@ export default function App() {
       setMode("channels");
       setActiveChannelId(id);
       setUnreadByKey((prev) => ({ ...prev, [chatKeyFor("c", id)]: 0 }));
-      await loadMessages(id);
       return;
     }
     if (kind === "g") {
@@ -2572,7 +2571,6 @@ export default function App() {
       setMode("groups");
       setActiveGroupChatId(id);
       setUnreadByKey((prev) => ({ ...prev, [chatKeyFor("g", id)]: 0 }));
-      await loadGroupMessages(id);
       return;
     }
     if (kind === "d") {
@@ -2580,7 +2578,6 @@ export default function App() {
       setMode("dms");
       setActiveDirectChatId(id);
       setUnreadByKey((prev) => ({ ...prev, [chatKeyFor("d", id)]: 0 }));
-      await loadDirectMessages(id);
     }
   }
 
@@ -3302,7 +3299,6 @@ export default function App() {
     setMode("dms");
     setActiveDirectChatId(data.ensureDirectChat.id);
     await loadDirectChats();
-    await loadDirectMessages(data.ensureDirectChat.id);
   }
 
   async function openSavedVaultChat() {
@@ -3416,7 +3412,6 @@ export default function App() {
         await loadGroupChats();
         setMode("groups");
         setActiveGroupChatId(data.createGroupChat.id);
-        await loadGroupMessages(data.createGroupChat.id);
         closeNewThingWizard();
         setMobileSidebarOpen(false);
         pushLog(`Группа создана: ${data.createGroupChat.name}`);
@@ -3461,7 +3456,6 @@ export default function App() {
       await loadChannels();
       setMode("channels");
       setActiveChannelId(channelId);
-      await loadMessages(channelId);
       closeNewThingWizard();
       setMobileSidebarOpen(false);
       pushLog(`Канал создан: #${chName}`);
@@ -3760,6 +3754,35 @@ export default function App() {
     scrollMessagesToBottom();
   }
 
+  /** Вход в чат / смена активного чата: всегда подгружаем актуальные сообщения с сервера */
+  useEffect(() => {
+    if (!token || threadRootId || showPins || showSaved) return;
+    if (mode === "channels" && activeChannelId) void loadMessages(activeChannelId);
+    else if (mode === "groups" && activeGroupChatId) void loadGroupMessages(activeGroupChatId);
+    else if (mode === "dms" && activeDirectChatId) void loadDirectMessages(activeDirectChatId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- load* пересоздаются; триггер только по id/mode/token/оверлеям
+  }, [token, mode, activeChannelId, activeGroupChatId, activeDirectChatId, threadRootId, showPins, showSaved]);
+
+  /** «Обновление страницы» без перезагрузки: при возврате на вкладку подтягиваем списки чатов и текущую переписку */
+  useEffect(() => {
+    if (!token) return;
+    const softRefresh = () => {
+      if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
+      void loadGroupChats();
+      void loadDirectChats();
+      if (workspaceId) void loadChannels();
+      if (threadRootId || showPins || showSaved) return;
+      if (mode === "channels" && activeChannelId) void loadMessages(activeChannelId);
+      else if (mode === "groups" && activeGroupChatId) void loadGroupMessages(activeGroupChatId);
+      else if (mode === "dms" && activeDirectChatId) void loadDirectMessages(activeDirectChatId);
+    };
+    document.addEventListener("visibilitychange", softRefresh);
+    return () => {
+      document.removeEventListener("visibilitychange", softRefresh);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token, workspaceId, mode, activeChannelId, activeGroupChatId, activeDirectChatId, threadRootId, showPins, showSaved]);
+
   async function openThread(parentMessageId: string) {
     if (!token) return;
     const data = await gql<{ thread: Message[] }>(
@@ -3784,9 +3807,6 @@ export default function App() {
   async function backFromThread() {
     setThreadRootId(null);
     setReplyTo(null);
-    if (mode === "channels" && activeChannelId) await loadMessages(activeChannelId);
-    else if (mode === "groups" && activeGroupChatId) await loadGroupMessages(activeGroupChatId);
-    else if (mode === "dms" && activeDirectChatId) await loadDirectMessages(activeDirectChatId);
   }
 
   async function toggleReaction(messageId: string, emoji: string) {
@@ -4852,7 +4872,6 @@ export default function App() {
                           setMode("dms");
                           setActiveDirectChatId(d.id);
                           setUnreadByKey((prev) => ({ ...prev, [chatKeyFor("d", d.id)]: 0 }));
-                          void loadDirectMessages(d.id);
                         }}
                       >
                         <div className="tgAvatar">{initials(title)}</div>
@@ -4916,7 +4935,6 @@ export default function App() {
                           setMode("groups");
                           setActiveGroupChatId(g.id);
                           setUnreadByKey((prev) => ({ ...prev, [chatKeyFor("g", g.id)]: 0 }));
-                          void loadGroupMessages(g.id);
                         }}
                       >
                         <div className={`tgAvatar ${g.avatarUrl ? "tgAvatar--img" : ""}`}>
@@ -4978,7 +4996,6 @@ export default function App() {
                         setMode("channels");
                         setActiveChannelId(c.id);
                         setUnreadByKey((prev) => ({ ...prev, [chatKeyFor("c", c.id)]: 0 }));
-                        void loadMessages(c.id);
                       }}
                     >
                       <div className={`tgAvatar ${c.avatarUrl ? "tgAvatar--img" : ""}`}>
@@ -5041,7 +5058,6 @@ export default function App() {
                       setMode("channels");
                       setActiveChannelId(c.id);
                       setUnreadByKey((prev) => ({ ...prev, [chatKeyFor("c", c.id)]: 0 }));
-                      void loadMessages(c.id);
                     }}
                   >
                     <div className={`tgAvatar ${c.avatarUrl ? "tgAvatar--img" : ""}`}>
@@ -5102,7 +5118,6 @@ export default function App() {
                         setMode("groups");
                         setActiveGroupChatId(g.id);
                         setUnreadByKey((prev) => ({ ...prev, [chatKeyFor("g", g.id)]: 0 }));
-                        void loadGroupMessages(g.id);
                       }}
                     >
                       <div className={`tgAvatar ${g.avatarUrl ? "tgAvatar--img" : ""}`}>
@@ -5170,7 +5185,6 @@ export default function App() {
                           setMode("dms");
                           setActiveDirectChatId(d.id);
                           setUnreadByKey((prev) => ({ ...prev, [chatKeyFor("d", d.id)]: 0 }));
-                          void loadDirectMessages(d.id);
                         }}
                       >
                         <div className="tgAvatar">{initials(title)}</div>
@@ -5869,9 +5883,8 @@ export default function App() {
           {showPins ? (
             <div style={{ marginTop: 8 }}>
               <button
-                onClick={async () => {
+                onClick={() => {
                   setShowPins(false);
-                  if (mode === "channels" && activeChannelId) await loadMessages(activeChannelId);
                 }}
               >
                 ← Назад из закрепов
