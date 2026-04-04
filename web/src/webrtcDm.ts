@@ -157,25 +157,9 @@ export async function startOutgoingCall(
 
   const target = opts.targetUserId;
   setupIceRecovery(pc, socket, target);
-  pc.onicecandidate = (ev) => {
-    if (!ev.candidate) return;
-    socket.emit("call:signal", {
-      targetUserId: target,
-      payload: {
-        type: "ice",
-        candidate: ev.candidate.candidate,
-        sdpMid: ev.candidate.sdpMid,
-        sdpMLineIndex: ev.candidate.sdpMLineIndex,
-      },
-    });
-  };
 
-  const offer = await pc.createOffer();
-  await pc.setLocalDescription(offer);
-  socket.emit("call:signal", {
-    targetUserId: target,
-    payload: { type: "offer", sdp: offer.sdp || "" },
-  });
+  let screenStop: (() => Promise<void>) | null = null;
+  let screenAudioSender: RTCRtpSender | null = null;
 
   const onSignal = async (data: { fromUserId?: string; payload?: CallSignalPayload }) => {
     if (String(data?.fromUserId) !== target) return;
@@ -205,12 +189,6 @@ export async function startOutgoingCall(
     if (String(data?.fromUserId) === target) cleanup();
   };
 
-  socket.on("call:signal", onSignal);
-  socket.on("call:end", onEnd);
-
-  let screenStop: (() => Promise<void>) | null = null;
-  let screenAudioSender: RTCRtpSender | null = null;
-
   function cleanup() {
     socket.off("call:signal", onSignal);
     socket.off("call:end", onEnd);
@@ -222,6 +200,30 @@ export async function startOutgoingCall(
     }
     opts.onClose();
   }
+
+  // Подписка и локальные ICE до offer — иначе answer/ICE от собеседника могут прийти до listener и потеряться.
+  socket.on("call:signal", onSignal);
+  socket.on("call:end", onEnd);
+
+  pc.onicecandidate = (ev) => {
+    if (!ev.candidate) return;
+    socket.emit("call:signal", {
+      targetUserId: target,
+      payload: {
+        type: "ice",
+        candidate: ev.candidate.candidate,
+        sdpMid: ev.candidate.sdpMid,
+        sdpMLineIndex: ev.candidate.sdpMLineIndex,
+      },
+    });
+  };
+
+  const offer = await pc.createOffer();
+  await pc.setLocalDescription(offer);
+  socket.emit("call:signal", {
+    targetUserId: target,
+    payload: { type: "offer", sdp: offer.sdp || "" },
+  });
 
   const startScreenShareWrapped = async () => {
     if (opts.audioOnly) throw new Error("Демонстрация экрана доступна в видеозвонке");
@@ -378,9 +380,6 @@ export async function acceptIncomingOffer(
   socket.on("call:signal", onSignal);
   socket.on("call:end", onEnd);
 
-  await pc.setRemoteDescription({ type: "offer", sdp: opts.offerSdp });
-  await iceQueue.flush();
-
   pc.onicecandidate = (ev) => {
     if (!ev.candidate) return;
     socket.emit("call:signal", {
@@ -393,6 +392,9 @@ export async function acceptIncomingOffer(
       },
     });
   };
+
+  await pc.setRemoteDescription({ type: "offer", sdp: opts.offerSdp });
+  await iceQueue.flush();
 
   const answer = await pc.createAnswer();
   await pc.setLocalDescription(answer);

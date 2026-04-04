@@ -1656,8 +1656,23 @@ export default function App() {
           `candidates local=${localCand ? `${localCand.candidateType}/${localCand.protocol} ${localCand.address ?? localCand.ip ?? ""}:${localCand.port ?? ""}` : "?"} remote=${remoteCand ? `${remoteCand.candidateType}/${remoteCand.protocol} ${remoteCand.address ?? remoteCand.ip ?? ""}:${remoteCand.port ?? ""}` : "?"}`,
         );
       }
-      if (!selectedPair && !(localTypes as any).relay && !(remoteTypes as any).relay) {
-        diagLog("hint: relay candidates отсутствуют → без TURN сеть/файрвол может не пропускать P2P. Добавьте TURN в VITE_ICE_SERVERS.");
+      if (!selectedPair) {
+        const hasLocal = Object.keys(localTypes).length > 0;
+        const hasRemote = Object.keys(remoteTypes).length > 0;
+        if (hasLocal && !hasRemote && pc.connectionState !== "closed") {
+          diagLog(
+            "hint: remote-candidate в stats нет при живом соединении — часто не дошли ICE/answer по сигналингу или peer не прислал кандидаты.",
+          );
+        } else if (
+          hasLocal &&
+          hasRemote &&
+          !(localTypes as any).relay &&
+          !(remoteTypes as any).relay
+        ) {
+          diagLog(
+            "hint: relay candidates отсутствуют → без TURN сеть/файрвол может не пропускать P2P. Добавьте TURN в VITE_ICE_SERVERS.",
+          );
+        }
       }
     } catch (e: any) {
       diagLog(`getStats error: ${String(e?.message ?? e)}`);
