@@ -16,22 +16,36 @@ import "./App.css";
 /** Актуальный access token для fetch GraphQL, если замыкание передало undefined */
 const gqlAuthTokenRef = { current: "" };
 
-function GroupMeshRemoteVideo({ stream, userId }: { stream: MediaStream; userId: string }) {
+function GroupMeshRemoteVideo({
+  stream,
+  userId,
+  playAudio = true,
+  showVideo = true,
+  videoClassName,
+}: {
+  stream: MediaStream;
+  userId: string;
+  /** В сетке-снимках сверху — только картинка, звук отдельным слоем (иначе дубли). */
+  playAudio?: boolean;
+  showVideo?: boolean;
+  videoClassName?: string;
+}) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   useEffect(() => {
     const el = videoRef.current;
     const ael = audioRef.current;
-    if (!el) return;
-    el.srcObject = stream;
-    try {
-      el.playsInline = true;
-      /** muted на video — иначе автовоспроизведение часто блокируется; звук с отдельного audio. */
-      el.muted = true;
-    } catch {
-      /* ignore */
+    if (showVideo && el) {
+      el.srcObject = stream;
+      try {
+        el.playsInline = true;
+        /** muted на video — иначе автовоспроизведение часто блокируется; звук с отдельного audio. */
+        el.muted = true;
+      } catch {
+        /* ignore */
+      }
     }
-    if (ael) {
+    if (playAudio && ael) {
       ael.srcObject = stream;
       ael.muted = false;
       try {
@@ -41,12 +55,12 @@ function GroupMeshRemoteVideo({ stream, userId }: { stream: MediaStream; userId:
       }
     }
     const play = () => {
-      void el.play().catch(() => {});
-      if (ael) void ael.play().catch(() => {});
+      if (showVideo && el) void el.play().catch(() => {});
+      if (playAudio && ael) void ael.play().catch(() => {});
     };
     play();
     const onTrack = () => {
-      if (ael) {
+      if (playAudio && ael) {
         ael.srcObject = stream;
         try {
           ael.volume = 1;
@@ -63,7 +77,7 @@ function GroupMeshRemoteVideo({ stream, userId }: { stream: MediaStream; userId:
       t.addEventListener("ended", onTrack);
     }
     const onMeta = () => play();
-    el.addEventListener("loadedmetadata", onMeta);
+    if (showVideo && el) el.addEventListener("loadedmetadata", onMeta);
     stream.addEventListener("addtrack", onTrack);
     stream.addEventListener("removetrack", onTrack);
     const kick = window.setInterval(() => play(), 1200);
@@ -71,24 +85,26 @@ function GroupMeshRemoteVideo({ stream, userId }: { stream: MediaStream; userId:
       window.clearInterval(kick);
       stream.removeEventListener("addtrack", onTrack);
       stream.removeEventListener("removetrack", onTrack);
-      el.removeEventListener("loadedmetadata", onMeta);
+      if (showVideo && el) el.removeEventListener("loadedmetadata", onMeta);
       for (const t of tracks) {
         t.removeEventListener("unmute", onTrack);
         t.removeEventListener("mute", onTrack);
         t.removeEventListener("ended", onTrack);
       }
       try {
-        el.srcObject = null;
-        if (ael) ael.srcObject = null;
+        if (showVideo && el) el.srcObject = null;
+        if (playAudio && ael) ael.srcObject = null;
       } catch {
         /* ignore */
       }
     };
-  }, [stream, userId]);
+  }, [stream, userId, playAudio, showVideo]);
   return (
-    <div className="groupMeshVideoWrap">
-      <video className="groupMeshVideo" ref={videoRef} autoPlay playsInline muted />
-      <audio ref={audioRef} autoPlay playsInline className="groupMeshRemoteAudio" />
+    <div className={showVideo ? "groupMeshVideoWrap" : "groupMeshAudioOnlySlot"}>
+      {showVideo ? (
+        <video className={videoClassName ?? "groupMeshVideo"} ref={videoRef} autoPlay playsInline muted />
+      ) : null}
+      {playAudio ? <audio ref={audioRef} autoPlay playsInline className="groupMeshRemoteAudio" /> : null}
     </div>
   );
 }
@@ -934,7 +950,19 @@ export default function App() {
     hangup: () => void;
   }>(null);
   const [groupMeshMediaTick, setGroupMeshMediaTick] = useState(0);
+  /** Крупное видео внизу; миниатюры сверху — при клике переключают «экран». */
+  const [groupMeshSpotlightPeerId, setGroupMeshSpotlightPeerId] = useState<string | null>(null);
   const groupMeshSessionRef = useRef<GroupMeshSession | null>(null);
+  useEffect(() => {
+    if (!groupMeshUi) setGroupMeshSpotlightPeerId(null);
+  }, [groupMeshUi]);
+  const groupMeshStagePeerId = useMemo(() => {
+    if (!groupMeshUi || groupMeshUi.audioOnly) return null;
+    const ids = Object.keys(groupMeshUi.remotes).sort();
+    if (ids.length === 0) return null;
+    if (groupMeshSpotlightPeerId && groupMeshUi.remotes[groupMeshSpotlightPeerId]) return groupMeshSpotlightPeerId;
+    return ids[0];
+  }, [groupMeshUi, groupMeshSpotlightPeerId]);
   const groupMeshJoiningRef = useRef(false);
   const meshSignalIceBufferRef = useRef<Record<string, unknown[]>>({});
   const meshOfferWhileJoiningRef = useRef<unknown[]>([]);
@@ -1337,6 +1365,18 @@ export default function App() {
   const activeChannel = useMemo(() => channels.find((c) => c.id === activeChannelId), [channels, activeChannelId]);
   const activeGroupChat = useMemo(() => groupChats.find((g) => g.id === activeGroupChatId), [groupChats, activeGroupChatId]);
   const activeDirectChat = useMemo(() => directChats.find((d) => d.id === activeDirectChatId), [directChats, activeDirectChatId]);
+
+  const dmCallInviteUrl = useMemo(() => {
+    if (!activeDirectChatId) return "";
+    const base = `${window.location.origin}${window.location.pathname}`;
+    return `${base}#dm=${encodeURIComponent(activeDirectChatId)}&call=1`;
+  }, [activeDirectChatId]);
+
+  const groupCallInviteUrlForHeader = useMemo(() => {
+    if (!activeGroupChat?.id) return "";
+    const base = `${window.location.origin}${window.location.pathname}`;
+    return `${base}#group=${encodeURIComponent(activeGroupChat.id)}&gcall=1`;
+  }, [activeGroupChat?.id]);
 
   const canEditActiveGroupMeta = useMemo(() => {
     if (!activeGroupChatId || !userId) return false;
@@ -3652,9 +3692,7 @@ export default function App() {
       });
       await session.startOfferers(peerIds);
       sock.emit("groupCall:invite", { groupChatId: activeGroupChat.id, audioOnly, inviteUrl });
-      void sendServiceMessageToCurrentChat(
-        `${audioOnly ? "📞" : "🎥"} Групповой ${audioOnly ? "аудио" : "видео"}звонок. Присоединиться по ссылке (войдите в аккаунт): ${inviteUrl}`,
-      );
+      void sendServiceMessageToCurrentChat(inviteUrl);
       pushLog("Групповой mesh-созвон");
     } catch (e: any) {
       setChatError(String(e?.message ?? e));
@@ -3837,8 +3875,7 @@ export default function App() {
     }
     const base = `${window.location.origin}${window.location.pathname}`;
     const link = `${base}#dm=${encodeURIComponent(activeDirectChatId)}&call=1`;
-    const text = `${link}\n\nОткройте ссылку, войдите в аккаунт и этот личный чат — затем можно начать звонок из меню чата.`;
-    void navigator.clipboard.writeText(text);
+    void navigator.clipboard.writeText(link);
     pushLog("Ссылка на чат для созвона скопирована в буфер");
   }
 
@@ -3850,8 +3887,7 @@ export default function App() {
     }
     const base = `${window.location.origin}${window.location.pathname}`;
     const link = `${base}#group=${encodeURIComponent(gid)}&gcall=1`;
-    const text = `${link}\n\nОткройте ссылку, войдите в аккаунт — откроется группа; в шапке чата нажмите «Присоединиться к созвону».`;
-    void navigator.clipboard.writeText(text);
+    void navigator.clipboard.writeText(link);
     pushLog("Ссылка на групповой созвон скопирована в буфер");
   }
 
@@ -6030,40 +6066,83 @@ export default function App() {
                 ✕
               </button>
             </div>
-            <div
-              className="groupMeshGrid"
-              style={{
-                gridTemplateColumns: `repeat(${Math.min(4, Math.max(1, Math.ceil(Math.sqrt(Math.max(1, 1 + Object.keys(groupMeshUi.remotes).length)))))}, minmax(0, 1fr))`,
-              }}
-            >
-              {Object.entries(groupMeshUi.remotes).map(([pid, stream]) => (
-                <div key={pid} className="groupMeshCell">
-                  {stream && !groupMeshUi.audioOnly ? (
-                    <GroupMeshRemoteVideo userId={pid} stream={stream} />
-                  ) : (
-                    <div className="groupMeshAudioOnly">{displayUser(pid)}</div>
-                  )}
-                  <div className="groupMeshLabel">{displayUser(pid)}</div>
-                </div>
-              ))}
-            </div>
-            {!groupMeshUi.audioOnly ? (
-              <div className="groupMeshLocalPip">
-                <video
-                  key={`gml-${groupMeshUi.groupChatId}-${groupMeshMediaTick}`}
-                  className="webrtcLocal"
-                  autoPlay
-                  playsInline
-                  muted
-                  ref={(el) => {
-                    if (el && groupMeshUi.localStream) {
-                      el.srcObject = groupMeshUi.localStream;
-                      void el.play().catch(() => {});
-                    }
-                  }}
-                />
+            {groupMeshUi.audioOnly ? (
+              <div
+                className="groupMeshGrid"
+                style={{
+                  gridTemplateColumns: `repeat(${Math.min(4, Math.max(1, Math.ceil(Math.sqrt(Math.max(1, 1 + Object.keys(groupMeshUi.remotes).length)))))}, minmax(0, 1fr))`,
+                }}
+              >
+                {Object.entries(groupMeshUi.remotes).map(([pid, stream]) => (
+                  <div key={pid} className="groupMeshCell">
+                    {stream ? (
+                      groupMeshUi.audioOnly ? (
+                        <GroupMeshRemoteVideo userId={pid} stream={stream} showVideo={false} playAudio />
+                      ) : (
+                        <GroupMeshRemoteVideo userId={pid} stream={stream} />
+                      )
+                    ) : (
+                      <div className="groupMeshAudioOnly">{displayUser(pid)}</div>
+                    )}
+                    <div className="groupMeshLabel">{displayUser(pid)}</div>
+                  </div>
+                ))}
               </div>
-            ) : null}
+            ) : (
+              <div className="groupMeshMeetingBody">
+                <div className="groupMeshAudioLayer" aria-hidden>
+                  {Object.entries(groupMeshUi.remotes).map(([pid, stream]) =>
+                    stream ? <GroupMeshRemoteVideo key={`ga-${pid}`} userId={pid} stream={stream} showVideo={false} playAudio /> : null,
+                  )}
+                </div>
+                <div className="groupMeshFilmstrip">
+                  {Object.entries(groupMeshUi.remotes).map(([pid, stream]) => (
+                    <button
+                      key={pid}
+                      type="button"
+                      className={`groupMeshFilmstripCell ${groupMeshStagePeerId === pid ? "groupMeshFilmstripCell--active" : ""}`}
+                      onClick={() => setGroupMeshSpotlightPeerId(pid)}
+                    >
+                      <div className="groupMeshFilmstripThumb">
+                        {stream ? (
+                          <GroupMeshRemoteVideo userId={pid} stream={stream} playAudio={false} videoClassName="groupMeshFilmstripVideo" />
+                        ) : (
+                          <div className="groupMeshFilmstripPlaceholder">{displayUser(pid)}</div>
+                        )}
+                      </div>
+                      <span className="groupMeshFilmstripName">{displayUser(pid)}</span>
+                    </button>
+                  ))}
+                </div>
+                <div className="groupMeshStage">
+                  {groupMeshStagePeerId && groupMeshUi.remotes[groupMeshStagePeerId] ? (
+                    <GroupMeshRemoteVideo
+                      userId={groupMeshStagePeerId}
+                      stream={groupMeshUi.remotes[groupMeshStagePeerId]!}
+                      playAudio={false}
+                      videoClassName="groupMeshStageVideo"
+                    />
+                  ) : (
+                    <div className="groupMeshStageEmpty">Ожидание участников…</div>
+                  )}
+                </div>
+                <div className="groupMeshLocalPip">
+                  <video
+                    key={`gml-${groupMeshUi.groupChatId}-${groupMeshMediaTick}`}
+                    className="webrtcLocal"
+                    autoPlay
+                    playsInline
+                    muted
+                    ref={(el) => {
+                      if (el && groupMeshUi.localStream) {
+                        el.srcObject = groupMeshUi.localStream;
+                        void el.play().catch(() => {});
+                      }
+                    }}
+                  />
+                </div>
+              </div>
+            )}
             <div className="webrtcToolbar groupMeshToolbar">
               <button
                 type="button"
@@ -7012,34 +7091,48 @@ export default function App() {
                     </button>
                   ) : null}
                 </div>
-                {pendingCallDeepLink && mode === "dms" ? (
-                  <div style={{ marginTop: 6, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-                    <span style={{ fontSize: 12, opacity: 0.8 }}>
-                      Переход по ссылке на созвон. Нажмите кнопку, чтобы запросить камеру/микрофон.
-                    </span>
+                {pendingCallDeepLink && mode === "dms" && dmCallInviteUrl ? (
+                  <div className="callDeepLinkBar">
+                    <a className="callDeepLinkUrl" href={dmCallInviteUrl}>
+                      {dmCallInviteUrl}
+                    </a>
                     <button
                       type="button"
-                      className="chip"
+                      className="chip chip--compact"
+                      onClick={() => void navigator.clipboard.writeText(dmCallInviteUrl)}
+                    >
+                      Копировать
+                    </button>
+                    <button
+                      type="button"
+                      className="chip chip--compact"
                       onClick={() => {
                         setPendingCallDeepLink(false);
                         void startVideoMeeting();
                       }}
                     >
-                      🎥 Начать звонок
+                      🎥 Войти в звонок
                     </button>
-                    <button type="button" className="chip" onClick={() => setPendingCallDeepLink(false)}>
+                    <button type="button" className="chip chip--compact" onClick={() => setPendingCallDeepLink(false)}>
                       Закрыть
                     </button>
                   </div>
                 ) : null}
-                {pendingGroupCallDeepLink && mode === "groups" && activeGroupChat ? (
-                  <div style={{ marginTop: 6, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-                    <span style={{ fontSize: 12, opacity: 0.8 }}>
-                      Ссылка на групповой созвон. Нажмите, чтобы запросить микрофон/камеру и подключиться к mesh.
-                    </span>
+                {pendingGroupCallDeepLink && mode === "groups" && activeGroupChat && groupCallInviteUrlForHeader ? (
+                  <div className="callDeepLinkBar">
+                    <a className="callDeepLinkUrl" href={groupCallInviteUrlForHeader}>
+                      {groupCallInviteUrlForHeader}
+                    </a>
                     <button
                       type="button"
-                      className="chip"
+                      className="chip chip--compact"
+                      onClick={() => void navigator.clipboard.writeText(groupCallInviteUrlForHeader)}
+                    >
+                      Копировать
+                    </button>
+                    <button
+                      type="button"
+                      className="chip chip--compact"
                       onClick={() => {
                         setPendingGroupCallDeepLink(false);
                         void startGroupMesh(false);
@@ -7049,7 +7142,7 @@ export default function App() {
                     </button>
                     <button
                       type="button"
-                      className="chip"
+                      className="chip chip--compact"
                       onClick={() => {
                         setPendingGroupCallDeepLink(false);
                         void startGroupMesh(true);
@@ -7057,7 +7150,7 @@ export default function App() {
                     >
                       📞 Аудио
                     </button>
-                    <button type="button" className="chip" onClick={() => setPendingGroupCallDeepLink(false)}>
+                    <button type="button" className="chip chip--compact" onClick={() => setPendingGroupCallDeepLink(false)}>
                       Закрыть
                     </button>
                   </div>
@@ -7144,9 +7237,7 @@ export default function App() {
                           );
                         })}
                         <div className="tgPopoverHint" style={{ marginTop: 8 }}>
-                          Групповой звонок через сервер приложения (WebRTC mesh), как личные звонки. Одновременно до{" "}
-                          {GROUP_MESH_MAX_PEERS} других участников; при большем составе группы используйте звонки 1:1 по
-                          списку выше.
+                          Одновременно в эфире — до {GROUP_MESH_MAX_PEERS} участников (не считая вас).
                         </div>
                         <button
                           type="button"

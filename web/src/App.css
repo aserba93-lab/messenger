@@ -481,6 +481,41 @@ body {
   font-size: 12px;
   opacity: 0.85;
 }
+:root[data-theme="light"] .tgPopoverMenu {
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.12);
+}
+:root[data-theme="light"] .tgPopoverItem:hover:not(:disabled) {
+  background: rgba(0, 0, 0, 0.06);
+}
+:root[data-theme="light"] .tgChatTitleEditBtn:hover {
+  background: rgba(0, 0, 0, 0.06);
+}
+
+.callDeepLinkBar {
+  margin-top: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: var(--tg-bg-elevated);
+  border: 1px solid var(--tg-border-subtle);
+  max-width: 100%;
+}
+.callDeepLinkUrl {
+  font-size: 12px;
+  word-break: break-all;
+  color: var(--tg-accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  min-width: 0;
+  flex: 1 1 200px;
+}
+.chip.chip--compact {
+  padding: 4px 10px;
+  font-size: 12px;
+}
 
 .tgChatHeaderTitleRow {
   display: flex;
@@ -776,6 +811,117 @@ body {
   border-radius: 0;
   border: none;
   background: #0a0c10;
+  display: flex;
+  flex-direction: column;
+}
+.groupMeshMeetingBody {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.groupMeshAudioLayer {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+  width: 2px;
+  height: 2px;
+  overflow: hidden;
+  pointer-events: none;
+}
+.groupMeshAudioOnlySlot {
+  position: absolute;
+  left: -9999px;
+  width: 2px;
+  height: 2px;
+  overflow: hidden;
+}
+.groupMeshFilmstrip {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: row;
+  gap: 8px;
+  padding: 8px 10px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  scrollbar-width: thin;
+  background: rgba(0, 0, 0, 0.35);
+}
+.groupMeshFilmstripCell {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  width: 112px;
+  padding: 0;
+  margin: 0;
+  border: 2px solid transparent;
+  border-radius: 10px;
+  background: transparent;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+}
+.groupMeshFilmstripCell--active {
+  border-color: rgba(38, 165, 228, 0.75);
+}
+.groupMeshFilmstripThumb {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 10;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #141418;
+}
+.groupMeshFilmstripVideo {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  background: #000;
+}
+.groupMeshFilmstripPlaceholder {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--tg-muted);
+}
+.groupMeshFilmstripName {
+  font-size: 10px;
+  line-height: 1.2;
+  opacity: 0.9;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: center;
+  max-width: 112px;
+}
+.groupMeshStage {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  background: #000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.groupMeshStageVideo {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+  background: #000;
+}
+.groupMeshStageEmpty {
+  color: var(--tg-muted);
+  font-size: 14px;
+  padding: 24px;
 }
 .groupMeshHead {
   display: flex;
