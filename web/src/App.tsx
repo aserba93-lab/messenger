@@ -3,6 +3,7 @@ import type { CSSProperties, FormEvent, MouseEvent } from "react";
 import { io, Socket } from "socket.io-client";
 import * as XLSX from "xlsx";
 import { acceptIncomingOffer, debugIceServers, startOutgoingCall, type ActiveCall } from "./webrtcDm";
+import { createFolderId, loadChatFolders, saveChatFolders, type ChatFolderState as UserChatFolderLayout } from "./chatFolders";
 import "./App.css";
 
 const TG_SESSION_KEY = "tg:session";
@@ -794,7 +795,13 @@ export default function App() {
   }, [chatMuteMap]);
   const [archivedChatByKey, setArchivedChatByKey] = useState<Record<string, boolean>>({});
   const [chatFolder, setChatFolder] = useState<"all" | "unread" | "archived">("all");
-  const [chatMenu, setChatMenu] = useState<null | { x: number; y: number; key: string; sub: "main" | "notify" }>(null);
+  const [userChatFolderLayout, setUserChatFolderLayout] = useState<UserChatFolderLayout>(() => loadChatFolders());
+  const [chatFoldersEditorOpen, setChatFoldersEditorOpen] = useState(false);
+  const [newChatFolderDraft, setNewChatFolderDraft] = useState("");
+  useEffect(() => {
+    saveChatFolders(userChatFolderLayout);
+  }, [userChatFolderLayout]);
+  const [chatMenu, setChatMenu] = useState<null | { x: number; y: number; key: string; sub: "main" | "notify" | "folder" }>(null);
   const [callMenuOpen, setCallMenuOpen] = useState(false);
   /** В группе: сначала список участников, затем выбор аудио/видео */
   const [groupCallMenuUserId, setGroupCallMenuUserId] = useState<string | null>(null);
@@ -1322,6 +1329,34 @@ export default function App() {
     }
     setChatMenu(null);
   }
+
+  function assignChatToFolderKey(chatKey: string, folderId: string | null) {
+    setUserChatFolderLayout((prev) => {
+      const assignment = { ...prev.assignment };
+      if (folderId == null) delete assignment[chatKey];
+      else assignment[chatKey] = folderId;
+      return { ...prev, assignment };
+    });
+    setChatMenu(null);
+  }
+  function addNamedChatFolder(name: string) {
+    const id = createFolderId();
+    const trimmed = name.trim().slice(0, 64) || "Папка";
+    setUserChatFolderLayout((prev) => ({
+      ...prev,
+      folders: [...prev.folders, { id, name: trimmed, order: prev.folders.length }],
+    }));
+  }
+  function removeNamedChatFolder(folderId: string) {
+    setUserChatFolderLayout((prev) => {
+      const assignment = { ...prev.assignment };
+      for (const k of Object.keys(assignment)) {
+        if (assignment[k] === folderId) delete assignment[k];
+      }
+      return { ...prev, folders: prev.folders.filter((f) => f.id !== folderId), assignment };
+    });
+  }
+
   function reorderPinned(dragKey: string, targetKey: string) {
     if (!dragKey || !targetKey || dragKey === targetKey) return;
     const pinnedKeys = Object.keys(pinnedChatByKey).filter((k) => pinnedChatByKey[k]);
@@ -1406,6 +1441,36 @@ export default function App() {
     });
     return rows;
   }, [orderedDMs, orderedGroups, orderedChannels, pinnedChatByKey, pinnedOrderByKey, chatPreviewByKey]);
+
+  const folderedChatListItems = useMemo(() => {
+    type Row = (typeof unifiedChatRows)[number];
+    const keyOf = (r: Row) =>
+      r.kind === "d" ? chatKeyFor("d", r.d.id) : r.kind === "g" ? chatKeyFor("g", r.g.id) : chatKeyFor("c", r.c.id);
+    const st = userChatFolderLayout;
+    const folderIdSet = new Set(st.folders.map((f) => f.id));
+    const sortedFolders = [...st.folders].sort((a, b) => a.order - b.order);
+    const out: Array<{ t: "h"; title: string } | { t: "r"; row: Row }> = [];
+    if (sortedFolders.length === 0) {
+      for (const row of unifiedChatRows) out.push({ t: "r", row });
+      return out;
+    }
+    for (const f of sortedFolders) {
+      const inF = unifiedChatRows.filter((row) => st.assignment[keyOf(row)] === f.id);
+      if (inF.length === 0) continue;
+      out.push({ t: "h", title: f.name });
+      for (const row of inF) out.push({ t: "r", row });
+    }
+    const unfiled = unifiedChatRows.filter((row) => {
+      const k = st.assignment[keyOf(row)];
+      return !k || !folderIdSet.has(k);
+    });
+    if (unfiled.length > 0) {
+      const anyFoldered = sortedFolders.some((f) => unifiedChatRows.some((row) => st.assignment[keyOf(row)] === f.id));
+      if (anyFoldered) out.push({ t: "h", title: "Без папки" });
+      for (const row of unfiled) out.push({ t: "r", row });
+    }
+    return out;
+  }, [unifiedChatRows, userChatFolderLayout]);
 
   const activeChatKeyForPanel = useMemo(() => {
     if (mode === "channels" && activeChannelId) return chatKeyFor("c", activeChannelId);
@@ -3415,6 +3480,15 @@ export default function App() {
   }, [token, organizationId]);
 
   useEffect(() => {
+    if (!token || !organizationId) return;
+    const id = window.setInterval(() => {
+      if (document.visibilityState !== "visible") return;
+      void loadUsersRef.current?.();
+    }, 90_000);
+    return () => window.clearInterval(id);
+  }, [token, organizationId]);
+
+  useEffect(() => {
     if (!token) return;
     let cancelled = false;
     void (async () => {
@@ -5119,6 +5193,59 @@ export default function App() {
           </button>
         </div>
       ) : null}
+      {chatFoldersEditorOpen ? (
+        <>
+          <div className="moreMenuBackdrop" role="presentation" onClick={() => setChatFoldersEditorOpen(false)} />
+          <div className="chatFoldersEditor" role="dialog" aria-label="Папки с чатами">
+            <div className="chatFoldersEditorHead">
+              <span>Папки с чатами</span>
+              <button type="button" className="tgCircleBtn" aria-label="Закрыть" onClick={() => setChatFoldersEditorOpen(false)}>
+                ✕
+              </button>
+            </div>
+            <p className="chatFoldersEditorHint">
+              Хранится только в этом браузере. Чтобы положить чат в папку: откройте меню ⋮ у строки чата → «Папка…». Подчаты (темы) — откройте сообщение → «Ответить в теме» (ветка внутри чата).
+            </p>
+            <ul className="chatFoldersEditorList">
+              {userChatFolderLayout.folders
+                .slice()
+                .sort((a, b) => a.order - b.order)
+                .map((f) => (
+                  <li key={f.id}>
+                    <span className="chatFoldersEditorName">{f.name}</span>
+                    <button type="button" className="chatFoldersEditorDel" onClick={() => removeNamedChatFolder(f.id)}>
+                      Удалить
+                    </button>
+                  </li>
+                ))}
+            </ul>
+            <div className="chatFoldersEditorAdd">
+              <input
+                className="tgSearch"
+                placeholder="Название новой папки"
+                value={newChatFolderDraft}
+                onChange={(e) => setNewChatFolderDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    addNamedChatFolder(newChatFolderDraft);
+                    setNewChatFolderDraft("");
+                  }
+                }}
+              />
+              <button
+                type="button"
+                className="chip"
+                onClick={() => {
+                  addNamedChatFolder(newChatFolderDraft);
+                  setNewChatFolderDraft("");
+                }}
+              >
+                Добавить папку
+              </button>
+            </div>
+          </div>
+        </>
+      ) : null}
       {viewportW < 800 && mobileSidebarOpen ? (
         <button type="button" className="sidebarBackdrop" aria-label="Закрыть список чатов" onClick={() => setMobileSidebarOpen(false)} />
       ) : null}
@@ -5231,6 +5358,14 @@ export default function App() {
             </div>
             <button
               type="button"
+              className="tgCircleBtn"
+              title="Папки с чатами (только на этом устройстве)"
+              onClick={() => setChatFoldersEditorOpen(true)}
+            >
+              📁
+            </button>
+            <button
+              type="button"
               className="tgCircleBtn tgChatScopeFilterBtn"
               title="Показать: все чаты, личные, группы или каналы"
               aria-expanded={chatListFilterOpen}
@@ -5298,7 +5433,15 @@ export default function App() {
           <div className="tgChatList">
             {chatListScope === "all" ? (
               <>
-                {unifiedChatRows.map((row) => {
+                {folderedChatListItems.map((item, itemIdx) => {
+                  if (item.t === "h") {
+                    return (
+                      <div key={`folder-h-${itemIdx}-${item.title}`} className="tgChatSectionTitle tgChatSectionTitle--folder">
+                        {item.title}
+                      </div>
+                    );
+                  }
+                  const row = item.row;
                   if (row.kind === "d") {
                     const d = row.d;
                     const isSelfNotesDm = d.userIds.length === 1 && d.userIds[0] === userId;
@@ -5912,6 +6055,13 @@ export default function App() {
                 <button
                   type="button"
                   className="msgMenuItem msgMenuItem--emph"
+                  onClick={() => setChatMenu((m) => (m ? { ...m, sub: "folder" } : m))}
+                >
+                  📁 Папка…
+                </button>
+                <button
+                  type="button"
+                  className="msgMenuItem msgMenuItem--emph"
                   onClick={() => setChatMenu((m) => (m ? { ...m, sub: "notify" } : m))}
                 >
                   🔔 Уведомления…
@@ -5924,6 +6074,34 @@ export default function App() {
                     Удалить из списка
                   </button>
                 ) : null}
+              </>
+            ) : chatMenu.sub === "folder" ? (
+              <>
+                <button
+                  type="button"
+                  className="msgMenuItem"
+                  onClick={() => setChatMenu((m) => (m ? { ...m, sub: "main" } : m))}
+                >
+                  ← Назад
+                </button>
+                <div className="msgMenuSep" />
+                <div className="msgMenuSub">Переместить в папку (локально на устройстве)</div>
+                <button type="button" className="msgMenuItem" onClick={() => assignChatToFolderKey(chatMenu.key, null)}>
+                  Без папки
+                </button>
+                {userChatFolderLayout.folders
+                  .slice()
+                  .sort((a, b) => a.order - b.order)
+                  .map((f) => (
+                    <button
+                      key={f.id}
+                      type="button"
+                      className="msgMenuItem"
+                      onClick={() => assignChatToFolderKey(chatMenu.key, f.id)}
+                    >
+                      {f.name}
+                    </button>
+                  ))}
               </>
             ) : (
               <>
@@ -6196,6 +6374,21 @@ export default function App() {
                             </button>
                           );
                         })}
+                        <div className="tgPopoverHint" style={{ marginTop: 8 }}>
+                          Созвон сразу со всеми (группа) — в дорожной карте: нужен mesh WebRTC или медиа-сервер (SFU).
+                        </div>
+                        <button
+                          type="button"
+                          className="tgPopoverItem tgPopoverItem--muted"
+                          onClick={() => {
+                            setCallMenuOpen(false);
+                            setChatError(
+                              "Групповой звонок на всех участников сраза пока не реализован (нужен сигналинг для N соединений или SFU). Используйте звонок 1:1 по списку выше.",
+                            );
+                          }}
+                        >
+                          Почему нет группового звонка
+                        </button>
                       </>
                     ) : mode === "groups" && groupCallMenuUserId ? (
                       <>

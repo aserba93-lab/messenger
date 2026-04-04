@@ -120,6 +120,12 @@ body {
   pointer-events: none;
 }
 
+.webrtcRemote,
+.webrtcLocal {
+  transform: translateZ(0);
+  backface-visibility: hidden;
+}
+
 .authPage {
   height: 100vh;
   display: grid;
@@ -536,6 +542,79 @@ body {
   color: var(--tg-muted);
   padding: 10px 4px 4px;
   margin-top: 4px;
+}
+.tgChatSectionTitle--folder {
+  text-transform: none;
+  letter-spacing: 0.02em;
+  font-size: 13px;
+  color: var(--tg-accent);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  margin-top: 8px;
+}
+
+.chatFoldersEditor {
+  position: fixed;
+  z-index: 2147482001;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: min(420px, 94vw);
+  max-height: min(80dvh, 560px);
+  overflow: auto;
+  padding: 14px 16px 16px;
+  border-radius: 14px;
+  background: var(--tg-bg-elevated);
+  border: 1px solid var(--tg-border-subtle);
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.45);
+}
+.chatFoldersEditorHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-weight: 700;
+  margin-bottom: 8px;
+}
+.chatFoldersEditorHint {
+  font-size: 12px;
+  opacity: 0.85;
+  line-height: 1.4;
+  margin: 0 0 12px;
+}
+.chatFoldersEditorList {
+  list-style: none;
+  margin: 0 0 12px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.chatFoldersEditorList li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.2);
+}
+.chatFoldersEditorName {
+  min-width: 0;
+  word-break: break-word;
+}
+.chatFoldersEditorDel {
+  flex-shrink: 0;
+  border: none;
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  background: rgba(255, 80, 80, 0.2);
+  color: #ffb4b4;
+}
+.chatFoldersEditorAdd {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 .tgChatRow {
   display: grid;
