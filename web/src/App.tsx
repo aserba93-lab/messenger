@@ -120,13 +120,27 @@ function getSocketUrl(): string {
 }
 const SOCKET_URL = getSocketUrl();
 
-/** Safari / веб-приложение на экране «Домой» на iOS: чистый WebSocket к Socket.IO часто не поднимается — сначала long-polling. */
+/** Safari / WebKit на iPhone и iPad (включая iPadOS с User-Agent как Mac). */
 function isIosLikeBrowser(): boolean {
   if (typeof navigator === "undefined") return false;
   const ua = navigator.userAgent || "";
   if (/iPhone|iPad|iPod/i.test(ua)) return true;
   const nav = navigator as Navigator & { maxTouchPoints?: number };
   if (navigator.platform === "MacIntel" && (nav.maxTouchPoints ?? 0) > 1) return true;
+  return false;
+}
+
+/** Открыто с ярлыка «На экран Домой» (iOS / часть Android). В этом режиме апгрейд Socket.IO до WebSocket часто рвётся — остаёмся на long-polling. */
+function isStandaloneWebApp(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    const nav = window.navigator as Navigator & { standalone?: boolean };
+    if (nav.standalone === true) return true;
+    if (window.matchMedia?.("(display-mode: standalone)")?.matches) return true;
+    if (window.matchMedia?.("(display-mode: fullscreen)")?.matches) return true;
+  } catch {
+    /* ignore */
+  }
   return false;
 }
 
@@ -2156,15 +2170,24 @@ export default function App() {
     }
     socketRef.current = null;
     const iosLike = isIosLikeBrowser();
+    const standalone = isStandaloneWebApp();
+    const pwaIos = iosLike && standalone;
     const s = io(SOCKET_URL, {
       auth: { token },
       path: "/socket.io/",
-      transports: iosLike ? ["polling", "websocket"] : ["websocket", "polling"],
+      // PWA на iOS: только polling + без upgrade — иначе после connect сессия часто обрывается и presence не приходит.
+      transports: pwaIos ? ["polling"] : iosLike ? ["polling", "websocket"] : ["websocket", "polling"],
+      upgrade: !pwaIos,
       reconnection: true,
       reconnectionAttempts: 25,
       reconnectionDelay: 800,
     });
-    s.on("connect", () => pushLog("Socket подключен."));
+    s.on("connect", () => {
+      pushLog(pwaIos ? "Socket подключен (PWA, long-polling)." : "Socket подключен.");
+      if (pwaIos && organizationId.trim()) {
+        window.setTimeout(() => void loadUsers(), 700);
+      }
+    });
     s.on("connect_error", (err: Error) => {
       pushLog(`Socket ошибка: ${err?.message || "connect_error"} (проверьте прокси /socket.io/ на nginx)`);
     });
@@ -3812,6 +3835,7 @@ export default function App() {
       void loadGroupChats();
       void loadDirectChats();
       if (workspaceId) void loadChannels();
+      if (isIosLikeBrowser() && isStandaloneWebApp() && organizationId) void loadUsers();
       if (threadRootId || showPins || showSaved) return;
       if (mode === "channels" && activeChannelId) void loadMessages(activeChannelId);
       else if (mode === "groups" && activeGroupChatId) void loadGroupMessages(activeGroupChatId);
@@ -3822,7 +3846,7 @@ export default function App() {
       document.removeEventListener("visibilitychange", softRefresh);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token, workspaceId, mode, activeChannelId, activeGroupChatId, activeDirectChatId, threadRootId, showPins, showSaved]);
+  }, [token, workspaceId, organizationId, mode, activeChannelId, activeGroupChatId, activeDirectChatId, threadRootId, showPins, showSaved]);
 
   async function openThread(parentMessageId: string) {
     if (!token) return;
