@@ -196,7 +196,7 @@ export class GroupMeshSession {
       }, this.groupChatId);
     };
 
-    const offer = await pc.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: !this.audioOnly });
+    const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
     emitSignal(this.socket, peerId, { type: "offer", sdp: offer.sdp || "" }, this.groupChatId);
   }

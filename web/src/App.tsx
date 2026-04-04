@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, FormEvent, MouseEvent } from "react";
 import { io, Socket } from "socket.io-client";
 import * as XLSX from "xlsx";
-import { acceptIncomingOffer, debugIceServers, startOutgoingCall, type ActiveCall } from "./webrtcDm";
+import { acceptIncomingOffer, debugIceServers, type ActiveCall } from "./webrtcDm";
 import { createGroupMeshSession, GroupMeshSession, GROUP_MESH_MAX_PEERS } from "./webrtcGroupMesh";
 import {
   createFolderId,
@@ -512,8 +512,16 @@ function formatGqlUserMessage(msg: string): string {
 
 const GROUP_CALL_INVITE_LIVE_MS = 45 * 60 * 1000;
 
+/** Префикс «группового» mesh id для личного чата (тот же стек WebRTC, что и у группы) */
+const DM_MESH_PREFIX = "dm-mesh:";
+function dmMeshGroupChatId(directChatId: string) {
+  return `${DM_MESH_PREFIX}${directChatId}`;
+}
+
 /** Ссылка-приглашение в сообщении: группа или личка */
-function parseCallInviteFromContent(content: string | null | undefined): { type: "group"; groupId: string } | { type: "dm" } | null {
+function parseCallInviteFromContent(
+  content: string | null | undefined,
+): { type: "group"; groupId: string } | { type: "dm"; directChatId: string } | null {
   const t = String(content ?? "").trim();
   if (!t) return null;
   const groupM = t.match(/[#&?]group=([^&\s#]+)/i);
@@ -524,7 +532,14 @@ function parseCallInviteFromContent(content: string | null | undefined): { type:
       return { type: "group", groupId: groupM[1] };
     }
   }
-  if (/[#&?]dm=[^&\s#]+/i.test(t) && /call=1/i.test(t)) return { type: "dm" };
+  const dmM = t.match(/[#&?]dm=([^&\s#]+)/i);
+  if (dmM && /call=1/i.test(t)) {
+    try {
+      return { type: "dm", directChatId: decodeURIComponent(dmM[1]) };
+    } catch {
+      return { type: "dm", directChatId: dmM[1] };
+    }
+  }
   return null;
 }
 
@@ -3215,8 +3230,20 @@ export default function App() {
     });
     s.on("call:hand", (data: any) => {
       const from = String(data?.fromUserId ?? "");
-      if (!from || from !== webrtcPeerRef.current) return;
-      setWebrtcPeerHandRaised(!!data?.raised);
+      if (!from) return;
+      const raised = !!data?.raised;
+      const meshGid = groupMeshUiRef.current?.groupChatId;
+      if (meshGid?.startsWith(DM_MESH_PREFIX)) {
+        const dcId = meshGid.slice(DM_MESH_PREFIX.length);
+        const dc = directChatsRef.current.find((d) => d.id === dcId);
+        const peer = dc?.userIds.find((id) => id !== userIdRef.current) ?? "";
+        if (peer && from === peer) {
+          setGroupMeshHands((prev) => ({ ...prev, [from]: raised }));
+        }
+        return;
+      }
+      if (from !== webrtcPeerRef.current) return;
+      setWebrtcPeerHandRaised(raised);
     });
     s.on("groupCall:hand", (data: any) => {
       const gc = String(data?.groupChatId ?? "");
@@ -3630,10 +3657,33 @@ export default function App() {
     if (!uid || from === uid) return;
     const sock = socketRef.current;
     if (!sock) return;
-    const g = groupChatsRef.current.find((x) => x.id === gc);
-    if (!g) {
-      pushLog("Входящий групповой звонок: откройте список групп или обновите страницу.");
-      return;
+    let resolvedTitle = "";
+    let memberIds: string[] = [];
+    let isDmMesh = false;
+    if (gc.startsWith(DM_MESH_PREFIX)) {
+      isDmMesh = true;
+      const directChatId = gc.slice(DM_MESH_PREFIX.length);
+      const dc = directChatsRef.current.find((d) => d.id === directChatId);
+      if (!dc) {
+        pushLog("Входящий личный звонок: откройте список личных чатов или обновите страницу.");
+        return;
+      }
+      const other = dc.userIds.find((id) => id !== uid) ?? "";
+      if (!other) {
+        setChatError("Нет собеседника для ответа на звонок");
+        return;
+      }
+      memberIds = [other];
+      const u = usersRef.current.find((x) => x.id === other);
+      resolvedTitle = displayUserNameForSidebar(u, other);
+    } else {
+      const g = groupChatsRef.current.find((x) => x.id === gc);
+      if (!g) {
+        pushLog("Входящий групповой звонок: откройте список групп или обновите страницу.");
+        return;
+      }
+      memberIds = (g.memberIds ?? []).filter((id) => id !== uid);
+      resolvedTitle = g.name;
     }
     groupMeshJoiningRef.current = true;
     webrtcBusyRef.current = true;
@@ -3644,22 +3694,25 @@ export default function App() {
     try {
       if (typeof Notification !== "undefined" && Notification.permission === "granted") {
         try {
-          new Notification(`Группа: ${g.name}`, {
-            body: `${callerLabel} — групповой ${audioOnly ? "звонок" : "видеозвонок"}`,
-            tag: `gcall:${gc}`,
+          new Notification(isDmMesh ? "Личный звонок" : `Группа: ${resolvedTitle}`, {
+            body: isDmMesh
+              ? `${callerLabel} — ${audioOnly ? "звонок" : "видеозвонок"}`
+              : `${callerLabel} — групповой ${audioOnly ? "звонок" : "видеозвонок"}`,
+            tag: isDmMesh ? `dmcall:${gc}` : `gcall:${gc}`,
             requireInteraction: typeof document !== "undefined" && document.hidden,
           });
         } catch {
           /* ignore */
         }
       } else {
-        pushAppToast(`Групповой звонок: ${g.name} (${callerLabel})`);
+        pushAppToast(
+          isDmMesh ? `Личный звонок: ${callerLabel}` : `Групповой звонок: ${resolvedTitle} (${callerLabel})`,
+        );
       }
     } catch {
       /* ignore */
     }
     try {
-      const memberIds = (g.memberIds ?? []).filter((id) => id !== uid);
       const { session, localStream, peerIds } = await createGroupMeshSession(sock, {
         groupChatId: gc,
         myUserId: uid,
@@ -3684,7 +3737,7 @@ export default function App() {
       });
       groupMeshSessionRef.current = session;
       setGroupMeshUi({
-        title: g.name,
+        title: resolvedTitle,
         groupChatId: gc,
         audioOnly,
         localStream,
@@ -3785,6 +3838,7 @@ export default function App() {
   }
 
   async function startDmCall(prefs: { video: boolean; mic: boolean }) {
+    setPendingGroupMeshIncoming(null);
     if (!canStartCalls) {
       setChatError("Недостаточно прав для звонков");
       return;
@@ -3804,60 +3858,51 @@ export default function App() {
       return;
     }
     if (webrtcBusyRef.current) return;
+    const meshId = dmMeshGroupChatId(activeDirectChat.id);
     const audioOnly = !prefs.video;
     webrtcBusyRef.current = true;
-    let pendingRemoteStream: MediaStream | null = null;
     try {
-      const ac = await startOutgoingCall(sock, {
-        targetUserId: otherId,
+      const { session, localStream, peerIds } = await createGroupMeshSession(sock, {
+        groupChatId: meshId,
+        myUserId: userId,
+        peerUserIds: [otherId],
         audioOnly,
-        onRemoteStream: (stream) => {
-          setWebrtcUi((prev) => {
-            if (prev) return { ...prev, remoteStream: stream };
-            pendingRemoteStream = stream;
-            return prev;
+        initialMicEnabled: prefs.mic,
+        initialCamEnabled: prefs.video,
+        onRemoteStream: (peerId, stream) => {
+          setGroupMeshUi((prev) => (prev ? { ...prev, remotes: { ...prev.remotes, [peerId]: stream } } : prev));
+        },
+        onPeerDisconnected: (peerId) => {
+          setGroupMeshHands((prev) => {
+            const { [peerId]: _, ...rest } = prev;
+            return rest;
+          });
+          setGroupMeshUi((prev) => {
+            if (!prev) return prev;
+            const { [peerId]: _, ...rest } = prev.remotes;
+            return { ...prev, remotes: rest };
           });
         },
-        onClose: () => {
-          webrtcBusyRef.current = false;
-          webrtcPeerRef.current = "";
-          setWebrtcPeerHandRaised(false);
-          setWebrtcLocalHandRaised(false);
-          setWebrtcScreenSharing(false);
-          setWebrtcUi(null);
-        },
       });
-      ac.localStream.getAudioTracks().forEach((t) => {
-        t.enabled = prefs.mic;
-      });
-      if (!audioOnly) {
-        ac.localStream.getVideoTracks().forEach((t) => {
-          t.enabled = prefs.video;
-        });
-      }
-      attachWebrtcDiagnostics(ac.pc, `out:${otherId}`);
-      webrtcPeerRef.current = otherId;
-      setWebrtcMicOn(prefs.mic);
-      setWebrtcCamOn(!audioOnly && prefs.video);
-      setWebrtcPeerHandRaised(false);
-      setWebrtcLocalHandRaised(false);
-      setWebrtcUi({
-        localStream: ac.localStream,
-        remoteStream: pendingRemoteStream,
-        hangup: () => {
-          webrtcPeerRef.current = "";
-          setWebrtcPeerHandRaised(false);
-          setWebrtcLocalHandRaised(false);
-          setWebrtcScreenSharing(false);
-          ac.hangup();
-        },
+      groupMeshSessionRef.current = session;
+      const u = users.find((x) => x.id === otherId);
+      const title = displayUserNameForSidebar(u, otherId);
+      setGroupMeshUi({
+        title,
+        groupChatId: meshId,
         audioOnly,
-        activeCall: ac,
-        callPeerId: otherId,
+        localStream,
+        remotes: {},
+        hangup: hangupGroupMesh,
       });
+      setGroupCallLiveAt((prev) => ({ ...prev, [meshId]: Date.now() }));
+      await session.startOfferers(peerIds);
+      pushLog("Личный созвон (mesh)");
     } catch (e: any) {
-      webrtcBusyRef.current = false;
       setChatError(String(e?.message ?? e));
+      groupMeshSessionRef.current = null;
+      setGroupMeshUi(null);
+      webrtcBusyRef.current = false;
       diagLog(`startDmCall error: ${String(e?.name ?? "")} ${String(e?.message ?? e)}`);
     }
   }
@@ -3873,6 +3918,13 @@ export default function App() {
       return;
     }
     const base = `${window.location.origin}${window.location.pathname}`;
+    if (gid.startsWith(DM_MESH_PREFIX)) {
+      const dcid = gid.slice(DM_MESH_PREFIX.length);
+      const link = `${base}#dm=${encodeURIComponent(dcid)}&call=1`;
+      void navigator.clipboard.writeText(link);
+      pushLog("Ссылка на личный созвон скопирована в буфер");
+      return;
+    }
     const link = `${base}#group=${encodeURIComponent(gid)}&gcall=1`;
     void navigator.clipboard.writeText(link);
     pushLog("Ссылка на групповой созвон скопирована в буфер");
@@ -3917,8 +3969,18 @@ export default function App() {
   function toggleGroupMeshRaiseHand() {
     if (!socket || !groupMeshUi || !userId) return;
     const next = !groupMeshHands[userId];
+    const meshGid = groupMeshUi.groupChatId;
+    if (meshGid.startsWith(DM_MESH_PREFIX)) {
+      const dcId = meshGid.slice(DM_MESH_PREFIX.length);
+      const dc = directChatsRef.current.find((d) => d.id === dcId);
+      const peer = dc?.userIds.find((id) => id !== userId) ?? "";
+      if (!peer) return;
+      setGroupMeshHands((prev) => ({ ...prev, [userId]: next }));
+      socket.emit("call:hand", { targetUserId: peer, raised: next });
+      return;
+    }
     setGroupMeshHands((prev) => ({ ...prev, [userId]: next }));
-    socket.emit("groupCall:hand", { groupChatId: groupMeshUi.groupChatId, raised: next });
+    socket.emit("groupCall:hand", { groupChatId: meshGid, raised: next });
   }
 
   async function loadUsers(tokenOverride?: string, orgIdOverride?: string) {
@@ -8044,19 +8106,16 @@ export default function App() {
                     const inv = parseCallInviteFromContent(m.content);
                     if (!inv) return m.content ? m.content : "(удалено)";
                     const href = String(m.content ?? "").trim();
-                    if (inv.type === "dm") {
-                      return (
-                        <a className="tgCallInviteLink" href={href} onClick={(e) => e.stopPropagation()}>
-                          Созвон
-                        </a>
-                      );
-                    }
-                    const gid = inv.groupId;
+                    const gid =
+                      inv.type === "group" ? inv.groupId : dmMeshGroupChatId(inv.directChatId);
                     const inThisCall = groupMeshUi?.groupChatId === gid;
                     const live =
                       (groupCallLiveAt[gid] != null && Date.now() - groupCallLiveAt[gid] < GROUP_CALL_INVITE_LIVE_MS) ||
                       inThisCall;
-                    const inThisChat = mode === "groups" && activeGroupChat?.id === gid;
+                    const inThisChat =
+                      inv.type === "group"
+                        ? mode === "groups" && activeGroupChat?.id === inv.groupId
+                        : mode === "dms" && activeDirectChat?.id === inv.directChatId;
                     const showJoin = inThisChat && live && !inThisCall && canStartCalls;
                     return (
                       <div className="callInviteCard" onClick={(e) => e.stopPropagation()}>
@@ -8565,7 +8624,11 @@ export default function App() {
                   {groupCallPreJoinMic ? "🎤 Микрофон включён" : "🎤 Микрофон выключен"}
                 </button>
               </div>
-              <p className="groupCallJoinModalMeta">Одновременно до {GROUP_MESH_MAX_PEERS} участников (не считая вас)</p>
+              <p className="groupCallJoinModalMeta">
+                {inviteCardJoinModal.groupChatId.startsWith(DM_MESH_PREFIX)
+                  ? "Личный видеозвонок (тот же mesh, что и в группе)"
+                  : `Одновременно до ${GROUP_MESH_MAX_PEERS} участников (не считая вас)`}
+              </p>
               <div className="groupCallJoinActions">
                 <button type="button" className="chip" onClick={() => setInviteCardJoinModal(null)}>
                   Отмена
@@ -8584,6 +8647,15 @@ export default function App() {
                         mic: groupCallPreJoinMic,
                         cam: groupCallPreJoinCam,
                       });
+                      return;
+                    }
+                    if (gid.startsWith(DM_MESH_PREFIX)) {
+                      const dcid = gid.slice(DM_MESH_PREFIX.length);
+                      if (activeDirectChat?.id !== dcid) {
+                        setChatError("Откройте этот личный чат и нажмите снова");
+                        return;
+                      }
+                      void startDmCall(prefs);
                       return;
                     }
                     if (activeGroupChat?.id !== gid) {
