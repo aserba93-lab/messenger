@@ -194,7 +194,7 @@ type Message = {
   id: string;
   content: string;
   createdAt: string;
-  author: { email: string; firstName?: string | null; middleName?: string | null; lastName?: string | null };
+  author: { id?: string; email: string; firstName?: string | null; middleName?: string | null; lastName?: string | null };
   type?: string;
   file?: FileInfo | null;
   reactions?: Reaction[];
@@ -213,7 +213,7 @@ type DirectChatMessage = {
   content: string;
   createdAt: string;
   updatedAt?: string;
-  author: { email: string; firstName?: string | null; middleName?: string | null; lastName?: string | null };
+  author: { id?: string; email: string; firstName?: string | null; middleName?: string | null; lastName?: string | null };
   type?: string;
   parentMessageId?: string | null;
   reactions?: Reaction[];
@@ -1025,7 +1025,7 @@ export default function App() {
   }, [userChatFolderLayout, token, userId]);
   const [chatMenu, setChatMenu] = useState<null | { x: number; y: number; key: string; sub: "main" | "notify" | "folder" }>(null);
   const chatMenuRef = useRef<HTMLDivElement | null>(null);
-  const [callMenuOpen, setCallMenuOpen] = useState(false);
+  const [groupCallJoinModalOpen, setGroupCallJoinModalOpen] = useState(false);
   /** В группе: сначала список участников, затем выбор аудио/видео */
   const [chatMetaPopoverOpen, setChatMetaPopoverOpen] = useState(false);
   const callMenuWrapRef = useRef<HTMLDivElement | null>(null);
@@ -1948,19 +1948,7 @@ export default function App() {
   }, [chatMenu]);
 
   useEffect(() => {
-    if (!callMenuOpen) return;
-    const onDown = (e: globalThis.MouseEvent) => {
-      const el = callMenuWrapRef.current;
-      if (el && !el.contains(e.target as Node)) {
-        setCallMenuOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", onDown, true);
-    return () => document.removeEventListener("mousedown", onDown, true);
-  }, [callMenuOpen]);
-
-  useEffect(() => {
-    setCallMenuOpen(false);
+    setGroupCallJoinModalOpen(false);
   }, [mode, activeChannelId, activeGroupChatId, activeDirectChatId]);
 
   useEffect(() => {
@@ -2870,6 +2858,7 @@ export default function App() {
         editedAt: m.editedAt ?? null,
         isDeleted: !!m.isDeleted,
         author: {
+          id: String((m as { author?: { id?: string } }).author?.id ?? ""),
           email: String(m.author?.email ?? "user"),
           firstName: m.author?.firstName ?? null,
           middleName: m.author?.middleName ?? null,
@@ -2893,7 +2882,12 @@ export default function App() {
         (modeRef.current === "dms" && directChatId && directChatId === activeDirectChatIdRef.current);
 
       const tabHidden = typeof document !== "undefined" && document.hidden;
-      const fromMe = String(msg.author?.email ?? "") === myAccountEmailRef.current;
+      const authorId = String(msg.author?.id ?? "");
+      const myEmail = myAccountEmailRef.current.trim().toLowerCase();
+      const authorEmail = String(msg.author?.email ?? "").trim().toLowerCase();
+      const fromMe =
+        (!!userIdRef.current && !!authorId && authorId === userIdRef.current) ||
+        (!!myEmail && !!authorEmail && authorEmail === myEmail);
       const v = key ? chatMuteMapRef.current[key] : undefined;
       const muted =
         v === "forever" ||
@@ -2902,13 +2896,11 @@ export default function App() {
       const isCallOrMeetHint = /🎥|📞|🎬|Видеозвонок|видеовстреч|видео[\s-]?звон|Аудиозвонок|видеовстречи|созвон|созвонились|звонок|групповой|mesh|gcall|videocall|video\s*call|\bmeet(ing)?\b/i.test(
         String(msg.content ?? ""),
       );
-      const shouldNotify =
-        key &&
-        !muted &&
-        !fromMe &&
+      const wantPing = key && !muted && !fromMe && (!isActive || tabHidden);
+      const canBrowserOsNotify =
+        wantPing &&
         typeof Notification !== "undefined" &&
         Notification.permission === "granted" &&
-        (!isActive || tabHidden) &&
         (browserNotifyRef.current || isCallOrMeetHint);
 
       const bodyPreview =
@@ -2919,7 +2911,6 @@ export default function App() {
             : (msg.content || "Новое сообщение").slice(0, 160);
       const fromLabelPreview = displayUserNameForSidebar(msg.author as any, String(msg.author?.email ?? "Участник"));
 
-      const wantPing = key && !muted && !fromMe && (!isActive || tabHidden);
       if (wantPing) {
         try {
           if (typeof navigator !== "undefined" && typeof (navigator as Navigator & { vibrate?: (p: number | number[]) => boolean }).vibrate === "function") {
@@ -2930,8 +2921,8 @@ export default function App() {
         }
       }
 
-      if (shouldNotify) {
-        let osShown = false;
+      let osShown = false;
+      if (canBrowserOsNotify) {
         try {
           const n = new Notification(fromLabelPreview || "Новое сообщение", {
             body: bodyPreview,
@@ -2958,10 +2949,8 @@ export default function App() {
         } catch {
           /* ignore */
         }
-        if (!osShown && wantPing) {
-          pushAppToast(`${fromLabelPreview}: ${bodyPreview.slice(0, 120)}`);
-        }
-      } else if (wantPing) {
+      }
+      if (wantPing && !osShown) {
         pushAppToast(`${fromLabelPreview}: ${bodyPreview.slice(0, 120)}`);
       }
       if (
@@ -4718,7 +4707,7 @@ export default function App() {
             </div>
             <div className="tgChatSub">
               {isMuted(chatKeyFor("d", d.id)) ? "🔕 " : ""}
-              {chatPreviewByKey[chatKeyFor("d", d.id)]?.text || "Личка"}
+              {chatPreviewByKey[chatKeyFor("d", d.id)]?.text?.trim() || "Нет сообщений"}
             </div>
           </div>
           {unreadFor(chatKeyFor("d", d.id)) ? <div className="tgUnread">{unreadFor(chatKeyFor("d", d.id))}</div> : null}
@@ -4778,7 +4767,8 @@ export default function App() {
             </div>
             <div className="tgChatSub">
               {isMuted(chatKeyFor("g", g.id)) ? "🔕 " : ""}
-              {chatPreviewByKey[chatKeyFor("g", g.id)]?.text || `Группа · участников: ${g.memberIds?.length ?? 0}`}
+              {chatPreviewByKey[chatKeyFor("g", g.id)]?.text?.trim() ||
+                (g.memberIds?.length ? `Участников: ${g.memberIds.length}` : "Нет сообщений")}
             </div>
           </div>
           {unreadFor(chatKeyFor("g", g.id)) ? <div className="tgUnread">{unreadFor(chatKeyFor("g", g.id))}</div> : null}
@@ -4837,7 +4827,7 @@ export default function App() {
           </div>
           <div className="tgChatSub">
             {isMuted(chatKeyFor("c", c.id)) ? "🔕 " : ""}
-            {chatPreviewByKey[chatKeyFor("c", c.id)]?.text || `Канал · ${c.type}`}
+            {chatPreviewByKey[chatKeyFor("c", c.id)]?.text?.trim() || `Канал · ${c.type}`}
           </div>
         </div>
         {unreadFor(chatKeyFor("c", c.id)) ? <div className="tgUnread">{unreadFor(chatKeyFor("c", c.id))}</div> : null}
@@ -6399,7 +6389,7 @@ export default function App() {
                       </div>
                       <div className="tgChatSub">
                         {isMuted(chatKeyFor("c", c.id)) ? "🔕 " : ""}
-                        {chatPreviewByKey[chatKeyFor("c", c.id)]?.text || `Канал · ${c.type}`}
+                        {chatPreviewByKey[chatKeyFor("c", c.id)]?.text?.trim() || `Канал · ${c.type}`}
                       </div>
                     </div>
                     {unreadFor(chatKeyFor("c", c.id)) ? <div className="tgUnread">{unreadFor(chatKeyFor("c", c.id))}</div> : null}
@@ -6459,7 +6449,8 @@ export default function App() {
                         </div>
                         <div className="tgChatSub">
                           {isMuted(chatKeyFor("g", g.id)) ? "🔕 " : ""}
-                          {chatPreviewByKey[chatKeyFor("g", g.id)]?.text || `Группа · участников: ${g.memberIds?.length ?? 0}`}
+                          {chatPreviewByKey[chatKeyFor("g", g.id)]?.text?.trim() ||
+                            (g.memberIds?.length ? `Участников: ${g.memberIds.length}` : "Нет сообщений")}
                         </div>
                       </div>
                     {unreadFor(chatKeyFor("g", g.id)) ? <div className="tgUnread">{unreadFor(chatKeyFor("g", g.id))}</div> : null}
@@ -6538,7 +6529,7 @@ export default function App() {
                           </div>
                           <div className="tgChatSub">
                             {isMuted(chatKeyFor("d", d.id)) ? "🔕 " : ""}
-                            {chatPreviewByKey[chatKeyFor("d", d.id)]?.text || "Личка"}
+                            {chatPreviewByKey[chatKeyFor("d", d.id)]?.text?.trim() || "Нет сообщений"}
                           </div>
                         </div>
                         {unreadFor(chatKeyFor("d", d.id)) ? <div className="tgUnread">{unreadFor(chatKeyFor("d", d.id))}</div> : null}
@@ -7081,34 +7072,14 @@ export default function App() {
                       (!activeGroupChat || !(activeGroupChat.memberIds ?? []).some((id) => id !== userId))) ||
                     mode === "channels"
                   }
-                  onClick={() => setCallMenuOpen((v) => !v)}
+                  onClick={() => {
+                    if (canStartCalls && socket && mode === "groups" && activeGroupChat && (activeGroupChat.memberIds ?? []).some((id) => id !== userId)) {
+                      setGroupCallJoinModalOpen(true);
+                    }
+                  }}
                 >
                   📞
                 </button>
-                {callMenuOpen && canStartCalls && socket && mode === "groups" && activeGroupChat && (activeGroupChat.memberIds ?? []).some((id) => id !== userId) ? (
-                  <div className="tgPopoverMenu tgPopoverMenu--callJoin" role="menu">
-                    <div className="tgPopoverHint">Перед входом</div>
-                    <label className="tgPopoverRow">
-                      <input type="checkbox" checked={groupCallPreJoinMic} onChange={(e) => setGroupCallPreJoinMic(e.target.checked)} /> Микрофон
-                    </label>
-                    <label className="tgPopoverRow">
-                      <input type="checkbox" checked={groupCallPreJoinCam} onChange={(e) => setGroupCallPreJoinCam(e.target.checked)} /> Камера (без галочки — только звук)
-                    </label>
-                    <div className="tgPopoverHint" style={{ marginTop: 6 }}>
-                      В эфире до {GROUP_MESH_MAX_PEERS} участников (не считая вас).
-                    </div>
-                    <button
-                      type="button"
-                      className="tgPopoverItem"
-                      onClick={() => {
-                        setCallMenuOpen(false);
-                        void startGroupMesh({ video: groupCallPreJoinCam, mic: groupCallPreJoinMic });
-                      }}
-                    >
-                      🎥 Видеосозвон
-                    </button>
-                  </div>
-                ) : null}
               </div>
               <button type="button" className="tgCircleBtn" onClick={() => setShowRightPanel((v) => !v)} title="Сведения о чате">
                 ℹ️
@@ -8298,6 +8269,57 @@ export default function App() {
               <button type="button" className="chip" style={{ marginTop: 10 }} onClick={() => setReadReceiptModalForId(null)}>
                 Закрыть
               </button>
+            </div>
+          </div>
+        ) : null}
+        {groupCallJoinModalOpen ? (
+          <div className="modalBackdrop" role="presentation" onClick={() => setGroupCallJoinModalOpen(false)}>
+            <div
+              className="modalPanel groupCallJoinModal"
+              role="dialog"
+              aria-labelledby="groupCallJoinTitle"
+              aria-modal="true"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="groupCallJoinModalVisual" aria-hidden>
+                📹
+              </div>
+              <h2 id="groupCallJoinTitle" className="groupCallJoinModalTitle">
+                Подключение к встрече
+              </h2>
+              <p className="groupCallJoinModalHint">Включите или выключите камеру и микрофон до входа</p>
+              <div className="groupCallJoinToggles">
+                <button
+                  type="button"
+                  className={`groupCallJoinToggle ${groupCallPreJoinCam ? "groupCallJoinToggle--on" : "groupCallJoinToggle--off"}`}
+                  onClick={() => setGroupCallPreJoinCam((v) => !v)}
+                >
+                  {groupCallPreJoinCam ? "📷 Видео включено" : "📷 Видео выключено"}
+                </button>
+                <button
+                  type="button"
+                  className={`groupCallJoinToggle ${groupCallPreJoinMic ? "groupCallJoinToggle--on" : "groupCallJoinToggle--off"}`}
+                  onClick={() => setGroupCallPreJoinMic((v) => !v)}
+                >
+                  {groupCallPreJoinMic ? "🎤 Микрофон включён" : "🎤 Микрофон выключен"}
+                </button>
+              </div>
+              <p className="groupCallJoinModalMeta">Одновременно до {GROUP_MESH_MAX_PEERS} участников (не считая вас)</p>
+              <div className="groupCallJoinActions">
+                <button type="button" className="chip" onClick={() => setGroupCallJoinModalOpen(false)}>
+                  Отмена
+                </button>
+                <button
+                  type="button"
+                  className="chip groupCallJoinPrimary"
+                  onClick={() => {
+                    setGroupCallJoinModalOpen(false);
+                    void startGroupMesh({ video: groupCallPreJoinCam, mic: groupCallPreJoinMic });
+                  }}
+                >
+                  Присоединиться к встрече
+                </button>
+              </div>
             </div>
           </div>
         ) : null}

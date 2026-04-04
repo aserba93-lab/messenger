@@ -51,18 +51,22 @@
 }
 
 #root {
-  width: 1126px;
-  max-width: 100%;
-  margin: 0 auto;
-  text-align: center;
-  border-inline: 1px solid var(--border);
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  text-align: initial;
+  border: none;
+  min-height: 100dvh;
   min-height: 100svh;
   display: flex;
   flex-direction: column;
   box-sizing: border-box;
+  flex: 1;
 }
 
+html,
 body {
+  height: 100%;
   margin: 0;
 }
 

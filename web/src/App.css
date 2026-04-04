@@ -123,6 +123,30 @@
   color: rgba(20, 50, 90, 0.95);
 }
 
+:root[data-theme="light"] .appToast {
+  background: #f6f7fb;
+  border-color: rgba(0, 0, 0, 0.12);
+  color: var(--tg-text);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.12);
+}
+:root[data-theme="light"] .msgMenu {
+  background: #f6f7fb;
+  border-color: rgba(0, 0, 0, 0.12);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.12);
+}
+:root[data-theme="light"] .msgMenuItem:hover {
+  background: rgba(0, 0, 0, 0.06);
+}
+:root[data-theme="light"] .chatMenu {
+  background: #f6f7fb;
+  border-color: rgba(0, 0, 0, 0.12);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.12);
+}
+:root[data-theme="light"] .tgLogoBadge {
+  background: #e53935;
+  color: #fff;
+}
+
 html,
 body,
 #root {
@@ -264,15 +288,17 @@ body {
 .layout {
   height: 100dvh;
   min-height: 100dvh;
+  flex: 1;
+  min-width: 0;
   display: grid;
-  grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
+  grid-template-columns: minmax(280px, min(420px, 32vw)) minmax(0, 1fr);
   background: var(--tg-bg-app);
   position: relative;
   --org-chat-logo: none;
 }
 
 .layout.layout--info {
-  grid-template-columns: minmax(280px, 360px) minmax(0, 1fr) 320px;
+  grid-template-columns: minmax(280px, min(420px, 32vw)) minmax(0, 1fr) minmax(260px, 320px);
 }
 
 .sidebarBackdrop {
@@ -816,9 +842,16 @@ body {
   text-align: left;
   cursor: pointer;
   border: 1px solid transparent;
+  height: 72px;
+  min-height: 72px;
+  max-height: 72px;
+  margin-bottom: 4px;
 }
 .tgChatRow--folderToggleOpen {
   background: rgba(255, 255, 255, 0.05);
+}
+:root[data-theme="light"] .tgChatRow--folderToggleOpen {
+  background: rgba(0, 0, 0, 0.04);
 }
 .tgFolderBlock {
   display: flex;
@@ -1324,7 +1357,12 @@ button.active {
   opacity: 0.92;
 }
 .tgChatScopePopover {
-  min-width: 200px;
+  left: 0;
+  right: 0;
+  min-width: 0;
+  width: 100%;
+  max-width: none;
+  box-sizing: border-box;
 }
 
 .tgModeTabs,
@@ -2198,6 +2236,77 @@ pre {
   border-radius: 12px;
   background: rgba(16, 18, 28, 0.98);
   border: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.groupCallJoinModal {
+  max-width: 400px;
+  text-align: center;
+}
+.groupCallJoinModalVisual {
+  font-size: 48px;
+  line-height: 1;
+  margin-bottom: 8px;
+}
+.groupCallJoinModalTitle {
+  margin: 0 0 6px;
+  font-size: 18px;
+  font-weight: 700;
+}
+.groupCallJoinModalHint {
+  margin: 0 0 14px;
+  font-size: 13px;
+  opacity: 0.85;
+  line-height: 1.35;
+}
+.groupCallJoinModalMeta {
+  margin: 10px 0 14px;
+  font-size: 12px;
+  opacity: 0.75;
+}
+.groupCallJoinToggles {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  align-items: stretch;
+}
+.groupCallJoinToggle {
+  border-radius: 12px;
+  padding: 12px 14px;
+  font-size: 14px;
+  cursor: pointer;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.06);
+  color: inherit;
+  font: inherit;
+  text-align: center;
+  transition: background 0.12s ease;
+}
+.groupCallJoinToggle--on {
+  border-color: rgba(34, 197, 94, 0.45);
+  background: rgba(34, 197, 94, 0.12);
+}
+.groupCallJoinToggle--off {
+  border-color: rgba(255, 120, 120, 0.35);
+  background: rgba(255, 80, 80, 0.08);
+}
+.groupCallJoinActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: center;
+  margin-top: 4px;
+}
+.chip.groupCallJoinPrimary {
+  font-weight: 700;
+  background: var(--tg-accent);
+  color: #fff;
+  border: none;
+}
+:root[data-theme="light"] .groupCallJoinToggle--on {
+  background: rgba(34, 197, 94, 0.14);
+}
+:root[data-theme="light"] .groupCallJoinToggle--off {
+  background: rgba(255, 100, 100, 0.1);
 }
 
 .tgChatTopRight {
