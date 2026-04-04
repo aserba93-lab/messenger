@@ -644,6 +644,111 @@ body {
   outline: 1px dashed rgba(110, 170, 255, 0.45);
   outline-offset: 2px;
 }
+.tgChatRow--folderToggle {
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+  border: 1px solid transparent;
+}
+.tgChatRow--folderToggleOpen {
+  background: rgba(255, 255, 255, 0.05);
+}
+.tgFolderBlock {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+.tgFolderBlockInner {
+  padding: 4px 0 4px 12px;
+  margin-left: 4px;
+  border-left: 2px solid rgba(38, 165, 228, 0.35);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.tgAvatar--folder {
+  background: rgba(38, 165, 228, 0.22);
+  font-size: 22px;
+  line-height: 1;
+}
+.tgFolderChevron {
+  display: inline-block;
+  width: 1em;
+  color: var(--tg-muted);
+  font-size: 0.85em;
+}
+.tgFolderCount {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--tg-muted);
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+}
+.tgChatSub--folderHint {
+  font-size: 12px;
+  color: var(--tg-muted);
+  white-space: normal;
+}
+.tgCodeInline {
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  font-size: 0.9em;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.25);
+}
+:root[data-theme="light"] .tgCodeInline {
+  background: rgba(0, 0, 0, 0.06);
+}
+.jitsiGroupOverlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2147482002;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: max(12px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) max(12px, env(safe-area-inset-bottom))
+    max(12px, env(safe-area-inset-left));
+  background: rgba(2, 4, 10, 0.88);
+  backdrop-filter: blur(6px);
+}
+.jitsiGroupShell {
+  width: min(960px, 100%);
+  height: min(85dvh, 720px);
+  max-height: 100%;
+  display: flex;
+  flex-direction: column;
+  border-radius: 14px;
+  overflow: hidden;
+  border: 1px solid var(--tg-border-subtle);
+  background: #000;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.55);
+}
+.jitsiGroupHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  flex-shrink: 0;
+  background: var(--tg-bg-elevated);
+  border-bottom: 1px solid var(--tg-border-subtle);
+}
+.jitsiGroupTitle {
+  font-weight: 600;
+  font-size: 15px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.jitsiGroupFrame {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  border: 0;
+  background: #000;
+}
 .tgAvatar {
   width: 48px;
   height: 48px;
