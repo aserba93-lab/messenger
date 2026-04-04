@@ -1770,6 +1770,53 @@ button.active {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.tgChatHeaderPins {
+  margin-top: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  max-width: 100%;
+}
+.tgChatHeaderPinChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: min(100%, 280px);
+  padding: 4px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--tg-border-subtle);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--tg-text);
+  font-size: 12px;
+  cursor: pointer;
+  text-align: left;
+}
+.tgChatHeaderPinChip:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+.tgChatHeaderPinIcon {
+  flex-shrink: 0;
+  opacity: 0.85;
+}
+.tgChatHeaderPinText {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tgChatHeaderPinMore {
+  font-size: 12px;
+  padding: 4px 8px;
+  border-radius: 8px;
+  border: 1px dashed var(--tg-border-subtle);
+  background: transparent;
+  color: var(--tg-muted);
+  cursor: pointer;
+}
+.tgChatHeaderPinMore:hover:not(:disabled) {
+  color: var(--tg-text);
+  border-color: rgba(255, 255, 255, 0.2);
+}
 .tgChatHeaderRight {
   display: flex;
   gap: 8px;

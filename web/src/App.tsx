@@ -283,6 +283,9 @@ const defaultStickerCatalog = [
   { id: "pack-15-nature", title: "Природа", stickers: ["🌲", "🌸", "🍀", "🌙", "🌊", "🔥", "💧", "🌈"] },
 ];
 
+/** Поля сообщения для списков закреплённых (шапка чата и экран «все закрепы»). */
+const GQL_PINNED_MESSAGE_FIELDS = `id content createdAt editedAt isDeleted type parentMessageId author { email } reactions { emoji count viewerHasReacted } file { id originalName mimeType size downloadUrl avStatus blockedReason }`;
+
 async function gql<T>(query: string, variables: Record<string, unknown>, token?: string): Promise<T> {
   const headers: Record<string, string> = { "content-type": "application/json" };
   const auth = String(token ?? gqlAuthTokenRef.current ?? "").trim();
@@ -757,6 +760,8 @@ export default function App() {
   const [showSaved, setShowSaved] = useState(false);
   const [savedIds, setSavedIds] = useState<Set<string>>(new Set());
   const [showPins, setShowPins] = useState(false);
+  /** Закрепы текущего чата — полоска под шапкой */
+  const [headerPinnedMessages, setHeaderPinnedMessages] = useState<Message[]>([]);
   const [forwardSelecting, setForwardSelecting] = useState(false);
   const [forwardSelectedIds, setForwardSelectedIds] = useState<Set<string>>(new Set());
   const [showForwardPicker, setShowForwardPicker] = useState(false);
@@ -1021,15 +1026,20 @@ export default function App() {
   const [inviteCardJoinModal, setInviteCardJoinModal] = useState<null | { groupChatId: string }>(null);
   const groupMeshSessionRef = useRef<GroupMeshSession | null>(null);
   const groupMeshUiRef = useRef<typeof groupMeshUi>(null);
-  useEffect(() => {
-    groupMeshUiRef.current = groupMeshUi;
-  }, [groupMeshUi]);
+  groupMeshUiRef.current = groupMeshUi;
   useEffect(() => {
     if (!groupMeshUi) {
       setGroupMeshSpotlightPeerId(null);
       setGroupMeshHands({});
     }
   }, [groupMeshUi]);
+  /** Участники сетки: и с медиа, и только с «рукой» (до появления потока) */
+  const groupMeshPeerIdsForUi = useMemo(() => {
+    if (!groupMeshUi) return [];
+    const rem = Object.keys(groupMeshUi.remotes);
+    const fromHands = Object.keys(groupMeshHands).filter((id) => id && id !== userId);
+    return [...new Set([...rem, ...fromHands])].sort();
+  }, [groupMeshUi, groupMeshHands, userId]);
   const groupMeshStagePeerId = useMemo(() => {
     if (!groupMeshUi || groupMeshUi.audioOnly) return null;
     const ids = Object.keys(groupMeshUi.remotes).sort();
@@ -1701,11 +1711,27 @@ export default function App() {
     });
     setPinnedOrderByKey((prev) => ({ ...prev, ...next }));
   }
+
+  const activeChatKeyForPanel = useMemo(() => {
+    if (mode === "channels" && activeChannelId) return chatKeyFor("c", activeChannelId);
+    if (mode === "groups" && activeGroupChatId) return chatKeyFor("g", activeGroupChatId);
+    if (mode === "dms" && activeDirectChatId) return chatKeyFor("d", activeDirectChatId);
+    return "";
+  }, [mode, activeChannelId, activeGroupChatId, activeDirectChatId]);
+
   function includeByFolder(key: string) {
     const unread = unreadFor(key) > 0;
     const archived = isArchived(key);
-    if (chatFolder === "unread") return unread && !archived;
-    if (chatFolder === "archived") return archived;
+    const isActive = !!activeChatKeyForPanel && key === activeChatKeyForPanel;
+    if (chatFolder === "unread") {
+      if (isActive) return true;
+      return unread && !archived;
+    }
+    if (chatFolder === "archived") {
+      if (isActive) return archived;
+      return archived;
+    }
+    if (isActive) return true;
     return !archived;
   }
 
@@ -1734,21 +1760,21 @@ export default function App() {
       [...filteredChannels]
         .sort((a, b) => compareChatsByPinThenRecency(chatKeyFor("c", a.id), chatKeyFor("c", b.id)))
         .filter((c) => includeByFolder(chatKeyFor("c", c.id))),
-    [filteredChannels, pinnedChatByKey, pinnedOrderByKey, archivedChatByKey, unreadByKey, chatFolder, chatPreviewByKey],
+    [filteredChannels, pinnedChatByKey, pinnedOrderByKey, archivedChatByKey, unreadByKey, chatFolder, chatPreviewByKey, activeChatKeyForPanel],
   );
   const orderedGroups = useMemo(
     () =>
       [...filteredGroups]
         .sort((a, b) => compareChatsByPinThenRecency(chatKeyFor("g", a.id), chatKeyFor("g", b.id)))
         .filter((g) => includeByFolder(chatKeyFor("g", g.id))),
-    [filteredGroups, pinnedChatByKey, pinnedOrderByKey, archivedChatByKey, unreadByKey, chatFolder, chatPreviewByKey],
+    [filteredGroups, pinnedChatByKey, pinnedOrderByKey, archivedChatByKey, unreadByKey, chatFolder, chatPreviewByKey, activeChatKeyForPanel],
   );
   const orderedDMs = useMemo(
     () =>
       [...filteredDMs]
         .sort((a, b) => compareChatsByPinThenRecency(chatKeyFor("d", a.id), chatKeyFor("d", b.id)))
         .filter((d) => includeByFolder(chatKeyFor("d", d.id))),
-    [filteredDMs, pinnedChatByKey, pinnedOrderByKey, archivedChatByKey, unreadByKey, chatFolder, chatPreviewByKey],
+    [filteredDMs, pinnedChatByKey, pinnedOrderByKey, archivedChatByKey, unreadByKey, chatFolder, chatPreviewByKey, activeChatKeyForPanel],
   );
 
   const unifiedChatRows = useMemo(() => {
@@ -1804,13 +1830,6 @@ export default function App() {
     }
     return { mode: "grouped" as const, sections };
   }, [unifiedChatRows, userChatFolderLayout]);
-
-  const activeChatKeyForPanel = useMemo(() => {
-    if (mode === "channels" && activeChannelId) return chatKeyFor("c", activeChannelId);
-    if (mode === "groups" && activeGroupChatId) return chatKeyFor("g", activeGroupChatId);
-    if (mode === "dms" && activeDirectChatId) return chatKeyFor("d", activeDirectChatId);
-    return "";
-  }, [mode, activeChannelId, activeGroupChatId, activeDirectChatId]);
 
   const isSelfNotesActiveDm = useMemo(
     () =>
@@ -2621,6 +2640,51 @@ export default function App() {
     return () => window.clearTimeout(t);
   }, [loginIdentifier]);
 
+  const refreshHeaderPinnedMessages = useCallback(async () => {
+    if (!token || threadRootId || showPins || showSaved) {
+      setHeaderPinnedMessages([]);
+      return;
+    }
+    try {
+      if (mode === "channels" && activeChannelId) {
+        const data = await gql<{ pinnedMessages: Message[] }>(
+          `query($channelId: ID!, $limit: Int!) {
+            pinnedMessages(channelId: $channelId, limit: $limit) { ${GQL_PINNED_MESSAGE_FIELDS} }
+          }`,
+          { channelId: activeChannelId, limit: 12 },
+          token,
+        );
+        setHeaderPinnedMessages(data.pinnedMessages);
+      } else if (mode === "groups" && activeGroupChatId) {
+        const data = await gql<{ pinnedMessages: Message[] }>(
+          `query($groupChatId: ID!, $limit: Int!) {
+            pinnedMessages(groupChatId: $groupChatId, limit: $limit) { ${GQL_PINNED_MESSAGE_FIELDS} }
+          }`,
+          { groupChatId: activeGroupChatId, limit: 12 },
+          token,
+        );
+        setHeaderPinnedMessages(data.pinnedMessages);
+      } else if (mode === "dms" && activeDirectChatId) {
+        const data = await gql<{ pinnedMessages: Message[] }>(
+          `query($directChatId: ID!, $limit: Int!) {
+            pinnedMessages(directChatId: $directChatId, limit: $limit) { ${GQL_PINNED_MESSAGE_FIELDS} }
+          }`,
+          { directChatId: activeDirectChatId, limit: 12 },
+          token,
+        );
+        setHeaderPinnedMessages(data.pinnedMessages);
+      } else {
+        setHeaderPinnedMessages([]);
+      }
+    } catch {
+      setHeaderPinnedMessages([]);
+    }
+  }, [token, mode, activeChannelId, activeGroupChatId, activeDirectChatId, threadRootId, showPins, showSaved]);
+
+  useEffect(() => {
+    void refreshHeaderPinnedMessages();
+  }, [refreshHeaderPinnedMessages]);
+
   async function loadSavedMessages() {
     if (!token) return;
     const data = await gql<{ savedMessages: Message[] }>(
@@ -2638,16 +2702,35 @@ export default function App() {
   }
 
   async function loadPinnedMessages() {
-    if (!token || !activeChannelId) return;
-    const data = await gql<{ pinnedMessages: Message[] }>(
-      `query($channelId: ID!, $limit: Int!) {
-        pinnedMessages(channelId: $channelId, limit: $limit) {
-          id content createdAt editedAt isDeleted type parentMessageId author { email } reactions { emoji count viewerHasReacted } file { id originalName mimeType size downloadUrl avStatus blockedReason }
-        }
-      }`,
-      { channelId: activeChannelId, limit: 50 },
-      token,
-    );
+    if (!token) return;
+    let data: { pinnedMessages: Message[] };
+    if (mode === "channels" && activeChannelId) {
+      data = await gql<{ pinnedMessages: Message[] }>(
+        `query($channelId: ID!, $limit: Int!) {
+          pinnedMessages(channelId: $channelId, limit: $limit) { ${GQL_PINNED_MESSAGE_FIELDS} }
+        }`,
+        { channelId: activeChannelId, limit: 50 },
+        token,
+      );
+    } else if (mode === "groups" && activeGroupChatId) {
+      data = await gql<{ pinnedMessages: Message[] }>(
+        `query($groupChatId: ID!, $limit: Int!) {
+          pinnedMessages(groupChatId: $groupChatId, limit: $limit) { ${GQL_PINNED_MESSAGE_FIELDS} }
+        }`,
+        { groupChatId: activeGroupChatId, limit: 50 },
+        token,
+      );
+    } else if (mode === "dms" && activeDirectChatId) {
+      data = await gql<{ pinnedMessages: Message[] }>(
+        `query($directChatId: ID!, $limit: Int!) {
+          pinnedMessages(directChatId: $directChatId, limit: $limit) { ${GQL_PINNED_MESSAGE_FIELDS} }
+        }`,
+        { directChatId: activeDirectChatId, limit: 50 },
+        token,
+      );
+    } else {
+      return;
+    }
     setMessages(data.pinnedMessages);
     setShowPins(true);
     pushLog(`Pinned messages: ${data.pinnedMessages.length}`);
@@ -2661,6 +2744,7 @@ export default function App() {
       token,
     );
     pushLog("Pin ok");
+    void refreshHeaderPinnedMessages();
   }
 
   async function unpinMessage(messageId: string) {
@@ -2671,6 +2755,7 @@ export default function App() {
       token,
     );
     pushLog("Unpin ok");
+    void refreshHeaderPinnedMessages();
   }
 
   function startForwardSelect(firstId?: string) {
@@ -3295,7 +3380,9 @@ export default function App() {
       const from = String(data?.fromUserId ?? "");
       const raised = !!data?.raised;
       if (!gc || !from) return;
-      if (groupMeshUiRef.current?.groupChatId !== gc) return;
+      const sessionGc = groupMeshSessionRef.current?.groupChatId;
+      const uiGc = groupMeshUiRef.current?.groupChatId;
+      if (sessionGc !== gc && uiGc !== gc) return;
       setGroupMeshHands((prev) => ({ ...prev, [from]: raised }));
     });
     s.on("groupCall:invite", (data: any) => {
@@ -6192,55 +6279,64 @@ export default function App() {
               <div
                 className="groupMeshGrid"
                 style={{
-                  gridTemplateColumns: `repeat(${Math.min(4, Math.max(1, Math.ceil(Math.sqrt(Math.max(1, 1 + Object.keys(groupMeshUi.remotes).length)))))}, minmax(0, 1fr))`,
+                  gridTemplateColumns: `repeat(${Math.min(4, Math.max(1, Math.ceil(Math.sqrt(Math.max(1, 1 + groupMeshPeerIdsForUi.length)))))}, minmax(0, 1fr))`,
                 }}
               >
-                {Object.entries(groupMeshUi.remotes).map(([pid, stream]) => (
-                  <div key={pid} className="groupMeshCell">
-                    {stream ? (
-                      groupMeshUi.audioOnly ? (
-                        <GroupMeshRemoteVideo userId={pid} stream={stream} showVideo={false} playAudio />
+                {groupMeshPeerIdsForUi.map((pid) => {
+                  const stream = groupMeshUi.remotes[pid];
+                  return (
+                    <div key={pid} className="groupMeshCell">
+                      {stream ? (
+                        groupMeshUi.audioOnly ? (
+                          <GroupMeshRemoteVideo userId={pid} stream={stream} showVideo={false} playAudio />
+                        ) : (
+                          <GroupMeshRemoteVideo userId={pid} stream={stream} />
+                        )
                       ) : (
-                        <GroupMeshRemoteVideo userId={pid} stream={stream} />
-                      )
-                    ) : (
-                      <div className="groupMeshAudioOnly">{displayUser(pid)}</div>
-                    )}
-                    <div className="groupMeshLabel">
-                      {groupMeshHands[pid] ? "✋ " : ""}
-                      {displayUser(pid)}
+                        <div className="groupMeshAudioOnly">{displayUser(pid)}</div>
+                      )}
+                      <div className="groupMeshLabel">
+                        {groupMeshHands[pid] ? "✋ " : ""}
+                        {displayUser(pid)}
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             ) : (
               <div className="groupMeshMeetingBody">
                 <div className="groupMeshAudioLayer" aria-hidden>
-                  {Object.entries(groupMeshUi.remotes).map(([pid, stream]) =>
-                    stream ? <GroupMeshRemoteVideo key={`ga-${pid}`} userId={pid} stream={stream} showVideo={false} playAudio /> : null,
-                  )}
+                  {groupMeshPeerIdsForUi.map((pid) => {
+                    const stream = groupMeshUi.remotes[pid];
+                    return stream ? (
+                      <GroupMeshRemoteVideo key={`ga-${pid}`} userId={pid} stream={stream} showVideo={false} playAudio />
+                    ) : null;
+                  })}
                 </div>
                 <div className="groupMeshFilmstrip">
-                  {Object.entries(groupMeshUi.remotes).map(([pid, stream]) => (
-                    <button
-                      key={pid}
-                      type="button"
-                      className={`groupMeshFilmstripCell ${groupMeshStagePeerId === pid ? "groupMeshFilmstripCell--active" : ""}`}
-                      onClick={() => setGroupMeshSpotlightPeerId(pid)}
-                    >
-                      <div className="groupMeshFilmstripThumb">
-                        {stream ? (
-                          <GroupMeshRemoteVideo userId={pid} stream={stream} playAudio={false} videoClassName="groupMeshFilmstripVideo" />
-                        ) : (
-                          <div className="groupMeshFilmstripPlaceholder">{displayUser(pid)}</div>
-                        )}
-                      </div>
-                      <span className="groupMeshFilmstripName">
-                        {groupMeshHands[pid] ? "✋ " : ""}
-                        {displayUser(pid)}
-                      </span>
-                    </button>
-                  ))}
+                  {groupMeshPeerIdsForUi.map((pid) => {
+                    const stream = groupMeshUi.remotes[pid];
+                    return (
+                      <button
+                        key={pid}
+                        type="button"
+                        className={`groupMeshFilmstripCell ${groupMeshStagePeerId === pid ? "groupMeshFilmstripCell--active" : ""}`}
+                        onClick={() => setGroupMeshSpotlightPeerId(pid)}
+                      >
+                        <div className="groupMeshFilmstripThumb">
+                          {stream ? (
+                            <GroupMeshRemoteVideo userId={pid} stream={stream} playAudio={false} videoClassName="groupMeshFilmstripVideo" />
+                          ) : (
+                            <div className="groupMeshFilmstripPlaceholder">{displayUser(pid)}</div>
+                          )}
+                        </div>
+                        <span className="groupMeshFilmstripName">
+                          {groupMeshHands[pid] ? "✋ " : ""}
+                          {displayUser(pid)}
+                        </span>
+                      </button>
+                    );
+                  })}
                 </div>
                 <div className="groupMeshStage">
                   {groupMeshStagePeerId && groupMeshUi.remotes[groupMeshStagePeerId] ? (
@@ -6557,8 +6653,7 @@ export default function App() {
                               e.preventDefault();
                               setExpandedChatFolderIds((prev) => {
                                 const nextOpen = !prev[sec.id];
-                                if (!nextOpen) return { ...prev, [sec.id]: false };
-                                return { [sec.id]: true };
+                                return { ...prev, [sec.id]: nextOpen };
                               });
                             }}
                           >
@@ -7294,6 +7389,33 @@ export default function App() {
                           ? `Орг. ${displayOrganizationId}`
                           : "Не авторизован"}
                 </div>
+                {headerPinnedMessages.length ? (
+                  <div className="tgChatHeaderPins" role="navigation" aria-label="Закреплённые сообщения">
+                    {headerPinnedMessages.map((pm) => (
+                      <button
+                        key={pm.id}
+                        type="button"
+                        className="tgChatHeaderPinChip"
+                        title={(pm.content || "").slice(0, 500) || "Закреплённое сообщение"}
+                        onClick={() => scrollToMessageInChat(pm.id)}
+                      >
+                        <span className="tgChatHeaderPinIcon" aria-hidden>
+                          📌
+                        </span>
+                        <span className="tgChatHeaderPinText">{(pm.content || "").replace(/\s+/g, " ").trim().slice(0, 72) || "…"}</span>
+                      </button>
+                    ))}
+                    <button
+                      type="button"
+                      className="tgChatHeaderPinMore"
+                      onClick={() => void loadPinnedMessages()}
+                      disabled={!token}
+                      title="Все закрепы в этом чате"
+                    >
+                      Все
+                    </button>
+                  </div>
+                ) : null}
               </div>
             </div>
             <div className="tgChatHeaderRight" ref={callMenuWrapRef}>
@@ -7879,18 +8001,6 @@ export default function App() {
           </div>
         ) : null}
 
-        {mode === "channels" ? (
-          <section className="messages" style={{ borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
-            <div className="empty" style={{ textAlign: "left" }}>
-              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                <button onClick={() => void loadPinnedMessages()} disabled={!token || !activeChannelId}>
-                  📌 Закрепы
-                </button>
-              </div>
-            </div>
-          </section>
-        ) : null}
-
         <section className="messages mainMessages" ref={messagesWrapRef}>
           {(pendingGroupMeshIncoming ||
             (pendingCallDeepLink && mode === "dms") ||
@@ -8057,16 +8167,12 @@ export default function App() {
                     🧵
                   </button>
                 ) : null}
-                {mode === "channels" ? (
-                  <>
-                    <button className="chip" onClick={() => void pinMessage(m.id)} disabled={!token} title="Закрепить">
-                      📌
-                    </button>
-                    <button className="chip" onClick={() => void unpinMessage(m.id)} disabled={!token} title="Открепить">
-                      ✖📌
-                    </button>
-                  </>
-                ) : null}
+                <button className="chip" onClick={() => void pinMessage(m.id)} disabled={!token} title="Закрепить">
+                  📌
+                </button>
+                <button className="chip" onClick={() => void unpinMessage(m.id)} disabled={!token} title="Открепить">
+                  ✖📌
+                </button>
                 <button
                   className={`chip ${savedIds.has(m.id) ? "on" : ""}`}
                   onClick={() => void toggleSave(m.id, savedIds.has(m.id))}
@@ -9124,7 +9230,9 @@ export default function App() {
                     </div>
                   ) : null}
 
-                  {mode === "channels" && activeChannelId ? (
+                  {(mode === "channels" && activeChannelId) ||
+                  (mode === "groups" && activeGroupChatId) ||
+                  (mode === "dms" && activeDirectChatId) ? (
                     <div className="infoPanelSection">
                       <div className="infoPanelSectionTitle">Закрепы</div>
                       <button

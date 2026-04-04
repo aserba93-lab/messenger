@@ -45,7 +45,12 @@ export const messagesExtraResolvers = {
         },
         pinnedMessages: async (_p, args, ctx) => {
             const viewer = requireViewer(ctx);
-            return ctx.messagesService.pinnedMessages(viewer, { channelId: String(args.channelId), limit: Number(args.limit ?? 10) });
+            return ctx.messagesService.pinnedMessages(viewer, {
+                channelId: args.channelId ? String(args.channelId) : null,
+                groupChatId: args.groupChatId ? String(args.groupChatId) : null,
+                directChatId: args.directChatId ? String(args.directChatId) : null,
+                limit: Number(args.limit ?? 10),
+            });
         },
         savedMessages: async (_p, args, ctx) => {
             const viewer = requireViewer(ctx);

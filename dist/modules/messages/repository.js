@@ -42,6 +42,24 @@ export class MessagesRepository {
         });
         return pins.map((p) => p.messageId);
     }
+    async listPinnedMessageIdsByGroupChat(params) {
+        const pins = await prisma.messagePin.findMany({
+            where: { organizationId: params.organizationId, message: { groupChatId: params.groupChatId } },
+            orderBy: { pinnedAt: "desc" },
+            take: params.limit,
+            select: { messageId: true },
+        });
+        return pins.map((p) => p.messageId);
+    }
+    async listPinnedMessageIdsByDirectChat(params) {
+        const pins = await prisma.messagePin.findMany({
+            where: { organizationId: params.organizationId, message: { directChatId: params.directChatId } },
+            orderBy: { pinnedAt: "desc" },
+            take: params.limit,
+            select: { messageId: true },
+        });
+        return pins.map((p) => p.messageId);
+    }
     async saveMessage(params) {
         return prisma.messageSave.upsert({
             where: { userId_messageId: { userId: params.userId, messageId: params.messageId } },

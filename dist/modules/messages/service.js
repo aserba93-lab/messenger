@@ -399,34 +399,112 @@ export class MessagesService {
     async pinMessage(viewer, input) {
         this.requireVerified(viewer);
         const msg = await this.repo.getMessageById(input.messageId);
-        if (!msg?.channelId)
-            throw new Error("Only channel messages can be pinned for now");
-        const channel = await this.requireCanAccessChannel(viewer, msg.channelId);
-        const wsMember = await this.repo.isWorkspaceMember({ workspaceId: channel.workspaceId, userId: viewer.userId });
-        if (!wsMember || wsMember.role !== "admin")
-            throw new Error("Forbidden");
+        if (!msg)
+            throw new Error("Not found");
+        if (msg.channelId) {
+            const channel = await this.requireCanAccessChannel(viewer, msg.channelId);
+            const wsMember = await this.repo.isWorkspaceMember({ workspaceId: channel.workspaceId, userId: viewer.userId });
+            if (!wsMember || wsMember.role !== "admin")
+                throw new Error("Forbidden");
+        }
+        else if (msg.groupChatId) {
+            const m = await prisma.groupChatMember.findUnique({
+                where: { groupChatId_userId: { groupChatId: msg.groupChatId, userId: viewer.userId } },
+                include: { groupChat: { select: { organizationId: true } } },
+            });
+            if (!m || m.groupChat.organizationId !== viewer.organizationId)
+                throw new Error("Forbidden");
+        }
+        else if (msg.directChatId) {
+            const m = await prisma.directChatMember.findUnique({
+                where: { directChatId_userId: { directChatId: msg.directChatId, userId: viewer.userId } },
+                include: { directChat: { select: { organizationId: true } } },
+            });
+            if (!m || m.directChat.organizationId !== viewer.organizationId)
+                throw new Error("Forbidden");
+        }
+        else {
+            throw new Error("Not found");
+        }
         await this.repo.pinMessage({ organizationId: viewer.organizationId, messageId: input.messageId, pinnedByUserId: viewer.userId });
         return true;
     }
     async unpinMessage(viewer, input) {
         this.requireVerified(viewer);
         const msg = await this.repo.getMessageById(input.messageId);
-        if (!msg?.channelId)
-            throw new Error("Only channel messages can be unpinned for now");
-        const channel = await this.requireCanAccessChannel(viewer, msg.channelId);
-        const wsMember = await this.repo.isWorkspaceMember({ workspaceId: channel.workspaceId, userId: viewer.userId });
-        if (!wsMember || wsMember.role !== "admin")
-            throw new Error("Forbidden");
+        if (!msg)
+            throw new Error("Not found");
+        if (msg.channelId) {
+            const channel = await this.requireCanAccessChannel(viewer, msg.channelId);
+            const wsMember = await this.repo.isWorkspaceMember({ workspaceId: channel.workspaceId, userId: viewer.userId });
+            if (!wsMember || wsMember.role !== "admin")
+                throw new Error("Forbidden");
+        }
+        else if (msg.groupChatId) {
+            const m = await prisma.groupChatMember.findUnique({
+                where: { groupChatId_userId: { groupChatId: msg.groupChatId, userId: viewer.userId } },
+                include: { groupChat: { select: { organizationId: true } } },
+            });
+            if (!m || m.groupChat.organizationId !== viewer.organizationId)
+                throw new Error("Forbidden");
+        }
+        else if (msg.directChatId) {
+            const m = await prisma.directChatMember.findUnique({
+                where: { directChatId_userId: { directChatId: msg.directChatId, userId: viewer.userId } },
+                include: { directChat: { select: { organizationId: true } } },
+            });
+            if (!m || m.directChat.organizationId !== viewer.organizationId)
+                throw new Error("Forbidden");
+        }
+        else {
+            throw new Error("Not found");
+        }
         await this.repo.unpinMessage(input.messageId);
         return true;
     }
     async pinnedMessages(viewer, input) {
-        await this.requireCanAccessChannel(viewer, input.channelId);
-        const ids = await this.repo.listPinnedMessageIdsByChannel({
-            organizationId: viewer.organizationId,
-            channelId: input.channelId,
-            limit: input.limit,
-        });
+        const limit = Math.min(Math.max(Number(input.limit ?? 10), 1), 50);
+        const channelId = input.channelId ?? null;
+        const groupChatId = input.groupChatId ?? null;
+        const directChatId = input.directChatId ?? null;
+        const n = (channelId ? 1 : 0) + (groupChatId ? 1 : 0) + (directChatId ? 1 : 0);
+        if (n !== 1)
+            throw new Error("Specify exactly one of channelId, groupChatId, directChatId");
+        let ids;
+        if (channelId) {
+            await this.requireCanAccessChannel(viewer, channelId);
+            ids = await this.repo.listPinnedMessageIdsByChannel({
+                organizationId: viewer.organizationId,
+                channelId,
+                limit,
+            });
+        }
+        else if (groupChatId) {
+            const m = await prisma.groupChatMember.findUnique({
+                where: { groupChatId_userId: { groupChatId, userId: viewer.userId } },
+                include: { groupChat: { select: { organizationId: true } } },
+            });
+            if (!m || m.groupChat.organizationId !== viewer.organizationId)
+                throw new Error("Forbidden");
+            ids = await this.repo.listPinnedMessageIdsByGroupChat({
+                organizationId: viewer.organizationId,
+                groupChatId,
+                limit,
+            });
+        }
+        else {
+            const m = await prisma.directChatMember.findUnique({
+                where: { directChatId_userId: { directChatId, userId: viewer.userId } },
+                include: { directChat: { select: { organizationId: true } } },
+            });
+            if (!m || m.directChat.organizationId !== viewer.organizationId)
+                throw new Error("Forbidden");
+            ids = await this.repo.listPinnedMessageIdsByDirectChat({
+                organizationId: viewer.organizationId,
+                directChatId,
+                limit,
+            });
+        }
         const rows = await Promise.all(ids.map((id) => this.repo.getMessageByIdWithAuthor(id)));
         return rows.filter(Boolean).map((m) => mapMessage(m, viewer.userId));
     }

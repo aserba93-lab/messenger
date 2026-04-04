@@ -72,7 +72,7 @@ export const typeDefs = /* GraphQL */ `
     ): [Message!]!
     threadReadStates(channelId: ID, groupChatId: ID, directChatId: ID): [ThreadReadStateEntry!]!
     messageReaders(messageId: ID!): [User!]!
-    pinnedMessages(channelId: ID!, limit: Int = 10): [Message!]!
+    pinnedMessages(channelId: ID, groupChatId: ID, directChatId: ID, limit: Int = 10): [Message!]!
     savedMessages(limit: Int = 50): [Message!]!
     savedMessageIds(limit: Int = 200): [ID!]!
 
