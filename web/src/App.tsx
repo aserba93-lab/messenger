@@ -675,6 +675,30 @@ export default function App() {
     }
   }, [browserNotify]);
 
+  /** Ярлык «Домой» (PWA): один раз запросить разрешение на уведомления — иначе нет баннеров о сообщениях и входящем звонке в фоне. */
+  useEffect(() => {
+    if (!token) return;
+    if (!isStandaloneWebApp()) return;
+    if (typeof Notification === "undefined") return;
+    if (Notification.permission !== "default") return;
+    try {
+      if (localStorage.getItem("tg:pwaNotifyRequested") === "1") return;
+    } catch {
+      /* ignore */
+    }
+    const tid = window.setTimeout(() => {
+      void Notification.requestPermission().then((r) => {
+        try {
+          localStorage.setItem("tg:pwaNotifyRequested", "1");
+        } catch {
+          /* ignore */
+        }
+        if (r === "granted") setBrowserNotify(true);
+      });
+    }, 1500);
+    return () => window.clearTimeout(tid);
+  }, [token]);
+
   /** Почему на телефоне «не включаются» уведомления: iOS Safari в вкладке часто без Notification API; нужен PWA на экран «Домой». */
   const browserNotifyHint = useMemo(() => {
     if (typeof window === "undefined") return "";
@@ -836,22 +860,46 @@ export default function App() {
   /** Удалённое видео/аудио: при добавлении второго трека в тот же MediaStream <video> иногда не обновляется без play() и addtrack. */
   useEffect(() => {
     const stream = webrtcUi?.remoteStream ?? null;
-    const el = webrtcRemoteVideoRef.current;
-    if (!el) return;
+    const videoEl = webrtcRemoteVideoRef.current;
+    const audioEl = webrtcRemoteAudioRef.current;
+    const audioOnly = !!webrtcUi?.audioOnly;
+    const tryPlay = (el: HTMLMediaElement) => void el.play().catch(() => {});
+
+    if (audioOnly) {
+      if (videoEl) videoEl.srcObject = null;
+      if (!audioEl) return;
+      if (!stream) {
+        audioEl.srcObject = null;
+        return;
+      }
+      audioEl.srcObject = stream;
+      tryPlay(audioEl);
+      const onTrack = () => tryPlay(audioEl);
+      stream.addEventListener("addtrack", onTrack);
+      stream.addEventListener("removetrack", onTrack);
+      return () => {
+        stream.removeEventListener("addtrack", onTrack);
+        stream.removeEventListener("removetrack", onTrack);
+      };
+    }
+
+    if (audioEl) audioEl.srcObject = null;
+    if (!videoEl) return;
     if (!stream) {
-      el.srcObject = null;
+      videoEl.srcObject = null;
       return;
     }
-    el.srcObject = stream;
-    const tryPlay = () => void el.play().catch(() => {});
-    tryPlay();
-    stream.addEventListener("addtrack", tryPlay);
-    stream.addEventListener("removetrack", tryPlay);
+    videoEl.srcObject = stream;
+    tryPlay(videoEl);
+    const onTrack = () => tryPlay(videoEl);
+    stream.addEventListener("addtrack", onTrack);
+    stream.addEventListener("removetrack", onTrack);
     return () => {
-      stream.removeEventListener("addtrack", tryPlay);
-      stream.removeEventListener("removetrack", tryPlay);
+      stream.removeEventListener("addtrack", onTrack);
+      stream.removeEventListener("removetrack", onTrack);
     };
   }, [
+    webrtcUi?.audioOnly,
     webrtcUi?.remoteStream,
     webrtcUi?.remoteStream
       ? webrtcUi.remoteStream.getTracks().map((t) => `${t.id}:${t.readyState}`).join("|")
@@ -866,6 +914,8 @@ export default function App() {
   );
   const webrtcPeerRef = useRef("");
   const webrtcRemoteVideoRef = useRef<HTMLVideoElement | null>(null);
+  /** Аудиозвонок: отдельный audio-элемент надёжнее скрытого video в части браузеров/PWA. */
+  const webrtcRemoteAudioRef = useRef<HTMLAudioElement | null>(null);
   const [reactionPopover, setReactionPopover] = useState<null | { messageId: string; top: number; left: number }>(null);
   const reactionPopoverRef = useRef<HTMLDivElement | null>(null);
   const [isRecordingVoice, setIsRecordingVoice] = useState(false);
@@ -2930,6 +2980,7 @@ export default function App() {
     const { fromUserId, offerSdp, audioOnly } = incomingCall;
     setIncomingCall(null);
     const preBufferedIceCandidates = incomingCallIceBufferRef.current.splice(0, incomingCallIceBufferRef.current.length);
+    let pendingRemoteStream: MediaStream | null = null;
     try {
       const ac = await acceptIncomingOffer(socket, {
         fromUserId,
@@ -2937,7 +2988,11 @@ export default function App() {
         audioOnly,
         preBufferedIceCandidates,
         onRemoteStream: (stream) => {
-          setWebrtcUi((prev) => (prev ? { ...prev, remoteStream: stream } : null));
+          setWebrtcUi((prev) => {
+            if (prev) return { ...prev, remoteStream: stream };
+            pendingRemoteStream = stream;
+            return prev;
+          });
         },
         onClose: () => {
           webrtcBusyRef.current = false;
@@ -2956,7 +3011,7 @@ export default function App() {
       setWebrtcLocalHandRaised(false);
       setWebrtcUi({
         localStream: ac.localStream,
-        remoteStream: null,
+        remoteStream: pendingRemoteStream,
         hangup: () => {
           webrtcPeerRef.current = "";
           setWebrtcPeerHandRaised(false);
@@ -2997,12 +3052,17 @@ export default function App() {
     }
     if (webrtcBusyRef.current) return;
     webrtcBusyRef.current = true;
+    let pendingRemoteStream: MediaStream | null = null;
     try {
       const ac = await startOutgoingCall(socket, {
         targetUserId: other,
         audioOnly: true,
         onRemoteStream: (stream) => {
-          setWebrtcUi((prev) => (prev ? { ...prev, remoteStream: stream } : null));
+          setWebrtcUi((prev) => {
+            if (prev) return { ...prev, remoteStream: stream };
+            pendingRemoteStream = stream;
+            return prev;
+          });
         },
         onClose: () => {
           webrtcBusyRef.current = false;
@@ -3021,7 +3081,7 @@ export default function App() {
       setWebrtcLocalHandRaised(false);
       setWebrtcUi({
         localStream: ac.localStream,
-        remoteStream: null,
+        remoteStream: pendingRemoteStream,
         hangup: () => {
           webrtcPeerRef.current = "";
           setWebrtcPeerHandRaised(false);
@@ -3070,12 +3130,17 @@ export default function App() {
     }
     if (webrtcBusyRef.current) return;
     webrtcBusyRef.current = true;
+    let pendingRemoteStream: MediaStream | null = null;
     try {
       const ac = await startOutgoingCall(socket, {
         targetUserId: other,
         audioOnly: false,
         onRemoteStream: (stream) => {
-          setWebrtcUi((prev) => (prev ? { ...prev, remoteStream: stream } : null));
+          setWebrtcUi((prev) => {
+            if (prev) return { ...prev, remoteStream: stream };
+            pendingRemoteStream = stream;
+            return prev;
+          });
         },
         onClose: () => {
           webrtcBusyRef.current = false;
@@ -3094,7 +3159,7 @@ export default function App() {
       setWebrtcLocalHandRaised(false);
       setWebrtcUi({
         localStream: ac.localStream,
-        remoteStream: null,
+        remoteStream: pendingRemoteStream,
         hangup: () => {
           webrtcPeerRef.current = "";
           setWebrtcPeerHandRaised(false);
@@ -7024,12 +7089,22 @@ export default function App() {
           <div className="webrtcOverlay" role="dialog" aria-label="Звонок">
             <div className="webrtcPanel webrtcPanel--fullscreen">
               <div className="webrtcStage">
-                <video
-                  ref={webrtcRemoteVideoRef}
-                  autoPlay
-                  playsInline
-                  className={`webrtcRemote ${webrtcUi.audioOnly ? "webrtcRemote--audioOnly" : ""}`}
-                />
+                {webrtcUi.audioOnly ? (
+                  <audio
+                    ref={webrtcRemoteAudioRef}
+                    autoPlay
+                    playsInline
+                    className="webrtcRemote webrtcRemote--audioOnly"
+                  />
+                ) : (
+                  <video
+                    ref={webrtcRemoteVideoRef}
+                    autoPlay
+                    playsInline
+                    muted={false}
+                    className="webrtcRemote"
+                  />
+                )}
                 {!webrtcUi.audioOnly ? (
                   <div className="webrtcLocalPip">
                     <video

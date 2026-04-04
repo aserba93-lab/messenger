@@ -1385,9 +1385,15 @@ pre {
   object-fit: contain;
   background: #000;
 }
+/* Аудиозвонок: скрытый <audio>, воспроизведение потока; визуально — чёрный stage */
 .webrtcRemote--audioOnly {
-  opacity: 0.22;
-  object-fit: cover;
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
 }
 .webrtcLocalPip {
   position: absolute;
