@@ -700,54 +700,100 @@ body {
 :root[data-theme="light"] .tgCodeInline {
   background: rgba(0, 0, 0, 0.06);
 }
-.jitsiGroupOverlay {
-  position: fixed;
-  inset: 0;
-  z-index: 2147482002;
-  display: flex;
-  align-items: center;
+.groupMeshOverlay {
+  z-index: 220;
+  align-items: flex-start;
   justify-content: center;
-  padding: max(12px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) max(12px, env(safe-area-inset-bottom))
-    max(12px, env(safe-area-inset-left));
-  background: rgba(2, 4, 10, 0.88);
-  backdrop-filter: blur(6px);
+  padding-top: max(12px, env(safe-area-inset-top));
 }
-.jitsiGroupShell {
+.groupMeshPanel {
+  position: relative;
   width: min(960px, 100%);
-  height: min(85dvh, 720px);
-  max-height: 100%;
+  max-height: min(88dvh, 900px);
   display: flex;
   flex-direction: column;
   border-radius: 14px;
   overflow: hidden;
-  border: 1px solid var(--tg-border-subtle);
-  background: #000;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(10, 12, 20, 0.96);
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.55);
 }
-.jitsiGroupHead {
+.groupMeshHead {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
   padding: 10px 12px;
   flex-shrink: 0;
-  background: var(--tg-bg-elevated);
-  border-bottom: 1px solid var(--tg-border-subtle);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
 }
-.jitsiGroupTitle {
-  font-weight: 600;
+.groupMeshTitle {
+  font-weight: 700;
   font-size: 15px;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.jitsiGroupFrame {
-  flex: 1;
-  min-height: 0;
-  width: 100%;
-  border: 0;
+.groupMeshHint {
+  margin: 0;
+  padding: 8px 12px;
+  font-size: 12px;
+  line-height: 1.35;
+  color: var(--tg-muted);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+.groupMeshGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 8px;
+  padding: 10px 12px;
+  min-height: 120px;
+  max-height: 56dvh;
+  overflow: auto;
+}
+.groupMeshCell {
+  position: relative;
+  border-radius: 10px;
+  overflow: hidden;
   background: #000;
+  min-height: 100px;
+}
+.groupMeshVideo {
+  width: 100%;
+  height: 100%;
+  min-height: 100px;
+  object-fit: cover;
+  display: block;
+  background: #000;
+}
+.groupMeshAudioOnly {
+  display: grid;
+  place-items: center;
+  min-height: 100px;
+  font-weight: 700;
+  font-size: 13px;
+  color: var(--tg-muted);
+}
+.groupMeshLabel {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 4px 6px;
+  font-size: 11px;
+  background: linear-gradient(transparent, rgba(0, 0, 0, 0.75));
+  color: #fff;
+}
+.groupMeshLocalPip {
+  position: absolute;
+  right: 12px;
+  bottom: 56px;
+  width: min(120px, 28vw);
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  z-index: 2;
 }
 .tgAvatar {
   width: 48px;

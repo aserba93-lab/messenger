@@ -611,10 +611,14 @@ io.on("connection", async (socket) => {
         catch {
             return;
         }
-        io.to(`user:${targetUserId}`).emit("call:signal", {
+        const out = {
             fromUserId: viewer.userId,
             payload,
-        });
+        };
+        const gcid = data?.groupChatId;
+        if (gcid != null && String(gcid).trim())
+            out.groupChatId = String(gcid);
+        io.to(`user:${targetUserId}`).emit("call:signal", out);
     });
     socket.on("call:end", async (data) => {
         const targetUserId = String(data?.targetUserId ?? "");

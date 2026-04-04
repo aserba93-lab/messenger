@@ -3,8 +3,8 @@ import type { CSSProperties, FormEvent, MouseEvent } from "react";
 import { io, Socket } from "socket.io-client";
 import * as XLSX from "xlsx";
 import { acceptIncomingOffer, debugIceServers, startOutgoingCall, type ActiveCall } from "./webrtcDm";
+import { createGroupMeshSession, GroupMeshSession, GROUP_MESH_MAX_PEERS } from "./webrtcGroupMesh";
 import { createFolderId, loadChatFolders, saveChatFolders, type ChatFolderState as UserChatFolderLayout } from "./chatFolders";
-import { defaultJitsiOrigin, jitsiMeetEmbedUrl, jitsiRoomSlug } from "./jitsiGroupRoom";
 import "./App.css";
 
 const TG_SESSION_KEY = "tg:session";
@@ -557,7 +557,9 @@ export default function App() {
   /** Список слева: все чаты сразу или только один тип */
   const [chatListScope, setChatListScope] = useState<"all" | "dms" | "groups" | "channels">(() => {
     try {
+      const isMobile = typeof window !== "undefined" && window.innerWidth < 800;
       const v = localStorage.getItem("tg:chatListScope");
+      if (isMobile) return "all";
       return (v === "all" || v === "dms" || v === "groups" || v === "channels" ? v : "all") as any;
     } catch {
       return "all";
@@ -568,6 +570,10 @@ export default function App() {
   const [channels, setChannels] = useState<Channel[]>([]);
   const [activeChannelId, setActiveChannelId] = useState("");
   const [groupChats, setGroupChats] = useState<GroupChat[]>([]);
+  const groupChatsRef = useRef(groupChats);
+  useEffect(() => {
+    groupChatsRef.current = groupChats;
+  }, [groupChats]);
   const [activeGroupChatId, setActiveGroupChatId] = useState("");
   const [directChats, setDirectChats] = useState<DirectChat[]>([]);
   const [activeDirectChatId, setActiveDirectChatId] = useState("");
@@ -603,14 +609,15 @@ export default function App() {
     return localStorage.getItem("tg:theme") === "light" ? "light" : "dark";
   });
   const [browserNotify, setBrowserNotify] = useState(() => {
-    if (typeof window === "undefined") return false;
+    if (typeof window === "undefined") return true;
     try {
       if (typeof Notification === "undefined") return false;
-      const want = localStorage.getItem("tg:browserNotify") === "1";
-      if (want && Notification.permission !== "granted") return false;
-      return want;
+      const raw = localStorage.getItem("tg:browserNotify");
+      if (raw === "0") return false;
+      if (raw === "1") return true;
+      return true;
     } catch {
-      return false;
+      return true;
     }
   });
   const browserNotifyRef = useRef(browserNotify);
@@ -801,8 +808,21 @@ export default function App() {
   const [newChatFolderDraft, setNewChatFolderDraft] = useState("");
   /** Какие папки в списке чатов развёрнуты (строки как у чата). При смене активного чата сбрасываются. */
   const [expandedChatFolderIds, setExpandedChatFolderIds] = useState<Record<string, boolean>>({});
-  /** Групповой звонок через Jitsi (внешний SFU), до десятков участников на публичном meet.jit.si. */
-  const [jitsiGroupCall, setJitsiGroupCall] = useState<null | { url: string; title: string }>(null);
+  /** Внутренний групповой mesh WebRTC (несколько peer connections; лимит см. GROUP_MESH_MAX_PEERS). */
+  const [groupMeshUi, setGroupMeshUi] = useState<null | {
+    title: string;
+    audioOnly: boolean;
+    localStream: MediaStream;
+    remotes: Record<string, MediaStream | undefined>;
+    hangup: () => void;
+  }>(null);
+  const groupMeshSessionRef = useRef<GroupMeshSession | null>(null);
+  const groupMeshJoiningRef = useRef(false);
+  const meshSignalIceBufferRef = useRef<Record<string, unknown[]>>({});
+  const meshOfferWhileJoiningRef = useRef<unknown[]>([]);
+  const joinGroupMeshFromPeerOfferRef = useRef<(data: any) => Promise<void>>(async () => {});
+  const sidebarChatsScrollRef = useRef<HTMLDivElement | null>(null);
+  const pullRefreshLockRef = useRef(false);
   useEffect(() => {
     saveChatFolders(userChatFolderLayout);
   }, [userChatFolderLayout]);
@@ -2820,9 +2840,32 @@ export default function App() {
       }));
     });
     s.on("call:signal", (data: any) => {
+      const gc = data?.groupChatId ? String(data.groupChatId) : "";
+      const mesh = groupMeshSessionRef.current;
+      if (gc && mesh && gc === mesh.groupChatId) {
+        void mesh.handleSignal(data);
+        return;
+      }
       const from = String(data?.fromUserId ?? "");
       const p = data?.payload;
       if (!from || !p) return;
+      if (gc && p.type === "ice" && p.candidate && !mesh) {
+        const k = `${gc}:${from}`;
+        meshSignalIceBufferRef.current[k] = meshSignalIceBufferRef.current[k] ?? [];
+        meshSignalIceBufferRef.current[k].push(data);
+        return;
+      }
+      if (gc && p.type === "offer" && p.sdp && !mesh && !webrtcBusyRef.current) {
+        void joinGroupMeshFromPeerOfferRef.current(data);
+        return;
+      }
+      if (gc && p.type === "offer" && p.sdp && !mesh && webrtcBusyRef.current && groupMeshJoiningRef.current) {
+        meshOfferWhileJoiningRef.current.push(data);
+        return;
+      }
+      if (gc && p.type === "offer" && p.sdp && !mesh && webrtcBusyRef.current) {
+        return;
+      }
       // Trickle ICE до принятия входящего: иначе события теряются (слушатель в webrtcDm ещё не зарегистрирован).
       if (p.type === "ice" && p.candidate) {
         const ic = incomingCallRef.current;
@@ -2879,6 +2922,11 @@ export default function App() {
       } catch {
         /* ignore */
       }
+    });
+    s.on("call:end", (data: any) => {
+      const from = String(data?.fromUserId ?? "");
+      if (!from) return;
+      groupMeshSessionRef.current?.handleCallEnd(from);
     });
     s.on("call:hand", (data: any) => {
       const from = String(data?.fromUserId ?? "");
@@ -3209,6 +3257,155 @@ export default function App() {
     setIncomingCall(null);
   }
 
+  const hangupGroupMesh = useCallback(() => {
+    groupMeshSessionRef.current?.hangupAll();
+    groupMeshSessionRef.current = null;
+    setGroupMeshUi(null);
+    webrtcBusyRef.current = false;
+    groupMeshJoiningRef.current = false;
+  }, []);
+
+  async function joinGroupMeshFromPeerOffer(data: any) {
+    if (groupMeshJoiningRef.current || groupMeshSessionRef.current) return;
+    const gc = String(data?.groupChatId ?? "");
+    const from = String(data?.fromUserId ?? "");
+    const p = data?.payload;
+    if (!gc || !from || !p || p.type !== "offer" || !p.sdp) return;
+    const uid = userIdRef.current;
+    if (!uid || from === uid) return;
+    const sock = socketRef.current;
+    if (!sock) return;
+    const g = groupChatsRef.current.find((x) => x.id === gc);
+    if (!g) {
+      pushLog("Входящий групповой звонок: откройте список групп или обновите страницу.");
+      return;
+    }
+    groupMeshJoiningRef.current = true;
+    webrtcBusyRef.current = true;
+    const audioOnly = !String(p.sdp).includes("m=video");
+    const callerLabel = displayUser(from);
+    try {
+      if (typeof Notification !== "undefined" && Notification.permission === "granted") {
+        try {
+          new Notification(`Группа: ${g.name}`, {
+            body: `${callerLabel} — групповой ${audioOnly ? "звонок" : "видеозвонок"}`,
+            tag: `gcall:${gc}`,
+            requireInteraction: typeof document !== "undefined" && document.hidden,
+          });
+        } catch {
+          /* ignore */
+        }
+      } else {
+        pushAppToast(`Групповой звонок: ${g.name} (${callerLabel})`);
+      }
+    } catch {
+      /* ignore */
+    }
+    try {
+      const memberIds = (g.memberIds ?? []).filter((id) => id !== uid);
+      const { session, localStream, peerIds } = await createGroupMeshSession(sock, {
+        groupChatId: gc,
+        myUserId: uid,
+        peerUserIds: memberIds,
+        audioOnly,
+        onRemoteStream: (peerId, stream) => {
+          setGroupMeshUi((prev) => (prev ? { ...prev, remotes: { ...prev.remotes, [peerId]: stream } } : prev));
+        },
+        onPeerDisconnected: (peerId) => {
+          setGroupMeshUi((prev) => {
+            if (!prev) return prev;
+            const { [peerId]: _, ...rest } = prev.remotes;
+            return { ...prev, remotes: rest };
+          });
+        },
+      });
+      groupMeshSessionRef.current = session;
+      setGroupMeshUi({
+        title: g.name,
+        audioOnly,
+        localStream,
+        remotes: {},
+        hangup: hangupGroupMesh,
+      });
+      const bufKey = `${gc}:${from}`;
+      const buffered = meshSignalIceBufferRef.current[bufKey];
+      if (buffered?.length) {
+        for (const sig of buffered) {
+          void session.handleSignal(sig as Parameters<GroupMeshSession["handleSignal"]>[0]);
+        }
+        delete meshSignalIceBufferRef.current[bufKey];
+      }
+      await session.handleSignal(data);
+      const extra = meshOfferWhileJoiningRef.current.splice(0, meshOfferWhileJoiningRef.current.length);
+      for (const sig of extra) {
+        void session.handleSignal(sig as Parameters<GroupMeshSession["handleSignal"]>[0]);
+      }
+      await session.startOfferers(peerIds);
+    } catch (e: any) {
+      setChatError(String(e?.message ?? e));
+      groupMeshSessionRef.current = null;
+      setGroupMeshUi(null);
+      webrtcBusyRef.current = false;
+      meshOfferWhileJoiningRef.current = [];
+    } finally {
+      groupMeshJoiningRef.current = false;
+    }
+  }
+  joinGroupMeshFromPeerOfferRef.current = joinGroupMeshFromPeerOffer;
+
+  async function startGroupMesh(audioOnly: boolean) {
+    if (!canStartCalls) {
+      setChatError("Недостаточно прав для звонков");
+      return;
+    }
+    const sock = socketRef.current;
+    if (!activeGroupChat || !userId || !sock) {
+      setChatError("Откройте группу и дождитесь подключения");
+      return;
+    }
+    if (webrtcBusyRef.current) return;
+    const memberIds = (activeGroupChat.memberIds ?? []).filter((id) => id !== userId);
+    if (memberIds.length === 0) {
+      setChatError("Нет других участников в группе");
+      return;
+    }
+    webrtcBusyRef.current = true;
+    try {
+      const { session, localStream, peerIds } = await createGroupMeshSession(sock, {
+        groupChatId: activeGroupChat.id,
+        myUserId: userId,
+        peerUserIds: memberIds,
+        audioOnly,
+        onRemoteStream: (peerId, stream) => {
+          setGroupMeshUi((prev) => (prev ? { ...prev, remotes: { ...prev.remotes, [peerId]: stream } } : prev));
+        },
+        onPeerDisconnected: (peerId) => {
+          setGroupMeshUi((prev) => {
+            if (!prev) return prev;
+            const { [peerId]: _, ...rest } = prev.remotes;
+            return { ...prev, remotes: rest };
+          });
+        },
+      });
+      groupMeshSessionRef.current = session;
+      setGroupMeshUi({
+        title: activeGroupChat.name,
+        audioOnly,
+        localStream,
+        remotes: {},
+        hangup: hangupGroupMesh,
+      });
+      await session.startOfferers(peerIds);
+      void sendServiceMessageToCurrentChat(audioOnly ? `📞 Групповой звонок` : `🎥 Групповой видеозвонок`);
+      pushLog("Групповой mesh-созвон");
+    } catch (e: any) {
+      setChatError(String(e?.message ?? e));
+      groupMeshSessionRef.current = null;
+      setGroupMeshUi(null);
+      webrtcBusyRef.current = false;
+    }
+  }
+
   async function startAudioCallToPeer(other: string) {
     if (!canStartCalls) {
       setChatError("Недостаточно прав для звонков");
@@ -3479,6 +3676,49 @@ export default function App() {
     pushLog(`Пользователей: ${data.users.length}`);
   }
   loadUsersRef.current = loadUsers;
+
+  useEffect(() => {
+    if (!token || !organizationId) return;
+    const el = sidebarChatsScrollRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      if (el.scrollTop > 0) return;
+      if (e.deltaY >= 0) return;
+      if (pullRefreshLockRef.current) return;
+      pullRefreshLockRef.current = true;
+      void loadUsersRef.current?.();
+      pushLog("Статусы обновлены (прокрутка вверх у края списка).");
+      window.setTimeout(() => {
+        pullRefreshLockRef.current = false;
+      }, 2800);
+    };
+    let touchStartY = 0;
+    const onTouchStart = (e: TouchEvent) => {
+      touchStartY = e.touches[0]?.clientY ?? 0;
+    };
+    const onTouchMove = (e: TouchEvent) => {
+      if (el.scrollTop > 0) return;
+      const y = e.touches[0]?.clientY ?? 0;
+      if (y - touchStartY > 64) {
+        if (pullRefreshLockRef.current) return;
+        pullRefreshLockRef.current = true;
+        void loadUsersRef.current?.();
+        pushLog("Статусы обновлены (потянуть список вниз).");
+        touchStartY = y + 9999;
+        window.setTimeout(() => {
+          pullRefreshLockRef.current = false;
+        }, 2800);
+      }
+    };
+    el.addEventListener("wheel", onWheel, { passive: true });
+    el.addEventListener("touchstart", onTouchStart, { passive: true });
+    el.addEventListener("touchmove", onTouchMove, { passive: true });
+    return () => {
+      el.removeEventListener("wheel", onWheel);
+      el.removeEventListener("touchstart", onTouchStart);
+      el.removeEventListener("touchmove", onTouchMove);
+    };
+  }, [token, organizationId, viewportW]);
 
   useEffect(() => {
     if (!token || !organizationId) return;
@@ -5459,31 +5699,56 @@ export default function App() {
           </div>
         </>
       ) : null}
-      {jitsiGroupCall ? (
-        <div
-          className="jitsiGroupOverlay"
-          role="presentation"
-          onClick={() => setJitsiGroupCall(null)}
-        >
-          <div
-            className="jitsiGroupShell"
-            role="dialog"
-            aria-label="Групповой звонок Jitsi Meet"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="jitsiGroupHead">
-              <span className="jitsiGroupTitle">{jitsiGroupCall.title}</span>
-              <button type="button" className="tgCircleBtn" aria-label="Закрыть" onClick={() => setJitsiGroupCall(null)}>
+      {groupMeshUi ? (
+        <div className="webrtcOverlay groupMeshOverlay" role="dialog" aria-label="Групповой звонок">
+          <div className="groupMeshPanel">
+            <div className="groupMeshHead">
+              <span className="groupMeshTitle">{groupMeshUi.title}</span>
+              <button type="button" className="tgCircleBtn" aria-label="Завершить" onClick={() => groupMeshUi.hangup()}>
                 ✕
               </button>
             </div>
-            <iframe
-              className="jitsiGroupFrame"
-              src={jitsiGroupCall.url}
-              title={jitsiGroupCall.title}
-              allow="camera; microphone; fullscreen; display-capture; autoplay; clipboard-read; clipboard-write"
-              allowFullScreen
-            />
+            <p className="groupMeshHint">
+              Внутренний mesh WebRTC (как звонки 1:1). Одновременно до {GROUP_MESH_MAX_PEERS} собеседников; на слабых устройствах
+              возможны просадки.
+            </p>
+            <div className="groupMeshGrid">
+              {Object.entries(groupMeshUi.remotes).map(([pid, stream]) => (
+                <div key={pid} className="groupMeshCell">
+                  {stream && !groupMeshUi.audioOnly ? (
+                    <video
+                      className="groupMeshVideo"
+                      autoPlay
+                      playsInline
+                      ref={(el) => {
+                        if (el && stream) el.srcObject = stream;
+                      }}
+                    />
+                  ) : (
+                    <div className="groupMeshAudioOnly">{displayUser(pid)}</div>
+                  )}
+                  <div className="groupMeshLabel">{displayUser(pid)}</div>
+                </div>
+              ))}
+            </div>
+            {!groupMeshUi.audioOnly ? (
+              <div className="groupMeshLocalPip">
+                <video
+                  className="webrtcLocal"
+                  autoPlay
+                  playsInline
+                  muted
+                  ref={(el) => {
+                    if (el && groupMeshUi.localStream) el.srcObject = groupMeshUi.localStream;
+                  }}
+                />
+              </div>
+            ) : null}
+            <div className="webrtcToolbar" style={{ justifyContent: "center" }}>
+              <button type="button" className="webrtcToolBtn webrtcToolBtn--danger" onClick={() => groupMeshUi.hangup()}>
+                Завершить для всех
+              </button>
+            </div>
           </div>
         </div>
       ) : null}
@@ -5516,19 +5781,6 @@ export default function App() {
             {orgBrandDisplay ? <span className="tgBrandOrg">{orgBrandDisplay}</span> : null}
           </div>
           <div className="tgTopBarActions">
-            {token && organizationId ? (
-              <button
-                type="button"
-                className="tgCircleBtn"
-                title="Обновить статусы онлайн сейчас"
-                onClick={() => {
-                  void loadUsersRef.current?.();
-                  pushLog("Статусы пользователей обновлены.");
-                }}
-              >
-                🔄
-              </button>
-            ) : null}
             <div className="tgMenuAnchor">
               <button
                 type="button"
@@ -5597,7 +5849,11 @@ export default function App() {
           />
         </div>
 
-        <div className="sidebarChatsBlock">
+        <div
+          className="sidebarChatsBlock"
+          ref={sidebarChatsScrollRef}
+          title="Потяните список вниз или прокрутите колесом вверх у верхнего края — обновить статусы онлайн"
+        >
           <div className="tgFolderTabsWithFilter tgMenuAnchor" ref={chatListFilterAnchorRef}>
             <div className="row tgFolderTabs tgFolderTabs--grow">
               <button className={chatFolder === "all" ? "active" : ""} onClick={() => setChatFolder("all")}>
@@ -5690,6 +5946,9 @@ export default function App() {
                 {sidebarFolderLayout.mode === "flat"
                   ? sidebarFolderLayout.rows.map((row) => renderUnifiedChatRow(row))
                   : sidebarFolderLayout.sections.map((sec) => {
+                      if (sec.id === "__unfiled__") {
+                        return <div key={sec.id}>{sec.rows.map((row) => renderUnifiedChatRow(row))}</div>;
+                      }
                       const open = !!expandedChatFolderIds[sec.id];
                       return (
                         <div key={sec.id} className="tgFolderBlock">
@@ -6450,22 +6709,29 @@ export default function App() {
                           );
                         })}
                         <div className="tgPopoverHint" style={{ marginTop: 8 }}>
-                          Групповой звонок через Jitsi Meet. Откройте комнату и пригласите участников по ссылке. На
-                          публичном meet.jit.si лимиты по числу участников могут быть ниже 40 — для больших созвонов
-                          задайте свой сервер Jitsi в <code className="tgCodeInline">VITE_JITSI_ORIGIN</code> при сборке.
+                          Групповой звонок через сервер приложения (WebRTC mesh), как личные звонки. Одновременно до{" "}
+                          {GROUP_MESH_MAX_PEERS} других участников; при большем составе группы используйте звонки 1:1 по
+                          списку выше.
                         </div>
                         <button
                           type="button"
                           className="tgPopoverItem"
                           onClick={() => {
-                            if (!activeGroupChat || !organizationId) return;
                             setCallMenuOpen(false);
-                            const room = jitsiRoomSlug(organizationId, activeGroupChat.id);
-                            const url = jitsiMeetEmbedUrl(defaultJitsiOrigin(), room);
-                            setJitsiGroupCall({ url, title: `Группа: ${activeGroupChat.name}` });
+                            void startGroupMesh(true);
                           }}
                         >
-                          🎥 Групповой звонок (Jitsi, все сразу)
+                          📞 Групповой аудиозвонок
+                        </button>
+                        <button
+                          type="button"
+                          className="tgPopoverItem"
+                          onClick={() => {
+                            setCallMenuOpen(false);
+                            void startGroupMesh(false);
+                          }}
+                        >
+                          🎥 Групповой видеозвонок
                         </button>
                       </>
                     ) : mode === "groups" && groupCallMenuUserId ? (
