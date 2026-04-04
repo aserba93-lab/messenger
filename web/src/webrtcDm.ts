@@ -240,7 +240,10 @@ export async function startOutgoingCall(
     });
   };
 
-  const offer = await pc.createOffer();
+  const offer = await pc.createOffer({
+    offerToReceiveAudio: true,
+    offerToReceiveVideo: !opts.audioOnly,
+  });
   await pc.setLocalDescription(offer);
   socket.emit("call:signal", {
     targetUserId: target,

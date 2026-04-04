@@ -134,9 +134,12 @@ export class GroupMeshSession {
   private readonly localStream: MediaStream;
   private readonly onRemoteStream: (peerId: string, stream: MediaStream) => void;
   private readonly onPeerDisconnected?: (peerId: string) => void;
+  private readonly audioOnly: boolean;
   private readonly links = new Map<string, PeerLink>();
   private readonly iceEarly = new Map<string, RTCIceCandidateInit[]>();
   private closed = false;
+  private savedCamVideoTrack: MediaStreamTrack | null = null;
+  private screenShareEnd: (() => Promise<void>) | null = null;
 
   constructor(
     socket: Socket,
@@ -155,6 +158,7 @@ export class GroupMeshSession {
     this.localStream = opts.localStream;
     this.onRemoteStream = opts.onRemoteStream;
     this.onPeerDisconnected = opts.onPeerDisconnected;
+    this.audioOnly = opts.audioOnly;
   }
 
   private iceServers() {
@@ -192,7 +196,7 @@ export class GroupMeshSession {
       }, this.groupChatId);
     };
 
-    const offer = await pc.createOffer();
+    const offer = await pc.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: !this.audioOnly });
     await pc.setLocalDescription(offer);
     emitSignal(this.socket, peerId, { type: "offer", sdp: offer.sdp || "" }, this.groupChatId);
   }
@@ -310,8 +314,76 @@ export class GroupMeshSession {
     this.onPeerDisconnected?.(peerId);
   }
 
+  isScreenSharing(): boolean {
+    return this.screenShareEnd != null;
+  }
+
+  /** Демонстрация экрана всем участникам mesh (как в 1:1). */
+  async startScreenShare(): Promise<void> {
+    if (this.closed) throw new Error("Созвон завершён");
+    if (this.audioOnly) throw new Error("Демонстрация экрана только в видеозвонке");
+    const cam = this.localStream.getVideoTracks()[0];
+    if (!cam) throw new Error("Нет видеотрека камеры");
+    if (this.screenShareEnd) return;
+
+    const display = await navigator.mediaDevices.getDisplayMedia({
+      video: { frameRate: { ideal: 30 } },
+      audio: false,
+    });
+    const screenTrack = display.getVideoTracks()[0];
+    if (!screenTrack) {
+      display.getTracks().forEach((t) => t.stop());
+      throw new Error("Нет видео экрана");
+    }
+
+    this.savedCamVideoTrack = cam;
+    screenTrack.addEventListener("ended", () => {
+      void this.stopScreenShare().catch(() => {});
+    });
+
+    try {
+      this.localStream.removeTrack(cam);
+      this.localStream.addTrack(screenTrack);
+    } catch {
+      /* ignore */
+    }
+
+    for (const [, link] of this.links) {
+      const sender = link.pc.getSenders().find((s) => s.track?.kind === "video");
+      if (sender) await sender.replaceTrack(screenTrack);
+    }
+
+    this.screenShareEnd = async () => {
+      screenTrack.stop();
+      try {
+        this.localStream.removeTrack(screenTrack);
+      } catch {
+        /* ignore */
+      }
+      const restore = this.savedCamVideoTrack;
+      this.savedCamVideoTrack = null;
+      if (restore && restore.readyState === "live") {
+        try {
+          this.localStream.addTrack(restore);
+        } catch {
+          /* ignore */
+        }
+        for (const [, link] of this.links) {
+          const sender = link.pc.getSenders().find((s) => s.track?.kind === "video");
+          if (sender) await sender.replaceTrack(restore);
+        }
+      }
+      this.screenShareEnd = null;
+    };
+  }
+
+  async stopScreenShare(): Promise<void> {
+    if (this.screenShareEnd) await this.screenShareEnd();
+  }
+
   hangupAll() {
     if (this.closed) return;
+    void this.stopScreenShare().catch(() => {});
     this.closed = true;
     const peers = [...this.links.keys()];
     for (const peerId of peers) {

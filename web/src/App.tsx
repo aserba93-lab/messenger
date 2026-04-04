@@ -32,8 +32,13 @@ function GroupMeshRemoteVideo({ stream, userId }: { stream: MediaStream; userId:
       /* ignore */
     }
     if (ael) {
-      const aTracks = stream.getAudioTracks();
-      ael.srcObject = aTracks.length ? new MediaStream(aTracks) : null;
+      ael.srcObject = stream;
+      ael.muted = false;
+      try {
+        ael.volume = 1;
+      } catch {
+        /* ignore */
+      }
     }
     const play = () => {
       void el.play().catch(() => {});
@@ -42,8 +47,12 @@ function GroupMeshRemoteVideo({ stream, userId }: { stream: MediaStream; userId:
     play();
     const onTrack = () => {
       if (ael) {
-        const aTracks = stream.getAudioTracks();
-        ael.srcObject = aTracks.length ? new MediaStream(aTracks) : null;
+        ael.srcObject = stream;
+        try {
+          ael.volume = 1;
+        } catch {
+          /* ignore */
+        }
       }
       play();
     };
@@ -55,7 +64,13 @@ function GroupMeshRemoteVideo({ stream, userId }: { stream: MediaStream; userId:
     }
     const onMeta = () => play();
     el.addEventListener("loadedmetadata", onMeta);
+    stream.addEventListener("addtrack", onTrack);
+    stream.addEventListener("removetrack", onTrack);
+    const kick = window.setInterval(() => play(), 1200);
     return () => {
+      window.clearInterval(kick);
+      stream.removeEventListener("addtrack", onTrack);
+      stream.removeEventListener("removetrack", onTrack);
       el.removeEventListener("loadedmetadata", onMeta);
       for (const t of tracks) {
         t.removeEventListener("unmute", onTrack);
@@ -1054,8 +1069,14 @@ export default function App() {
     }
     videoEl.muted = true;
     if (audioEl) {
-      const aTracks = stream.getAudioTracks();
-      audioEl.srcObject = aTracks.length ? new MediaStream(aTracks) : null;
+      /** Полный поток в audio: отдельный MediaStream только из audio-треков иногда даёт тишину у инициатора. */
+      audioEl.srcObject = stream;
+      audioEl.muted = false;
+      try {
+        audioEl.volume = 1;
+      } catch {
+        /* ignore */
+      }
     }
     const onMeta = () => {
       tryPlay(videoEl);
@@ -1066,8 +1087,8 @@ export default function App() {
     const onTrack = () => {
       videoEl.srcObject = stream;
       if (audioEl) {
-        const aTracks = stream.getAudioTracks();
-        audioEl.srcObject = aTracks.length ? new MediaStream(aTracks) : null;
+        audioEl.srcObject = stream;
+        tryPlay(audioEl);
       }
       onMeta();
     };
@@ -1077,7 +1098,12 @@ export default function App() {
       t.addEventListener("unmute", onTrack);
       t.addEventListener("mute", onTrack);
     }
+    const playKick = window.setInterval(() => {
+      tryPlay(videoEl);
+      if (audioEl) tryPlay(audioEl);
+    }, 1200);
     return () => {
+      window.clearInterval(playKick);
       videoEl.removeEventListener("loadedmetadata", onMeta);
       stream.removeEventListener("addtrack", onTrack);
       stream.removeEventListener("removetrack", onTrack);
@@ -5996,19 +6022,20 @@ export default function App() {
         </>
       ) : null}
       {groupMeshUi ? (
-        <div className="webrtcOverlay groupMeshOverlay" role="dialog" aria-label="Групповой звонок">
-          <div className="groupMeshPanel">
+        <div className="webrtcOverlay groupMeshOverlay groupMeshOverlay--meeting" role="dialog" aria-label="Групповой звонок">
+          <div className="groupMeshPanel groupMeshPanel--meeting">
             <div className="groupMeshHead">
               <span className="groupMeshTitle">{groupMeshUi.title}</span>
               <button type="button" className="tgCircleBtn" aria-label="Завершить" onClick={() => groupMeshUi.hangup()}>
                 ✕
               </button>
             </div>
-            <p className="groupMeshHint">
-              Внутренний mesh WebRTC (как звонки 1:1). Одновременно до {GROUP_MESH_MAX_PEERS} собеседников; на слабых устройствах
-              возможны просадки.
-            </p>
-            <div className="groupMeshGrid">
+            <div
+              className="groupMeshGrid"
+              style={{
+                gridTemplateColumns: `repeat(${Math.min(4, Math.max(1, Math.ceil(Math.sqrt(Math.max(1, 1 + Object.keys(groupMeshUi.remotes).length)))))}, minmax(0, 1fr))`,
+              }}
+            >
               {Object.entries(groupMeshUi.remotes).map(([pid, stream]) => (
                 <div key={pid} className="groupMeshCell">
                   {stream && !groupMeshUi.audioOnly ? (
@@ -6066,6 +6093,28 @@ export default function App() {
                   }}
                 >
                   📷 Кам
+                </button>
+              ) : null}
+              {!groupMeshUi.audioOnly ? (
+                <button
+                  type="button"
+                  className={`webrtcToolBtn ${groupMeshSessionRef.current?.isScreenSharing() ? "webrtcToolBtn--on" : ""}`}
+                  title="Показать экран (как в Телемосте)"
+                  onClick={() => {
+                    void (async () => {
+                      try {
+                        const s = groupMeshSessionRef.current;
+                        if (!s) return;
+                        if (s.isScreenSharing()) await s.stopScreenShare();
+                        else await s.startScreenShare();
+                        setGroupMeshMediaTick((x) => x + 1);
+                      } catch (e: unknown) {
+                        setChatError(String((e as Error)?.message ?? e ?? "Экран"));
+                      }
+                    })();
+                  }}
+                >
+                  🖥 Экран
                 </button>
               ) : null}
               <button type="button" className="webrtcToolBtn" onClick={() => copyGroupCallInviteLink()} title="Ссылка для новых участников">
@@ -8183,8 +8232,8 @@ export default function App() {
         </div>
 
         {webrtcUi ? (
-          <div className="webrtcOverlay" role="dialog" aria-label="Звонок">
-            <div className="webrtcPanel webrtcPanel--fullscreen">
+          <div className="webrtcOverlay webrtcOverlay--meeting" role="dialog" aria-label="Звонок">
+            <div className="webrtcPanel webrtcPanel--fullscreen webrtcPanel--meeting">
               <div className="webrtcStage">
                 {webrtcUi.audioOnly ? (
                   <audio

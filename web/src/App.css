@@ -30,6 +30,46 @@
   --tg-scroll-fab-border: rgba(0, 0, 0, 0.14);
 }
 
+/* Светлая тема: кабинеты, вкладки режимов/папок, таблицы — без «тёмных» плашек поверх светлого фона */
+:root[data-theme="light"] .tgModeTabs button:hover,
+:root[data-theme="light"] .tgFolderTabs button:hover {
+  background: rgba(0, 0, 0, 0.06);
+}
+:root[data-theme="light"] .companyModalBackdrop {
+  background: rgba(18, 22, 32, 0.35);
+}
+:root[data-theme="light"] .companyModal {
+  background: #f6f7fb;
+  border-color: rgba(0, 0, 0, 0.1);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.12);
+  color: var(--tg-text);
+}
+:root[data-theme="light"] .companyTable th {
+  background: rgba(0, 0, 0, 0.05);
+}
+:root[data-theme="light"] .companyTable tbody tr:hover {
+  background: rgba(0, 0, 0, 0.04);
+}
+:root[data-theme="light"] .newChatWizardRow:hover {
+  background: rgba(0, 0, 0, 0.06);
+}
+:root[data-theme="light"] .newChatWizardRow.selected {
+  background: rgba(22, 138, 208, 0.14);
+}
+:root[data-theme="light"] .profileAvatarPreview {
+  border-color: rgba(0, 0, 0, 0.12);
+  background: rgba(0, 0, 0, 0.04);
+}
+:root[data-theme="light"] .userCabinetInput {
+  background: #fff;
+  border: 1px solid var(--tg-border-subtle);
+  color: var(--tg-text);
+}
+:root[data-theme="light"] .stickerPicker {
+  background: #f0f2f8;
+  border-color: rgba(0, 0, 0, 0.1);
+}
+
 html,
 body,
 #root {
@@ -709,6 +749,12 @@ body {
   justify-content: center;
   padding-top: max(12px, env(safe-area-inset-top));
 }
+.groupMeshOverlay--meeting {
+  align-items: stretch;
+  justify-content: stretch;
+  padding: 0;
+  background: #0a0c10;
+}
 .groupMeshPanel {
   position: relative;
   width: min(960px, 100%);
@@ -720,6 +766,16 @@ body {
   border: 1px solid rgba(255, 255, 255, 0.14);
   background: rgba(10, 12, 20, 0.96);
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.55);
+}
+.groupMeshPanel--meeting {
+  width: 100%;
+  max-width: none;
+  max-height: none;
+  height: 100dvh;
+  min-height: 0;
+  border-radius: 0;
+  border: none;
+  background: #0a0c10;
 }
 .groupMeshHead {
   display: flex;
@@ -748,19 +804,23 @@ body {
 }
 .groupMeshGrid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
-  gap: 8px;
-  padding: 10px 12px;
-  min-height: 120px;
-  max-height: 56dvh;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 10px;
+  padding: 12px 14px;
+  flex: 1;
+  min-height: 0;
+  max-height: none;
   overflow: auto;
+  align-content: start;
 }
 .groupMeshCell {
   position: relative;
-  border-radius: 10px;
+  border-radius: 12px;
   overflow: hidden;
-  background: #000;
-  min-height: 100px;
+  background: #0e0e12;
+  min-height: 0;
+  aspect-ratio: 16 / 10;
+  border: 1px solid rgba(255, 255, 255, 0.1);
 }
 .groupMeshVideoWrap {
   position: absolute;
@@ -809,13 +869,21 @@ body {
 }
 .groupMeshLocalPip {
   position: absolute;
-  right: 12px;
-  bottom: 56px;
-  width: min(120px, 28vw);
-  border-radius: 10px;
+  right: max(14px, env(safe-area-inset-right));
+  bottom: max(72px, calc(env(safe-area-inset-bottom) + 56px));
+  width: min(160px, 26vw);
+  aspect-ratio: 16 / 10;
+  border-radius: 12px;
   overflow: hidden;
-  border: 1px solid rgba(255, 255, 255, 0.2);
+  border: 2px solid rgba(38, 165, 228, 0.45);
   z-index: 2;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.5);
+}
+.webrtcOverlay--meeting {
+  background: #050608;
+}
+.webrtcPanel--meeting .webrtcChrome {
+  background: linear-gradient(180deg, transparent, rgba(8, 10, 16, 0.95));
 }
 .tgAvatar {
   width: 48px;

@@ -31,6 +31,13 @@ class RootErrorBoundary extends Component<{ children: ReactNode }, { err: Error 
 const rootEl = document.getElementById("root");
 if (!rootEl) throw new Error("Элемент #root не найден в index.html");
 
+/** Снимаем старые SW (если когда-либо регистрировали PWA) — иначе «Домой» может держать старый кэш. */
+if (typeof navigator !== "undefined" && "serviceWorker" in navigator) {
+  void navigator.serviceWorker.getRegistrations().then((regs) => {
+    for (const r of regs) void r.unregister();
+  });
+}
+
 createRoot(rootEl).render(
   <StrictMode>
     <RootErrorBoundary>
