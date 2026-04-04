@@ -17,20 +17,36 @@ import "./App.css";
 const gqlAuthTokenRef = { current: "" };
 
 function GroupMeshRemoteVideo({ stream, userId }: { stream: MediaStream; userId: string }) {
-  const ref = useRef<HTMLVideoElement | null>(null);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
   useEffect(() => {
-    const el = ref.current;
+    const el = videoRef.current;
+    const ael = audioRef.current;
     if (!el) return;
     el.srcObject = stream;
     try {
       el.playsInline = true;
-      el.muted = false;
+      /** muted на video — иначе автовоспроизведение часто блокируется; звук с отдельного audio. */
+      el.muted = true;
     } catch {
       /* ignore */
     }
-    const play = () => void el.play().catch(() => {});
+    if (ael) {
+      const aTracks = stream.getAudioTracks();
+      ael.srcObject = aTracks.length ? new MediaStream(aTracks) : null;
+    }
+    const play = () => {
+      void el.play().catch(() => {});
+      if (ael) void ael.play().catch(() => {});
+    };
     play();
-    const onTrack = () => play();
+    const onTrack = () => {
+      if (ael) {
+        const aTracks = stream.getAudioTracks();
+        ael.srcObject = aTracks.length ? new MediaStream(aTracks) : null;
+      }
+      play();
+    };
     const tracks = stream.getTracks();
     for (const t of tracks) {
       t.addEventListener("unmute", onTrack);
@@ -48,12 +64,18 @@ function GroupMeshRemoteVideo({ stream, userId }: { stream: MediaStream; userId:
       }
       try {
         el.srcObject = null;
+        if (ael) ael.srcObject = null;
       } catch {
         /* ignore */
       }
     };
   }, [stream, userId]);
-  return <video className="groupMeshVideo" ref={ref} autoPlay playsInline />;
+  return (
+    <div className="groupMeshVideoWrap">
+      <video className="groupMeshVideo" ref={videoRef} autoPlay playsInline muted />
+      <audio ref={audioRef} autoPlay playsInline className="groupMeshRemoteAudio" />
+    </div>
+  );
 }
 
 const TG_SESSION_KEY = "tg:session";
@@ -723,6 +745,13 @@ export default function App() {
     () => myProfileEmail.trim() || selfAuthorEmail,
     [myProfileEmail, selfAuthorEmail],
   );
+  const isMyMessageEmail = useCallback(
+    (email: string | undefined | null) =>
+      !!email &&
+      !!myAccountEmailForMessages &&
+      String(email).trim().toLowerCase() === myAccountEmailForMessages.trim().toLowerCase(),
+    [myAccountEmailForMessages],
+  );
   useEffect(() => {
     modeRef.current = mode;
     activeChannelIdRef.current = activeChannelId;
@@ -897,6 +926,7 @@ export default function App() {
   const joinGroupMeshFromPeerOfferRef = useRef<(data: any) => Promise<void>>(async () => {});
   const sidebarChatsScrollRef = useRef<HTMLDivElement | null>(null);
   const pullRefreshLockRef = useRef(false);
+  const refreshChatsAndPresenceRef = useRef<() => Promise<void>>(async () => {});
   useEffect(() => {
     saveChatFolders(userChatFolderLayout);
   }, [userChatFolderLayout]);
@@ -982,7 +1012,7 @@ export default function App() {
     return () => window.clearInterval(id);
   }, [webrtcUi]);
 
-  /** Удалённое видео: один video с полным MediaStream; раздельные MediaStream только для видео/аудио на части движков давали чёрный кадр. Аудио с того же элемента (muted=false). */
+  /** Удалённое видео: video muted (иначе autoplay часто блокируется у инициатора) + отдельный audio с дорожками звука. */
   useEffect(() => {
     const stream = webrtcUi?.remoteStream ?? null;
     const videoEl = webrtcRemoteVideoRef.current;
@@ -1009,9 +1039,9 @@ export default function App() {
     }
 
     if (!videoEl) return;
-    if (audioEl) audioEl.srcObject = null;
     if (!stream) {
       videoEl.srcObject = null;
+      if (audioEl) audioEl.srcObject = null;
       return;
     }
     videoEl.srcObject = stream;
@@ -1022,13 +1052,24 @@ export default function App() {
     } catch {
       /* ignore */
     }
-    videoEl.muted = false;
-    const onMeta = () => tryPlay(videoEl);
+    videoEl.muted = true;
+    if (audioEl) {
+      const aTracks = stream.getAudioTracks();
+      audioEl.srcObject = aTracks.length ? new MediaStream(aTracks) : null;
+    }
+    const onMeta = () => {
+      tryPlay(videoEl);
+      if (audioEl) tryPlay(audioEl);
+    };
     videoEl.addEventListener("loadedmetadata", onMeta);
-    tryPlay(videoEl);
+    onMeta();
     const onTrack = () => {
       videoEl.srcObject = stream;
-      tryPlay(videoEl);
+      if (audioEl) {
+        const aTracks = stream.getAudioTracks();
+        audioEl.srcObject = aTracks.length ? new MediaStream(aTracks) : null;
+      }
+      onMeta();
     };
     stream.addEventListener("addtrack", onTrack);
     stream.addEventListener("removetrack", onTrack);
@@ -1891,9 +1932,7 @@ export default function App() {
       if (hint) hint.style.height = "0px";
       if (h < 28) return;
       if (!token || threadRootId || showPins || showSaved) return;
-      if (mode === "channels" && activeChannelId) void loadMessages(activeChannelId);
-      else if (mode === "groups" && activeGroupChatId) void loadGroupMessages(activeGroupChatId);
-      else if (mode === "dms" && activeDirectChatId) void loadDirectMessages(activeDirectChatId);
+      void refreshChatsAndPresenceRef.current?.();
     };
     let wheelPullAcc = 0;
     const onWheel = (e: WheelEvent) => {
@@ -1910,9 +1949,7 @@ export default function App() {
       if (wheelPullAcc < 100) return;
       wheelPullAcc = 0;
       if (!token) return;
-      if (mode === "channels" && activeChannelId) void loadMessages(activeChannelId);
-      else if (mode === "groups" && activeGroupChatId) void loadGroupMessages(activeGroupChatId);
-      else if (mode === "dms" && activeDirectChatId) void loadDirectMessages(activeDirectChatId);
+      void refreshChatsAndPresenceRef.current?.();
     };
     el.addEventListener("scroll", onScroll, { passive: true });
     el.addEventListener("touchstart", onTouchStart, { passive: true });
@@ -2359,8 +2396,13 @@ export default function App() {
   }, [token, mode, activeChannelId, activeGroupChatId, activeDirectChatId]);
 
   useEffect(() => {
-    if (showRightPanel) setInfoPanelSection("about");
-  }, [showRightPanel]);
+    if (!showRightPanel) return;
+    setInfoPanelSection(mode === "dms" ? "photos" : "about");
+  }, [showRightPanel, mode]);
+
+  useEffect(() => {
+    if (mode === "dms" && infoPanelSection === "about") setInfoPanelSection("photos");
+  }, [mode, infoPanelSection]);
 
   useEffect(() => {
     try {
@@ -3889,8 +3931,8 @@ export default function App() {
       if (e.deltaY >= 0) return;
       if (pullRefreshLockRef.current) return;
       pullRefreshLockRef.current = true;
-      void loadUsersRef.current?.();
-      pushLog("Статусы обновлены (прокрутка вверх у края списка).");
+      void refreshChatsAndPresenceRef.current?.();
+      pushLog("Список чатов и статусы обновлены.");
       window.setTimeout(() => {
         pullRefreshLockRef.current = false;
       }, 2800);
@@ -3905,8 +3947,8 @@ export default function App() {
       if (y - touchStartY > 64) {
         if (pullRefreshLockRef.current) return;
         pullRefreshLockRef.current = true;
-        void loadUsersRef.current?.();
-        pushLog("Статусы обновлены (потянуть список вниз).");
+        void refreshChatsAndPresenceRef.current?.();
+        pushLog("Список чатов и статусы обновлены.");
         touchStartY = y + 9999;
         window.setTimeout(() => {
           pullRefreshLockRef.current = false;
@@ -3954,16 +3996,13 @@ export default function App() {
   }, [token, organizationId]);
 
   useEffect(() => {
-    setExpandedChatFolderIds({});
-  }, [activeDirectChatId, activeGroupChatId, activeChannelId, mode]);
-
-  useEffect(() => {
     if (!token) return;
     let cancelled = false;
     void (async () => {
       try {
         const savedChatKey = readTgLastOpenChatKey();
-        const avoidAutoFirstChat = Boolean(savedChatKey) || (isStandaloneWebApp() && !savedChatKey);
+        /** Только если есть сохранённый чат — не выбираем «первый попавшийся» до открытия сохранённого. */
+        const avoidAutoFirstChat = Boolean(savedChatKey);
 
         if (organizationId) {
           await loadUsers();
@@ -4945,6 +4984,19 @@ export default function App() {
     await mergeThreadReadStates("d", directChatId);
     scrollMessagesToBottom();
   }
+
+  async function refreshChatsAndPresence() {
+    if (!token || !organizationId) return;
+    await loadUsers();
+    await loadGroupChats();
+    await loadDirectChats();
+    if (workspaceId) await loadChannels();
+    if (mode === "channels" && activeChannelId) await loadMessages(activeChannelId);
+    else if (mode === "groups" && activeGroupChatId) await loadGroupMessages(activeGroupChatId);
+    else if (mode === "dms" && activeDirectChatId) await loadDirectMessages(activeDirectChatId);
+    pushLog("Чаты и лента обновлены.");
+  }
+  refreshChatsAndPresenceRef.current = refreshChatsAndPresence;
 
   /** Вход в чат / смена активного чата: всегда подгружаем актуальные сообщения с сервера */
   useEffect(() => {
@@ -6246,7 +6298,11 @@ export default function App() {
                             className={`tgChatRow tgChatRow--folderToggle ${open ? "tgChatRow--folderToggleOpen" : ""}`}
                             onClick={(e) => {
                               e.preventDefault();
-                              setExpandedChatFolderIds((prev) => ({ ...prev, [sec.id]: !prev[sec.id] }));
+                              setExpandedChatFolderIds((prev) => {
+                                const nextOpen = !prev[sec.id];
+                                if (!nextOpen) return { ...prev, [sec.id]: false };
+                                return { [sec.id]: true };
+                              });
                             }}
                           >
                             <div className="tgAvatar tgAvatar--folder">{open ? "📂" : "📁"}</div>
@@ -6877,11 +6933,11 @@ export default function App() {
                     {mode === "channels"
                       ? activeChannel
                         ? `#${activeChannel.name}`
-                        : "Выберите канал"
+                        : "Сообщения"
                       : mode === "groups"
                         ? activeGroupChat
                           ? activeGroupChat.name
-                          : "Выберите группу"
+                          : "Сообщения"
                         : activeDirectChat
                           ? isSelfNotesActiveDm
                             ? "Избранное"
@@ -6891,7 +6947,7 @@ export default function App() {
                                 const u = users.find((x) => x.id === otherId);
                                 return displayUserNameForSidebar(u, otherId || activeDirectChat.id);
                               })()
-                          : "Выберите личку"}
+                          : "Сообщения"}
                   </div>
                   {(mode === "groups" && canEditActiveGroupMeta) || (mode === "channels" && canEditActiveChannelMeta) ? (
                     <button
@@ -7664,7 +7720,7 @@ export default function App() {
             <div
               key={m.id}
               data-message-id={m.id}
-              className={`msg ${m.author?.email === myAccountEmailForMessages ? "mine" : "other"} ${showMeta ? "" : "compact"} ${forwardSelecting ? "selecting" : ""} ${forwardSelectedIds.has(m.id) ? "selected" : ""}`}
+              className={`msg ${isMyMessageEmail(m.author?.email) ? "mine" : "other"} ${showMeta ? "" : "compact"} ${forwardSelecting ? "selecting" : ""} ${forwardSelectedIds.has(m.id) ? "selected" : ""}`}
             >
               {showDay ? (
                 <div className="daySep">
@@ -7672,10 +7728,10 @@ export default function App() {
                 </div>
               ) : null}
               <div className="actions">
-                <button className="chip" onClick={() => void editMessageInChat(m.id)} disabled={!token || m.author?.email !== myAccountEmailForMessages}>
+                <button className="chip" onClick={() => void editMessageInChat(m.id)} disabled={!token || !isMyMessageEmail(m.author?.email)}>
                   ✎
                 </button>
-                <button className="chip" onClick={() => void deleteMessageInChat(m.id)} disabled={!token || m.author?.email !== myAccountEmailForMessages}>
+                <button className="chip" onClick={() => void deleteMessageInChat(m.id)} disabled={!token || !isMyMessageEmail(m.author?.email)}>
                   🗑
                 </button>
                 {forwardSelecting ? (
@@ -7761,7 +7817,7 @@ export default function App() {
                     return;
                   }
                   if (
-                    m.author?.email === myAccountEmailForMessages &&
+                    isMyMessageEmail(m.author?.email) &&
                     m._sendState !== "failed" &&
                     m._sendState !== "sending" &&
                     !String(m.id).startsWith("tmp-")
@@ -7782,7 +7838,7 @@ export default function App() {
                   setMsgMenu({ x, y, messageId: m.id });
                 }}
               >
-                {(mode === "groups" || mode === "channels") && showMeta && m.author?.email !== myAccountEmailForMessages ? (
+                {(mode === "groups" || mode === "channels") && showMeta && !isMyMessageEmail(m.author?.email) ? (
                   <div className="bubbleAuthor">{messageAuthorLabel(m)}</div>
                 ) : null}
                 {m.type === "file" || m.type === "voice" ? (
@@ -7920,7 +7976,7 @@ export default function App() {
                   m.content ? m.content : "(удалено)"
                 )}
                 <span className="bubbleTime">
-                  {m.author?.email === myAccountEmailForMessages ? (
+                  {isMyMessageEmail(m.author?.email) ? (
                     m._sendState === "failed" ? (
                       <span className="msgSendFail" title="Не удалось отправить">
                         !
@@ -7955,10 +8011,10 @@ export default function App() {
                     {savedIds.has(m.id) ? "Убрать из сохранённых" : "Сохранить"}
                   </button>
                   <div className="msgMenuSep" />
-                  <button className="msgMenuItem" onClick={() => void editMessageInChat(m.id)} disabled={m.author?.email !== myAccountEmailForMessages}>
+                  <button className="msgMenuItem" onClick={() => void editMessageInChat(m.id)} disabled={!isMyMessageEmail(m.author?.email)}>
                     Редактировать
                   </button>
-                  <button className="msgMenuItem danger" onClick={() => void deleteMessageInChat(m.id)} disabled={m.author?.email !== myAccountEmailForMessages}>
+                  <button className="msgMenuItem danger" onClick={() => void deleteMessageInChat(m.id)} disabled={!isMyMessageEmail(m.author?.email)}>
                     Удалить
                   </button>
                 </div>
@@ -8153,7 +8209,12 @@ export default function App() {
                       playsInline
                       className="webrtcRemote"
                     />
-                    <audio ref={webrtcRemoteAudioRef} playsInline className="webrtcRemote webrtcRemote--videoCallAudio" hidden />
+                    <audio
+                      ref={webrtcRemoteAudioRef}
+                      autoPlay
+                      playsInline
+                      className="webrtcRemote webrtcRemote--videoCallAudio"
+                    />
                   </>
                 )}
                 {!webrtcUi.audioOnly ? (
@@ -8362,11 +8423,11 @@ export default function App() {
                 {mode === "channels"
                   ? activeChannel
                     ? `#${activeChannel.name}`
-                    : "Канал не выбран"
+                    : "Сообщения"
                   : mode === "groups"
                     ? activeGroupChat
                       ? activeGroupChat.name
-                      : "Группа не выбрана"
+                      : "Сообщения"
                     : activeDirectChat
                       ? isSelfNotesActiveDm
                         ? "Избранное"
@@ -8376,7 +8437,7 @@ export default function App() {
                             const u = users.find((x) => x.id === otherId);
                             return displayUserNameForSidebar(u, otherId || activeDirectChat.id);
                           })()
-                      : "Личка не выбрана"}
+                      : "Сообщения"}
               </div>
               <p className="infoPanelHeroSub">
                 {organizationId ? `Организация: ${displayOrganizationId}` : "—"}
@@ -8391,14 +8452,22 @@ export default function App() {
 
               <div className="infoPanelTabs" role="tablist" aria-label="Разделы сведений о чате">
                 {(
-                  [
-                    ["about", "Об чате"],
-                    ["photos", "Фото"],
-                    ["files", "Файлы"],
-                    ["voice", "Голосовые"],
-                    ["links", "Ссылки"],
-                    ["notify", "Уведомления"],
-                  ] as const
+                  mode === "dms"
+                    ? ([
+                        ["photos", "Фото"],
+                        ["files", "Файлы"],
+                        ["voice", "Голосовые"],
+                        ["links", "Ссылки"],
+                        ["notify", "Уведомления"],
+                      ] as const)
+                    : ([
+                        ["about", "Об чате"],
+                        ["photos", "Фото"],
+                        ["files", "Файлы"],
+                        ["voice", "Голосовые"],
+                        ["links", "Ссылки"],
+                        ["notify", "Уведомления"],
+                      ] as const)
                 ).map(([id, label]) => (
                   <button
                     key={id}

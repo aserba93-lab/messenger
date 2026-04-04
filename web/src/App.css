@@ -16,18 +16,18 @@
 
 :root[data-theme="light"] {
   color-scheme: light;
-  --tg-bg-app: #e4e6ed;
-  --tg-bg-sidebar: #f3f4f9;
-  --tg-bg-chat: #ffffff;
-  --tg-bg-elevated: #ffffff;
-  --tg-border-subtle: rgba(0, 0, 0, 0.09);
+  --tg-bg-app: #c8ccd8;
+  --tg-bg-sidebar: #d8dce8;
+  --tg-bg-chat: #e8eaef;
+  --tg-bg-elevated: #dde1ea;
+  --tg-border-subtle: rgba(0, 0, 0, 0.12);
   --tg-accent: #168ad0;
-  --tg-bubble-mine: #cfe8fc;
-  --tg-bubble-other: #eceef4;
-  --tg-text: #14141a;
-  --tg-muted: #5a6170;
-  --tg-scroll-fab-bg: rgba(255, 255, 255, 0.96);
-  --tg-scroll-fab-border: rgba(0, 0, 0, 0.1);
+  --tg-bubble-mine: #b8daf6;
+  --tg-bubble-other: #d5dae6;
+  --tg-text: #12121a;
+  --tg-muted: #4a5160;
+  --tg-scroll-fab-bg: rgba(220, 224, 232, 0.96);
+  --tg-scroll-fab-border: rgba(0, 0, 0, 0.14);
 }
 
 html,
@@ -762,6 +762,12 @@ body {
   background: #000;
   min-height: 100px;
 }
+.groupMeshVideoWrap {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+}
 .groupMeshVideo {
   width: 100%;
   height: 100%;
@@ -769,6 +775,13 @@ body {
   object-fit: cover;
   display: block;
   background: #000;
+}
+.groupMeshRemoteAudio {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
 }
 .groupMeshAudioOnly {
   display: grid;
@@ -1381,6 +1394,9 @@ button.active {
   display: flex;
   flex-direction: column;
   gap: 2px;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 .msg.mine {
   align-items: flex-end;
