@@ -264,10 +264,23 @@ function isStandaloneWebApp(): boolean {
 }
 
 const quickEmojis = ["👍", "❤️", "😂", "🔥", "🎉", "😮"];
+/** 15 встроенных наборов; в кабинете можно добавить свои JSON-паки */
 const defaultStickerCatalog = [
-  { id: "basic-emoji", title: "Basic Emoji", stickers: ["😀", "😁", "😂", "😍", "🤝", "👍", "🔥", "🎉"] },
-  { id: "work-pack", title: "Work Pack", stickers: ["✅", "📌", "📎", "🧠", "💼", "🚀", "🛠", "📊"] },
-  { id: "mood-pack", title: "Mood Pack", stickers: ["🙂", "😎", "🤔", "🥳", "😴", "😡", "🥶", "🤯"] },
+  { id: "pack-01-smiles", title: "Улыбки", stickers: ["😀", "😁", "😂", "😍", "🥰", "😇", "🤗", "😋"] },
+  { id: "pack-02-work", title: "Работа", stickers: ["✅", "📌", "📎", "💼", "🚀", "📊", "🗓️", "☑️"] },
+  { id: "pack-03-mood", title: "Настроение", stickers: ["🙂", "😎", "🤔", "🥳", "😴", "😮", "🤯", "🥶"] },
+  { id: "pack-04-animals", title: "Звери", stickers: ["🐶", "🐱", "🐻", "🦁", "🐸", "🦊", "🐼", "🐰"] },
+  { id: "pack-05-food", title: "Еда", stickers: ["🍕", "🍔", "🍰", "☕", "🍎", "🥗", "🌮", "🍜"] },
+  { id: "pack-06-hearts", title: "Сердца", stickers: ["❤️", "🧡", "💛", "💚", "💙", "💜", "🖤", "💖"] },
+  { id: "pack-07-hands", title: "Жесты", stickers: ["👍", "👎", "✌️", "🤞", "🙏", "👏", "🤝", "👋"] },
+  { id: "pack-08-travel", title: "Путешествия", stickers: ["✈️", "🚗", "🚂", "🏖️", "🗺️", "⛺", "🧳", "🌍"] },
+  { id: "pack-09-sport", title: "Спорт", stickers: ["⚽", "🏀", "🎾", "🏆", "🎯", "⛷️", "🚴", "🥇"] },
+  { id: "pack-10-music", title: "Музыка", stickers: ["🎵", "🎸", "🎹", "🎤", "🎧", "🥁", "🎺", "🎻"] },
+  { id: "pack-11-tech", title: "Техника", stickers: ["💻", "📱", "⌨️", "🖥️", "💾", "📷", "🎮", "🔌"] },
+  { id: "pack-12-weather", title: "Погода", stickers: ["☀️", "🌧️", "❄️", "🌈", "⚡", "🌙", "⭐", "🌊"] },
+  { id: "pack-13-symbols", title: "Знаки", stickers: ["✅", "❌", "❓", "❗", "💯", "🔔", "📍", "🔥"] },
+  { id: "pack-14-party", title: "Праздник", stickers: ["🎉", "🎊", "🎈", "🎁", "🍾", "🥳", "🎂", "✨"] },
+  { id: "pack-15-nature", title: "Природа", stickers: ["🌲", "🌸", "🍀", "🌙", "🌊", "🔥", "💧", "🌈"] },
 ];
 
 async function gql<T>(query: string, variables: Record<string, unknown>, token?: string): Promise<T> {
@@ -772,12 +785,10 @@ export default function App() {
   const browserNotifyRef = useRef(browserNotify);
   const [moreMenuOpen, setMoreMenuOpen] = useState(false);
   const [newChatMenuOpen, setNewChatMenuOpen] = useState(false);
-  const [newThingWizardKind, setNewThingWizardKind] = useState<null | "dm" | "group" | "channel">(null);
+  const [newThingWizardKind, setNewThingWizardKind] = useState<null | "dm" | "group">(null);
   const [wizardUserQuery, setWizardUserQuery] = useState("");
   const [wizardSelectedUserIds, setWizardSelectedUserIds] = useState<string[]>([]);
   const [wizardGroupName, setWizardGroupName] = useState("Новая группа");
-  const [wizardChannelName, setWizardChannelName] = useState("new-channel");
-  const [wizardChannelType, setWizardChannelType] = useState<"public" | "private" | "broadcast">("public");
   const [wizardBusy, setWizardBusy] = useState(false);
   const [wizardError, setWizardError] = useState("");
   const [showRightPanel, setShowRightPanel] = useState(false);
@@ -2408,28 +2419,52 @@ export default function App() {
   }, [activeChannelId, activeGroupChatId, activeDirectChatId, viewportW]);
 
   useEffect(() => {
+    const legacyStickerPackId: Record<string, string> = {
+      "basic-emoji": "pack-01-smiles",
+      "work-pack": "pack-02-work",
+      "mood-pack": "pack-03-mood",
+    };
     try {
       const rawInstalled = localStorage.getItem("tg:installedStickerPackIds");
       const rawCustom = localStorage.getItem("tg:customStickerPacks");
-      if (rawInstalled) {
-        const arr = JSON.parse(rawInstalled);
-        if (Array.isArray(arr)) setInstalledStickerPackIds(arr.filter((x) => typeof x === "string"));
-      } else {
-        setInstalledStickerPackIds([defaultStickerCatalog[0].id]);
-      }
+      let catalogIds = defaultStickerCatalog.map((p) => p.id);
       if (rawCustom) {
         const custom = JSON.parse(rawCustom);
         if (Array.isArray(custom)) {
           const safe = custom.filter(
-            (x) => x && typeof x.id === "string" && typeof x.title === "string" && Array.isArray(x.stickers),
-          );
-          if (safe.length) setStickerCatalog((prev) => [...prev, ...safe]);
+            (x: unknown) =>
+              x && typeof x === "object" && x !== null && "id" in x && typeof (x as { id?: string }).id === "string",
+          ) as { id: string; title: string; stickers: string[] }[];
+          if (safe.length) {
+            setStickerCatalog((prev) => [...prev, ...safe]);
+            catalogIds = [...catalogIds, ...safe.map((p) => p.id)];
+          }
         }
+      }
+      const valid = new Set(catalogIds);
+      if (rawInstalled) {
+        const arr = JSON.parse(rawInstalled);
+        if (Array.isArray(arr)) {
+          const next = arr
+            .filter((x: unknown) => typeof x === "string")
+            .map((id: string) => legacyStickerPackId[id] ?? id)
+            .filter((id: string) => valid.has(id));
+          setInstalledStickerPackIds(next.length ? next : [defaultStickerCatalog[0].id]);
+        } else setInstalledStickerPackIds([defaultStickerCatalog[0].id]);
+      } else {
+        setInstalledStickerPackIds([defaultStickerCatalog[0].id]);
       }
     } catch {
       setInstalledStickerPackIds([defaultStickerCatalog[0].id]);
     }
   }, []);
+
+  useEffect(() => {
+    if (!installedStickerPackIds.length) return;
+    if (!installedStickerPackIds.includes(activeStickerPackId)) {
+      setActiveStickerPackId(installedStickerPackIds[0]!);
+    }
+  }, [installedStickerPackIds, activeStickerPackId]);
 
   useEffect(() => {
     try {
@@ -3933,6 +3968,9 @@ export default function App() {
         meshGroupChatId: meshId,
         audioOnly,
       });
+      const base = `${window.location.origin}${window.location.pathname}`;
+      const inviteUrl = `${base}#dm=${encodeURIComponent(activeDirectChat.id)}&call=1`;
+      void sendServiceMessageToCurrentChat(inviteUrl);
       pushLog("Личный созвон (mesh)");
     } catch (e: any) {
       setChatError(String(e?.message ?? e));
@@ -4503,17 +4541,13 @@ export default function App() {
     setWizardBusy(false);
   }
 
-  async function openNewThingWizard(kind: "dm" | "group" | "channel") {
+  async function openNewThingWizard(kind: "dm" | "group") {
     setNewChatMenuOpen(false);
     setNewThingWizardKind(kind);
     setWizardSelectedUserIds([]);
     setWizardError("");
     setWizardUserQuery("");
     if (kind === "group") setWizardGroupName("Новая группа");
-    if (kind === "channel") {
-      setWizardChannelName("new-channel");
-      setWizardChannelType("public");
-    }
     if (token && organizationId && users.length === 0) await loadUsers();
   }
 
@@ -4532,18 +4566,7 @@ export default function App() {
         else s.add(pickId);
         return Array.from(s);
       });
-      return;
     }
-    setWizardSelectedUserIds((prev) => {
-      const s = new Set(prev);
-      if (s.has(pickId)) s.delete(pickId);
-      else s.add(pickId);
-      return Array.from(s);
-    });
-  }
-
-  function wizardSelectAllCompanyUsers() {
-    setWizardSelectedUserIds(users.map((u) => u.id).filter((id) => id !== userId));
   }
 
   async function submitNewThingWizard() {
@@ -4608,48 +4631,6 @@ export default function App() {
         setWizardBusy(false);
       }
       return;
-    }
-    if (!workspaceId) {
-      setWizardError("Не выбран workspace");
-      return;
-    }
-    if (!canCreateChannelsAndGroups) {
-      setWizardError("Недостаточно прав для создания канала");
-      return;
-    }
-    const chName = wizardChannelName.trim();
-    if (!chName) {
-      setWizardError("Введите название канала");
-      return;
-    }
-    setWizardBusy(true);
-    try {
-      const data = await gql<{ createChannel: { id: string } }>(
-        `mutation($input: CreateChannelInput!) {
-          createChannel(input: $input) { id name type workspaceId }
-        }`,
-        { input: { workspaceId, name: chName, type: wizardChannelType } },
-        token,
-      );
-      const channelId = data.createChannel.id;
-      for (const uid of wizardSelectedUserIds) {
-        if (uid === userId) continue;
-        await gql<{ channelAddMember: boolean }>(
-          `mutation($input: ChannelAddMemberInput!) { channelAddMember(input: $input) }`,
-          { input: { channelId, userId: uid } },
-          token,
-        );
-      }
-      await loadChannels();
-      setMode("channels");
-      setActiveChannelId(channelId);
-      closeNewThingWizard();
-      setMobileSidebarOpen(false);
-      pushLog(`Канал создан: #${chName}`);
-    } catch (e: unknown) {
-      setWizardError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setWizardBusy(false);
     }
   }
 
@@ -4870,9 +4851,10 @@ export default function App() {
       const dot = isSelfNotesDm ? "⭐" : st === "online" ? "●" : st === "away" ? "◐" : st === "dnd" ? "◍" : "○";
       const title = isSelfNotesDm ? "Избранное" : displayUserNameForSidebar(u, otherId || d.id);
       return (
-        <button
+        <div
           key={`all-d-${d.id}`}
-          type="button"
+          role="button"
+          tabIndex={0}
           className={`tgChatRow ${activeDirectChatId === d.id ? "active" : ""} ${dragPinnedKey === chatKeyFor("d", d.id) ? "dragging" : ""} ${dragOverPinnedKey === chatKeyFor("d", d.id) ? "dragover" : ""}`}
           draggable={isPinned(chatKeyFor("d", d.id))}
           onDragStart={() => setDragPinnedKey(chatKeyFor("d", d.id))}
@@ -4895,6 +4877,14 @@ export default function App() {
             setMode("dms");
             setActiveDirectChatId(d.id);
             setUnreadByKey((prev) => ({ ...prev, [chatKeyFor("d", d.id)]: 0 }));
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              setMode("dms");
+              setActiveDirectChatId(d.id);
+              setUnreadByKey((prev) => ({ ...prev, [chatKeyFor("d", d.id)]: 0 }));
+            }
           }}
         >
           {(() => {
@@ -4934,15 +4924,16 @@ export default function App() {
             </div>
           </div>
           {unreadFor(chatKeyFor("d", d.id)) ? <div className="tgUnread">{unreadFor(chatKeyFor("d", d.id))}</div> : null}
-        </button>
+        </div>
       );
     }
     if (row.kind === "g") {
       const g = row.g;
       return (
-        <button
+        <div
           key={`all-g-${g.id}`}
-          type="button"
+          role="button"
+          tabIndex={0}
           className={`tgChatRow ${activeGroupChatId === g.id ? "active" : ""} ${dragPinnedKey === chatKeyFor("g", g.id) ? "dragging" : ""} ${dragOverPinnedKey === chatKeyFor("g", g.id) ? "dragover" : ""}`}
           draggable={isPinned(chatKeyFor("g", g.id))}
           onDragStart={() => setDragPinnedKey(chatKeyFor("g", g.id))}
@@ -4965,6 +4956,14 @@ export default function App() {
             setMode("groups");
             setActiveGroupChatId(g.id);
             setUnreadByKey((prev) => ({ ...prev, [chatKeyFor("g", g.id)]: 0 }));
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              setMode("groups");
+              setActiveGroupChatId(g.id);
+              setUnreadByKey((prev) => ({ ...prev, [chatKeyFor("g", g.id)]: 0 }));
+            }
           }}
         >
           <div className={`tgAvatar ${g.avatarUrl ? "tgAvatar--img" : ""}`}>
@@ -4995,14 +4994,15 @@ export default function App() {
             </div>
           </div>
           {unreadFor(chatKeyFor("g", g.id)) ? <div className="tgUnread">{unreadFor(chatKeyFor("g", g.id))}</div> : null}
-        </button>
+        </div>
       );
     }
     const c = row.c;
     return (
-      <button
+      <div
         key={`all-c-${c.id}`}
-        type="button"
+        role="button"
+        tabIndex={0}
         className={`tgChatRow ${activeChannelId === c.id ? "active" : ""} ${dragPinnedKey === chatKeyFor("c", c.id) ? "dragging" : ""} ${dragOverPinnedKey === chatKeyFor("c", c.id) ? "dragover" : ""}`}
         draggable={isPinned(chatKeyFor("c", c.id))}
         onDragStart={() => setDragPinnedKey(chatKeyFor("c", c.id))}
@@ -5025,6 +5025,14 @@ export default function App() {
           setMode("channels");
           setActiveChannelId(c.id);
           setUnreadByKey((prev) => ({ ...prev, [chatKeyFor("c", c.id)]: 0 }));
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            setMode("channels");
+            setActiveChannelId(c.id);
+            setUnreadByKey((prev) => ({ ...prev, [chatKeyFor("c", c.id)]: 0 }));
+          }
         }}
       >
         <div className={`tgAvatar ${c.avatarUrl ? "tgAvatar--img" : ""}`}>
@@ -5054,7 +5062,7 @@ export default function App() {
           </div>
         </div>
         {unreadFor(chatKeyFor("c", c.id)) ? <div className="tgUnread">{unreadFor(chatKeyFor("c", c.id))}</div> : null}
-      </button>
+      </div>
     );
   }
 
@@ -6347,7 +6355,7 @@ export default function App() {
               <button
                 type="button"
                 className="tgCircleBtn"
-                title="Создать чат, группу или канал"
+                title="Создать чат или группу"
                 onClick={() => {
                   setNewChatMenuOpen((v) => !v);
                   setMoreMenuOpen(false);
@@ -6372,14 +6380,6 @@ export default function App() {
                     disabled={!token || !organizationId || !canCreateChannelsAndGroups}
                   >
                     👥 Группа (несколько человек)
-                  </button>
-                  <button
-                    type="button"
-                    className="tgPopoverItem"
-                    onClick={() => void openNewThingWizard("channel")}
-                    disabled={!token || !workspaceId || !organizationId || !canCreateChannelsAndGroups}
-                  >
-                    # Канал в workspace
                   </button>
                 </div>
               ) : null}
@@ -6424,18 +6424,7 @@ export default function App() {
               <button className={chatFolder === "unread" ? "active" : ""} onClick={() => setChatFolder("unread")}>
                 Непрочитанные
               </button>
-              <button className={chatFolder === "archived" ? "active" : ""} onClick={() => setChatFolder("archived")}>
-                Архив
-              </button>
             </div>
-            <button
-              type="button"
-              className="tgCircleBtn"
-              title="Папки с чатами (синхронизируются с аккаунтом)"
-              onClick={() => setChatFoldersEditorOpen(true)}
-            >
-              📁
-            </button>
             <button
               type="button"
               className="tgCircleBtn tgChatScopeFilterBtn"
@@ -6514,6 +6503,18 @@ export default function App() {
                 >
                   Каналы
                 </button>
+                <div className="tgPopoverSep" role="separator" />
+                <button
+                  type="button"
+                  className={`tgPopoverItem ${chatFolder === "archived" ? "tgPopoverItem--active" : ""}`}
+                  role="menuitem"
+                  onClick={() => {
+                    setChatFolder("archived");
+                    setChatListFilterOpen(false);
+                  }}
+                >
+                  Архив
+                </button>
               </div>
             ) : null}
           </div>
@@ -6564,8 +6565,10 @@ export default function App() {
               </>
             ) : chatListScope === "channels"
               ? orderedChannels.map((c) => (
-                  <button
+                  <div
                     key={c.id}
+                    role="button"
+                    tabIndex={0}
                     className={`tgChatRow ${activeChannelId === c.id ? "active" : ""} ${dragPinnedKey === chatKeyFor("c", c.id) ? "dragging" : ""} ${dragOverPinnedKey === chatKeyFor("c", c.id) ? "dragover" : ""}`}
                     draggable={isPinned(chatKeyFor("c", c.id))}
                     onDragStart={() => setDragPinnedKey(chatKeyFor("c", c.id))}
@@ -6588,6 +6591,14 @@ export default function App() {
                       setMode("channels");
                       setActiveChannelId(c.id);
                       setUnreadByKey((prev) => ({ ...prev, [chatKeyFor("c", c.id)]: 0 }));
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        setMode("channels");
+                        setActiveChannelId(c.id);
+                        setUnreadByKey((prev) => ({ ...prev, [chatKeyFor("c", c.id)]: 0 }));
+                      }
                     }}
                   >
                     <div className={`tgAvatar ${c.avatarUrl ? "tgAvatar--img" : ""}`}>
@@ -6620,12 +6631,14 @@ export default function App() {
                       </div>
                     </div>
                     {unreadFor(chatKeyFor("c", c.id)) ? <div className="tgUnread">{unreadFor(chatKeyFor("c", c.id))}</div> : null}
-                  </button>
+                  </div>
                 ))
               : chatListScope === "groups"
                 ? orderedGroups.map((g) => (
-                    <button
+                    <div
                       key={g.id}
+                      role="button"
+                      tabIndex={0}
                       className={`tgChatRow ${activeGroupChatId === g.id ? "active" : ""} ${dragPinnedKey === chatKeyFor("g", g.id) ? "dragging" : ""} ${dragOverPinnedKey === chatKeyFor("g", g.id) ? "dragover" : ""}`}
                       draggable={isPinned(chatKeyFor("g", g.id))}
                       onDragStart={() => setDragPinnedKey(chatKeyFor("g", g.id))}
@@ -6648,6 +6661,14 @@ export default function App() {
                         setMode("groups");
                         setActiveGroupChatId(g.id);
                         setUnreadByKey((prev) => ({ ...prev, [chatKeyFor("g", g.id)]: 0 }));
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          setMode("groups");
+                          setActiveGroupChatId(g.id);
+                          setUnreadByKey((prev) => ({ ...prev, [chatKeyFor("g", g.id)]: 0 }));
+                        }
                       }}
                     >
                       <div className={`tgAvatar ${g.avatarUrl ? "tgAvatar--img" : ""}`}>
@@ -6681,7 +6702,7 @@ export default function App() {
                         </div>
                       </div>
                     {unreadFor(chatKeyFor("g", g.id)) ? <div className="tgUnread">{unreadFor(chatKeyFor("g", g.id))}</div> : null}
-                    </button>
+                    </div>
                   ))
                 : orderedDMs.map((d) => {
                     const isSelfNotesDm = d.userIds.length === 1 && d.userIds[0] === userId;
@@ -6692,8 +6713,10 @@ export default function App() {
                     const dot = isSelfNotesDm ? "⭐" : st === "online" ? "●" : st === "away" ? "◐" : st === "dnd" ? "◍" : "○";
                     const title = isSelfNotesDm ? "Избранное" : displayUserNameForSidebar(u, otherId || d.id);
                     return (
-                      <button
+                      <div
                         key={d.id}
+                        role="button"
+                        tabIndex={0}
                         className={`tgChatRow ${activeDirectChatId === d.id ? "active" : ""} ${dragPinnedKey === chatKeyFor("d", d.id) ? "dragging" : ""} ${dragOverPinnedKey === chatKeyFor("d", d.id) ? "dragover" : ""}`}
                         draggable={isPinned(chatKeyFor("d", d.id))}
                         onDragStart={() => setDragPinnedKey(chatKeyFor("d", d.id))}
@@ -6716,6 +6739,14 @@ export default function App() {
                           setMode("dms");
                           setActiveDirectChatId(d.id);
                           setUnreadByKey((prev) => ({ ...prev, [chatKeyFor("d", d.id)]: 0 }));
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" || e.key === " ") {
+                            e.preventDefault();
+                            setMode("dms");
+                            setActiveDirectChatId(d.id);
+                            setUnreadByKey((prev) => ({ ...prev, [chatKeyFor("d", d.id)]: 0 }));
+                          }
                         }}
                       >
                         {(() => {
@@ -6760,7 +6791,7 @@ export default function App() {
                           </div>
                         </div>
                         {unreadFor(chatKeyFor("d", d.id)) ? <div className="tgUnread">{unreadFor(chatKeyFor("d", d.id))}</div> : null}
-                      </button>
+                      </div>
                     );
                   })}
           </div>
@@ -7769,8 +7800,26 @@ export default function App() {
                   </button>
                 </div>
 
+                <div className="title userCabinetStickersTitle">Папки чатов</div>
+                <div className="empty userCabinetStickersIntro">
+                  Создайте папки и назначайте чаты через меню ⋮ у строки чата. Список папок синхронизируется с аккаунтом.
+                </div>
+                <button
+                  type="button"
+                  className="moreMenuWideBtn"
+                  style={{ width: "100%", marginBottom: 14 }}
+                  onClick={() => {
+                    setShowUserCabinet(false);
+                    setChatFoldersEditorOpen(true);
+                  }}
+                >
+                  Управление папками
+                </button>
+
                 <div className="title userCabinetStickersTitle">Стикеры</div>
-                <div className="empty userCabinetStickersIntro">Скачайте JSON-пак или установите/отключите набор для отправки в чате.</div>
+                <div className="empty userCabinetStickersIntro">
+                  15 встроенных наборов ниже; можно добавить свой JSON-пак файлом и включить наборы для отправки в чате.
+                </div>
                 <div className="list companyList userCabinetStickerList">
                   {stickerCatalog.map((pack) => {
                     const installed = installedStickerPackIds.includes(pack.id);
@@ -9253,18 +9302,12 @@ export default function App() {
             <div className="companyModalHeader">
               <div>
                 <div style={{ fontWeight: 700 }}>
-                  {newThingWizardKind === "dm"
-                    ? "Новый личный чат"
-                    : newThingWizardKind === "group"
-                      ? "Новая группа"
-                      : "Новый канал"}
+                  {newThingWizardKind === "dm" ? "Новый личный чат" : "Новая группа"}
                 </div>
                 <div style={{ fontSize: 12, opacity: 0.75, marginTop: 4 }}>
                   {newThingWizardKind === "dm"
                     ? "Только два человека: вы и собеседник. Не путайте с «Группой» в меню +."
-                    : newThingWizardKind === "group"
-                      ? "Выберите от 1 до 100 участников (вы сами будете добавлены автоматически)"
-                      : "Выберите участников — можно добавить всех сотрудников компании"}
+                    : "Выберите от 1 до 100 участников (вы сами будете добавлены автоматически)"}
                 </div>
               </div>
               <button type="button" className="chip" disabled={wizardBusy} onClick={closeNewThingWizard}>
@@ -9283,33 +9326,6 @@ export default function App() {
               </div>
             ) : null}
 
-            {newThingWizardKind === "channel" ? (
-              <div className="row" style={{ marginBottom: 10, flexWrap: "wrap", gap: 8 }}>
-                <input
-                  value={wizardChannelName}
-                  onChange={(e) => setWizardChannelName(e.target.value)}
-                  placeholder="Название канала"
-                  style={{ flex: 1, minWidth: 160 }}
-                />
-                <select
-                  value={wizardChannelType}
-                  onChange={(e) => setWizardChannelType(e.target.value as "public" | "private" | "broadcast")}
-                  style={{
-                    boxSizing: "border-box",
-                    padding: "8px 10px",
-                    borderRadius: 10,
-                    border: "1px solid rgba(255,255,255,0.12)",
-                    background: "rgba(0,0,0,0.25)",
-                    color: "inherit",
-                  }}
-                >
-                  <option value="public">public</option>
-                  <option value="private">private</option>
-                  <option value="broadcast">broadcast</option>
-                </select>
-              </div>
-            ) : null}
-
             <div className="row" style={{ marginBottom: 8, flexWrap: "wrap", gap: 8 }}>
               <input
                 value={wizardUserQuery}
@@ -9317,11 +9333,6 @@ export default function App() {
                 placeholder="Поиск по email или отделу"
                 style={{ flex: 1, minWidth: 0 }}
               />
-              {newThingWizardKind === "channel" ? (
-                <button type="button" onClick={wizardSelectAllCompanyUsers} disabled={!users.length || wizardBusy}>
-                  Все сотрудники
-                </button>
-              ) : null}
             </div>
 
             {wizardError ? (
@@ -9365,8 +9376,8 @@ export default function App() {
 
             <div className="row" style={{ marginTop: 12, justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
               <div style={{ fontSize: 12, opacity: 0.8 }}>
-                {newThingWizardKind === "group" || newThingWizardKind === "channel"
-                  ? `Выбрано: ${wizardSelectedUserIds.length}${newThingWizardKind === "group" ? " (макс. 100)" : ""}`
+                {newThingWizardKind === "group"
+                  ? `Выбрано: ${wizardSelectedUserIds.length} (макс. 100)`
                   : "\u00a0"}
               </div>
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
@@ -9374,11 +9385,7 @@ export default function App() {
                   Отмена
                 </button>
                 <button type="button" disabled={wizardBusy} onClick={() => void submitNewThingWizard()}>
-                  {newThingWizardKind === "dm"
-                    ? "Открыть чат"
-                    : newThingWizardKind === "group"
-                      ? "Создать группу"
-                      : "Создать канал"}
+                  {newThingWizardKind === "dm" ? "Открыть чат" : "Создать группу"}
                 </button>
               </div>
             </div>
