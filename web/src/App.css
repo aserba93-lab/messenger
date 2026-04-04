@@ -682,6 +682,25 @@ body {
   text-underline-offset: 2px;
   word-break: break-all;
 }
+
+.callInviteCard {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+}
+.callInviteCardJoinBtn {
+  font-weight: 600;
+}
+.callInviteCardBadge {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 3px 8px;
+  border-radius: 8px;
+  background: rgba(38, 165, 228, 0.2);
+  border: 1px solid rgba(38, 165, 228, 0.35);
+  color: var(--tg-accent);
+}
 .tgPopoverRow {
   display: flex;
   align-items: center;

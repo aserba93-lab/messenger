@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { CSSProperties, FormEvent, MouseEvent, ReactNode } from "react";
+import type { CSSProperties, FormEvent, MouseEvent } from "react";
 import { io, Socket } from "socket.io-client";
 import * as XLSX from "xlsx";
 import { acceptIncomingOffer, debugIceServers, startOutgoingCall, type ActiveCall } from "./webrtcDm";
@@ -510,18 +510,22 @@ function formatGqlUserMessage(msg: string): string {
   return t;
 }
 
-/** Сообщение — только ссылка-приглашение на созвон: показываем «Созвон», href полный */
-function bareCallInviteLinkNode(content: string | null | undefined): ReactNode | null {
+const GROUP_CALL_INVITE_LIVE_MS = 45 * 60 * 1000;
+
+/** Ссылка-приглашение в сообщении: группа или личка */
+function parseCallInviteFromContent(content: string | null | undefined): { type: "group"; groupId: string } | { type: "dm" } | null {
   const t = String(content ?? "").trim();
   if (!t) return null;
-  const isGroup = /^https?:\/\/\S+#group=[^&\s]+&gcall=1\s*$/i.test(t);
-  const isDm = /^https?:\/\/\S+#dm=[^&\s]+&call=1\s*$/i.test(t);
-  if (!isGroup && !isDm) return null;
-  return (
-    <a className="tgCallInviteLink" href={t} onClick={(e) => e.stopPropagation()}>
-      Созвон
-    </a>
-  );
+  const groupM = t.match(/[#&?]group=([^&\s#]+)/i);
+  if (groupM && /gcall=1/i.test(t)) {
+    try {
+      return { type: "group", groupId: decodeURIComponent(groupM[1]) };
+    } catch {
+      return { type: "group", groupId: groupM[1] };
+    }
+  }
+  if (/[#&?]dm=[^&\s#]+/i.test(t) && /call=1/i.test(t)) return { type: "dm" };
+  return null;
 }
 
 /** Одна «стикерная» графема (эмодзи) — для увеличенного отображения в чате */
@@ -981,6 +985,14 @@ export default function App() {
   const [groupCallPreJoinCam, setGroupCallPreJoinCam] = useState(true);
   /** Входящий offer группового mesh — подключение только по кнопке «Присоединиться» */
   const [pendingGroupMeshIncoming, setPendingGroupMeshIncoming] = useState<any>(null);
+  const pendingGroupMeshIncomingRef = useRef<any>(null);
+  useEffect(() => {
+    pendingGroupMeshIncomingRef.current = pendingGroupMeshIncoming;
+  }, [pendingGroupMeshIncoming]);
+  /** Созвон «идёт» (приглашение или мы в mesh) — для кнопки на карточке в ленте */
+  const [groupCallLiveAt, setGroupCallLiveAt] = useState<Record<string, number>>({});
+  /** Модалка мик/кам с карточки «Созвон» в сообщении */
+  const [inviteCardJoinModal, setInviteCardJoinModal] = useState<null | { groupChatId: string }>(null);
   const groupMeshSessionRef = useRef<GroupMeshSession | null>(null);
   const groupMeshUiRef = useRef<typeof groupMeshUi>(null);
   useEffect(() => {
@@ -1002,7 +1014,9 @@ export default function App() {
   const groupMeshJoiningRef = useRef(false);
   const meshSignalIceBufferRef = useRef<Record<string, unknown[]>>({});
   const meshOfferWhileJoiningRef = useRef<unknown[]>([]);
-  const joinGroupMeshFromPeerOfferRef = useRef<(data: any) => Promise<void>>(async () => {});
+  const joinGroupMeshFromPeerOfferRef = useRef<(data: any, mediaPrefs?: { mic: boolean; cam: boolean }) => Promise<void>>(
+    async () => {},
+  );
   const sidebarChatsScrollRef = useRef<HTMLDivElement | null>(null);
   const pullRefreshLockRef = useRef(false);
   const refreshChatsAndPresenceRef = useRef<() => Promise<void>>(async () => {});
@@ -3134,6 +3148,7 @@ export default function App() {
       }
       if (gc && p.type === "offer" && p.sdp && !mesh) {
         setPendingGroupMeshIncoming(data);
+        setGroupCallLiveAt((prev) => ({ ...prev, [gc]: Date.now() }));
         return;
       }
       // Trickle ICE до принятия входящего: иначе события теряются (слушатель в webrtcDm ещё не зарегистрирован).
@@ -3248,6 +3263,7 @@ export default function App() {
       if (!showed) {
         pushAppToast(`Групповой звонок: ${label} (${audioOnly ? "аудио" : "видео"})`);
       }
+      setGroupCallLiveAt((prev) => ({ ...prev, [gc]: Date.now() }));
       try {
         if (typeof navigator !== "undefined" && typeof (navigator as Navigator & { vibrate?: (p: number | number[]) => boolean }).vibrate === "function") {
           (navigator as Navigator & { vibrate?: (p: number | number[]) => boolean }).vibrate?.([80, 50, 80]);
@@ -3597,7 +3613,10 @@ export default function App() {
     groupMeshJoiningRef.current = false;
   }, []);
 
-  async function joinGroupMeshFromPeerOffer(data: any) {
+  async function joinGroupMeshFromPeerOffer(
+    data: any,
+    mediaPrefs?: { mic: boolean; cam: boolean },
+  ) {
     if (groupMeshJoiningRef.current || groupMeshSessionRef.current) return;
     if (webrtcBusyRef.current) {
       setChatError("Сначала завершите текущий звонок");
@@ -3619,6 +3638,8 @@ export default function App() {
     groupMeshJoiningRef.current = true;
     webrtcBusyRef.current = true;
     const audioOnly = !String(p.sdp).includes("m=video");
+    const initialMic = mediaPrefs?.mic ?? true;
+    const initialCam = mediaPrefs != null ? mediaPrefs.cam && !audioOnly : !audioOnly;
     const callerLabel = displayUser(from);
     try {
       if (typeof Notification !== "undefined" && Notification.permission === "granted") {
@@ -3644,8 +3665,8 @@ export default function App() {
         myUserId: uid,
         peerUserIds: memberIds,
         audioOnly,
-        initialMicEnabled: true,
-        initialCamEnabled: !audioOnly,
+        initialMicEnabled: initialMic,
+        initialCamEnabled: initialCam,
         onRemoteStream: (peerId, stream) => {
           setGroupMeshUi((prev) => (prev ? { ...prev, remotes: { ...prev.remotes, [peerId]: stream } } : prev));
         },
@@ -3670,6 +3691,7 @@ export default function App() {
         remotes: {},
         hangup: hangupGroupMesh,
       });
+      setGroupCallLiveAt((prev) => ({ ...prev, [gc]: Date.now() }));
       const bufKey = `${gc}:${from}`;
       const buffered = meshSignalIceBufferRef.current[bufKey];
       if (buffered?.length) {
@@ -3749,6 +3771,7 @@ export default function App() {
         remotes: {},
         hangup: hangupGroupMesh,
       });
+      setGroupCallLiveAt((prev) => ({ ...prev, [activeGroupChat.id]: Date.now() }));
       await session.startOfferers(peerIds);
       sock.emit("groupCall:invite", { groupChatId: activeGroupChat.id, audioOnly, inviteUrl });
       void sendServiceMessageToCurrentChat(inviteUrl);
@@ -7681,7 +7704,7 @@ export default function App() {
                       const d = pendingGroupMeshIncoming;
                       if (!d) return;
                       setPendingGroupMeshIncoming(null);
-                      void joinGroupMeshFromPeerOfferRef.current(d);
+                      void joinGroupMeshFromPeerOfferRef.current(d, { mic: groupCallPreJoinMic, cam: groupCallPreJoinCam });
                     }}
                   >
                     Присоединиться к встрече
@@ -8018,9 +8041,44 @@ export default function App() {
                   )
                 ) : (
                   (() => {
-                    const invite = bareCallInviteLinkNode(m.content);
-                    if (invite) return invite;
-                    return m.content ? m.content : "(удалено)";
+                    const inv = parseCallInviteFromContent(m.content);
+                    if (!inv) return m.content ? m.content : "(удалено)";
+                    const href = String(m.content ?? "").trim();
+                    if (inv.type === "dm") {
+                      return (
+                        <a className="tgCallInviteLink" href={href} onClick={(e) => e.stopPropagation()}>
+                          Созвон
+                        </a>
+                      );
+                    }
+                    const gid = inv.groupId;
+                    const inThisCall = groupMeshUi?.groupChatId === gid;
+                    const live =
+                      (groupCallLiveAt[gid] != null && Date.now() - groupCallLiveAt[gid] < GROUP_CALL_INVITE_LIVE_MS) ||
+                      inThisCall;
+                    const inThisChat = mode === "groups" && activeGroupChat?.id === gid;
+                    const showJoin = inThisChat && live && !inThisCall && canStartCalls;
+                    return (
+                      <div className="callInviteCard" onClick={(e) => e.stopPropagation()}>
+                        <a className="tgCallInviteLink" href={href} onClick={(e) => e.stopPropagation()}>
+                          Созвон
+                        </a>
+                        {showJoin ? (
+                          <button
+                            type="button"
+                            className="chip chip--compact callInviteCardJoinBtn"
+                            disabled={!socket}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setInviteCardJoinModal({ groupChatId: gid });
+                            }}
+                          >
+                            Присоединиться
+                          </button>
+                        ) : null}
+                        {inThisCall && inThisChat ? <span className="callInviteCardBadge">В созвоне</span> : null}
+                      </div>
+                    );
                   })()
                 )}
                 <span className="bubbleTime">
@@ -8470,6 +8528,72 @@ export default function App() {
                   }}
                 >
                   {callJoinModalKind === "dm" ? "Позвонить" : "Присоединиться к встрече"}
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : null}
+        {inviteCardJoinModal ? (
+          <div className="modalBackdrop" role="presentation" onClick={() => setInviteCardJoinModal(null)}>
+            <div
+              className="modalPanel groupCallJoinModal"
+              role="dialog"
+              aria-labelledby="inviteCardJoinTitle"
+              aria-modal="true"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="groupCallJoinModalVisual" aria-hidden>
+                📹
+              </div>
+              <h2 id="inviteCardJoinTitle" className="groupCallJoinModalTitle">
+                Подключение к встрече
+              </h2>
+              <p className="groupCallJoinModalHint">Выберите камеру и микрофон перед входом</p>
+              <div className="groupCallJoinToggles">
+                <button
+                  type="button"
+                  className={`groupCallJoinToggle ${groupCallPreJoinCam ? "groupCallJoinToggle--on" : "groupCallJoinToggle--off"}`}
+                  onClick={() => setGroupCallPreJoinCam((v) => !v)}
+                >
+                  {groupCallPreJoinCam ? "📷 Видео включено" : "📷 Видео выключено"}
+                </button>
+                <button
+                  type="button"
+                  className={`groupCallJoinToggle ${groupCallPreJoinMic ? "groupCallJoinToggle--on" : "groupCallJoinToggle--off"}`}
+                  onClick={() => setGroupCallPreJoinMic((v) => !v)}
+                >
+                  {groupCallPreJoinMic ? "🎤 Микрофон включён" : "🎤 Микрофон выключен"}
+                </button>
+              </div>
+              <p className="groupCallJoinModalMeta">Одновременно до {GROUP_MESH_MAX_PEERS} участников (не считая вас)</p>
+              <div className="groupCallJoinActions">
+                <button type="button" className="chip" onClick={() => setInviteCardJoinModal(null)}>
+                  Отмена
+                </button>
+                <button
+                  type="button"
+                  className="chip groupCallJoinPrimary"
+                  onClick={() => {
+                    const gid = inviteCardJoinModal.groupChatId;
+                    setInviteCardJoinModal(null);
+                    const offerSnap = pendingGroupMeshIncomingRef.current;
+                    const prefs = { video: groupCallPreJoinCam, mic: groupCallPreJoinMic };
+                    if (offerSnap && String(offerSnap.groupChatId ?? "") === gid) {
+                      setPendingGroupMeshIncoming(null);
+                      void joinGroupMeshFromPeerOffer(offerSnap, {
+                        mic: groupCallPreJoinMic,
+                        cam: groupCallPreJoinCam,
+                      });
+                      return;
+                    }
+                    if (activeGroupChat?.id !== gid) {
+                      setChatError("Откройте этот групповой чат и нажмите снова");
+                      return;
+                    }
+                    void startGroupMesh(prefs);
+                  }}
+                >
+                  Готово
                 </button>
               </div>
             </div>

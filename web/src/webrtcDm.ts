@@ -256,10 +256,8 @@ export async function startOutgoingCall(
     });
   };
 
-  const offer = await pc.createOffer({
-    offerToReceiveAudio: true,
-    offerToReceiveVideo: !opts.audioOnly,
-  });
+  // Без legacy offerToReceive* — при addTrack() они дают лишние m-line и часто ломают входящее видео у инициатора (Unified Plan).
+  const offer = await pc.createOffer();
   await pc.setLocalDescription(offer);
   socket.emit("call:signal", {
     targetUserId: target,
