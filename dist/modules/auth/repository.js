@@ -303,6 +303,7 @@ export class AuthRepository {
             department: m.department,
             title: m.title,
             role: m.role,
+            chatFoldersJson: null,
         }));
     }
     async createOrganizationUser(params) {
@@ -415,6 +416,11 @@ export class AuthRepository {
                     phone: params.patch.phone === undefined ? undefined : params.patch.phone,
                     statusEmoji: params.patch.statusEmoji === undefined ? undefined : params.patch.statusEmoji,
                     statusText: params.patch.statusText === undefined ? undefined : params.patch.statusText,
+                    chatFoldersJson: params.patch.chatFoldersJson === undefined
+                        ? undefined
+                        : params.patch.chatFoldersJson === null
+                            ? null
+                            : params.patch.chatFoldersJson,
                 },
             });
             const updatedMember = await tx.organizationMember.update({

@@ -40,6 +40,7 @@ export const UpdateUserInput = z.object({
     statusText: z.string().max(80).optional(),
     title: z.string().max(120).optional(),
     department: z.string().max(120).optional(),
+    chatFoldersJson: z.union([z.string().max(600000), z.null()]).optional(),
 });
 export const InviteUserInput = z.object({
     organizationId: z.string().min(1),

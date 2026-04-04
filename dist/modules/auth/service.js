@@ -107,6 +107,8 @@ export class AuthService {
     async updateUser(viewer, input) {
         if (input.userId !== viewer.userId && viewer.role !== "admin" && viewer.role !== "owner")
             throw new Error("Forbidden");
+        if (input.chatFoldersJson !== undefined && input.chatFoldersJson !== null && input.userId !== viewer.userId)
+            throw new Error("Forbidden");
         const out = await this.repo.updateUserProfile({
             organizationId: viewer.organizationId,
             actorUserId: viewer.userId,
@@ -123,6 +125,7 @@ export class AuthService {
                 status: input.status,
                 department: input.department,
                 title: input.title,
+                chatFoldersJson: input.chatFoldersJson,
             },
         });
         return out;

@@ -230,6 +230,8 @@ export const typeDefs = /* GraphQL */ `
     department: String
     role: OrgRole
     lastSeen: DateTime
+    """Состояние папок чатов (JSON), только у самого пользователя в me / при обновлении профиля."""
+    chatFoldersJson: String
   }
 
   type Organization {
@@ -454,6 +456,7 @@ export const typeDefs = /* GraphQL */ `
     statusText: String
     title: String
     department: String
+    chatFoldersJson: String
   }
 
   input UpdateGroupChatInput {

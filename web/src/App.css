@@ -621,7 +621,10 @@ body {
   grid-template-columns: 48px minmax(0, 1fr) auto;
   gap: 10px;
   align-items: center;
+  box-sizing: border-box;
+  height: 72px;
   min-height: 72px;
+  max-height: 72px;
   padding: 8px 10px;
   margin-bottom: 4px;
   border-radius: 12px;
@@ -859,6 +862,13 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.tgChatRow .tgChatTitle {
+  display: -webkit-box;
+  -webkit-line-clamp: 1;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-word;
+}
 .tgPresence {
   display: inline-block;
   width: 14px;
@@ -985,12 +995,17 @@ button.active {
 }
 .tgChatScopeFilterBtn {
   flex-shrink: 0;
-  max-width: 130px;
-  font-size: 12px;
-  padding: 0 10px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  width: 40px;
+  min-width: 40px;
+  height: 40px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.tgChatScopeFilterIcon {
+  display: block;
+  opacity: 0.92;
 }
 .tgChatScopePopover {
   min-width: 200px;
@@ -1338,7 +1353,7 @@ button.active {
   position: absolute;
   right: 16px;
   bottom: 16px;
-  z-index: 3;
+  z-index: 12;
   width: 44px;
   height: 44px;
   border-radius: 999px;

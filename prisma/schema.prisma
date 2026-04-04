@@ -108,6 +108,9 @@ model User {
   notificationPreferences NotificationPreference[]
 
   threadReadStates      ThreadReadState[]
+
+  /// JSON строка состояния папок чатов (tg:chatFolders:v1) для синхронизации между устройствами
+  chatFoldersJson       String?
 }
 
 /// Последняя отметка «прочитано до» по ключу треда: c:{channelId} | g:{groupChatId} | d:{directChatId}

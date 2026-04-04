@@ -4,8 +4,57 @@ import { io, Socket } from "socket.io-client";
 import * as XLSX from "xlsx";
 import { acceptIncomingOffer, debugIceServers, startOutgoingCall, type ActiveCall } from "./webrtcDm";
 import { createGroupMeshSession, GroupMeshSession, GROUP_MESH_MAX_PEERS } from "./webrtcGroupMesh";
-import { createFolderId, loadChatFolders, saveChatFolders, type ChatFolderState as UserChatFolderLayout } from "./chatFolders";
+import {
+  createFolderId,
+  loadChatFolders,
+  parseChatFolderStateJson,
+  saveChatFolders,
+  type ChatFolderState as UserChatFolderLayout,
+} from "./chatFolders";
 import "./App.css";
+
+/** Актуальный access token для fetch GraphQL, если замыкание передало undefined */
+const gqlAuthTokenRef = { current: "" };
+
+function GroupMeshRemoteVideo({ stream, userId }: { stream: MediaStream; userId: string }) {
+  const ref = useRef<HTMLVideoElement | null>(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    el.srcObject = stream;
+    try {
+      el.playsInline = true;
+      el.muted = false;
+    } catch {
+      /* ignore */
+    }
+    const play = () => void el.play().catch(() => {});
+    play();
+    const onTrack = () => play();
+    const tracks = stream.getTracks();
+    for (const t of tracks) {
+      t.addEventListener("unmute", onTrack);
+      t.addEventListener("mute", onTrack);
+      t.addEventListener("ended", onTrack);
+    }
+    const onMeta = () => play();
+    el.addEventListener("loadedmetadata", onMeta);
+    return () => {
+      el.removeEventListener("loadedmetadata", onMeta);
+      for (const t of tracks) {
+        t.removeEventListener("unmute", onTrack);
+        t.removeEventListener("mute", onTrack);
+        t.removeEventListener("ended", onTrack);
+      }
+      try {
+        el.srcObject = null;
+      } catch {
+        /* ignore */
+      }
+    };
+  }, [stream, userId]);
+  return <video className="groupMeshVideo" ref={ref} autoPlay playsInline />;
+}
 
 const TG_SESSION_KEY = "tg:session";
 const TG_LAST_OPEN_CHAT_KEY = "tg:lastOpenChat";
@@ -170,7 +219,8 @@ const defaultStickerCatalog = [
 
 async function gql<T>(query: string, variables: Record<string, unknown>, token?: string): Promise<T> {
   const headers: Record<string, string> = { "content-type": "application/json" };
-  if (token) headers.authorization = `Bearer ${token}`;
+  const auth = String(token ?? gqlAuthTokenRef.current ?? "").trim();
+  if (auth) headers.authorization = `Bearer ${auth}`;
   const res = await fetch(GQL, { method: "POST", headers, body: JSON.stringify({ query, variables }) });
   const raw = await res.text();
   let data: any = {};
@@ -545,6 +595,9 @@ export default function App() {
   const [workspaceId, setWorkspaceId] = useState(() => initialSession?.workspaceId ?? "");
 
   const [token, setToken] = useState(() => initialSession?.token ?? "");
+  useEffect(() => {
+    gqlAuthTokenRef.current = token;
+  }, [token]);
   const [userId, setUserId] = useState(() => initialSession?.userId ?? "");
   const [viewerRole, setViewerRole] = useState<"owner" | "admin" | "manager" | "employee" | "guest" | "">(
     () => (initialSession?.viewerRole as any) ?? "",
@@ -821,6 +874,8 @@ export default function App() {
   const [archivedChatByKey, setArchivedChatByKey] = useState<Record<string, boolean>>({});
   const [chatFolder, setChatFolder] = useState<"all" | "unread" | "archived">("all");
   const [userChatFolderLayout, setUserChatFolderLayout] = useState<UserChatFolderLayout>(() => loadChatFolders());
+  const chatFoldersHydratedRef = useRef(false);
+  const chatFoldersSkipServerSaveRef = useRef(false);
   const [chatFoldersEditorOpen, setChatFoldersEditorOpen] = useState(false);
   const [newChatFolderDraft, setNewChatFolderDraft] = useState("");
   /** Какие папки в списке чатов развёрнуты (строки как у чата). При смене активного чата сбрасываются. */
@@ -845,6 +900,22 @@ export default function App() {
   useEffect(() => {
     saveChatFolders(userChatFolderLayout);
   }, [userChatFolderLayout]);
+
+  useEffect(() => {
+    if (!chatFoldersHydratedRef.current || !token || !userId) return;
+    if (chatFoldersSkipServerSaveRef.current) {
+      chatFoldersSkipServerSaveRef.current = false;
+      return;
+    }
+    const t = window.setTimeout(() => {
+      void gql<{ updateUser: { id: string } }>(
+        `mutation($input: UpdateUserInput!) { updateUser(input: $input) { id } }`,
+        { input: { userId, chatFoldersJson: JSON.stringify(userChatFolderLayout) } },
+        token,
+      ).catch(() => {});
+    }, 1400);
+    return () => window.clearTimeout(t);
+  }, [userChatFolderLayout, token, userId]);
   const [chatMenu, setChatMenu] = useState<null | { x: number; y: number; key: string; sub: "main" | "notify" | "folder" }>(null);
   const chatMenuRef = useRef<HTMLDivElement | null>(null);
   const [callMenuOpen, setCallMenuOpen] = useState(false);
@@ -911,7 +982,7 @@ export default function App() {
     return () => window.clearInterval(id);
   }, [webrtcUi]);
 
-  /** Удалённое видео/аудио: Safari/iOS часто даёт чёрный экран при смешанном потоке — для видеозвонка разделяем дорожки: video только видео (muted), audio отдельно. */
+  /** Удалённое видео: один video с полным MediaStream; раздельные MediaStream только для видео/аудио на части движков давали чёрный кадр. Аудио с того же элемента (muted=false). */
   useEffect(() => {
     const stream = webrtcUi?.remoteStream ?? null;
     const videoEl = webrtcRemoteVideoRef.current;
@@ -937,16 +1008,13 @@ export default function App() {
       };
     }
 
-    if (!videoEl || !audioEl) return;
+    if (!videoEl) return;
+    if (audioEl) audioEl.srcObject = null;
     if (!stream) {
       videoEl.srcObject = null;
-      audioEl.srcObject = null;
       return;
     }
-    const vTracks = stream.getVideoTracks();
-    const aTracks = stream.getAudioTracks();
-    videoEl.srcObject = vTracks.length ? new MediaStream(vTracks) : null;
-    audioEl.srcObject = aTracks.length ? new MediaStream(aTracks) : null;
+    videoEl.srcObject = stream;
     try {
       videoEl.setAttribute("playsinline", "");
       videoEl.setAttribute("webkit-playsinline", "");
@@ -954,22 +1022,28 @@ export default function App() {
     } catch {
       /* ignore */
     }
-    videoEl.muted = true;
+    videoEl.muted = false;
+    const onMeta = () => tryPlay(videoEl);
+    videoEl.addEventListener("loadedmetadata", onMeta);
     tryPlay(videoEl);
-    tryPlay(audioEl);
     const onTrack = () => {
-      const v = stream.getVideoTracks();
-      const a = stream.getAudioTracks();
-      videoEl.srcObject = v.length ? new MediaStream(v) : null;
-      audioEl.srcObject = a.length ? new MediaStream(a) : null;
+      videoEl.srcObject = stream;
       tryPlay(videoEl);
-      tryPlay(audioEl);
     };
     stream.addEventListener("addtrack", onTrack);
     stream.addEventListener("removetrack", onTrack);
+    for (const t of stream.getTracks()) {
+      t.addEventListener("unmute", onTrack);
+      t.addEventListener("mute", onTrack);
+    }
     return () => {
+      videoEl.removeEventListener("loadedmetadata", onMeta);
       stream.removeEventListener("addtrack", onTrack);
       stream.removeEventListener("removetrack", onTrack);
+      for (const t of stream.getTracks()) {
+        t.removeEventListener("unmute", onTrack);
+        t.removeEventListener("mute", onTrack);
+      }
     };
   }, [
     webrtcUi?.audioOnly,
@@ -1790,7 +1864,7 @@ export default function App() {
     const hint = chatPullHintRef.current;
     const onScroll = () => {
       const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
-      const nearBottom = distance < 120;
+      const nearBottom = distance < 200;
       stickToBottomRef.current = nearBottom;
       setShowScrollToBottom(!nearBottom);
     };
@@ -2538,6 +2612,7 @@ export default function App() {
     socketRef.current = null;
     setSocket(null);
     setToken("");
+    chatFoldersHydratedRef.current = false;
     setUserId("");
     setViewerRole("");
     setSystemAccessLevel("");
@@ -3036,6 +3111,14 @@ export default function App() {
     socketRef.current = s;
     setSocket(s);
   }
+
+  useEffect(() => {
+    if (!token) return;
+    const s = socketRef.current as (Socket & { auth?: { token?: string } }) | null;
+    if (s) {
+      s.auth = { ...(s.auth ?? {}), token };
+    }
+  }, [token]);
 
   useEffect(() => {
     if (!token) return;
@@ -3842,12 +3925,23 @@ export default function App() {
 
   useEffect(() => {
     if (!token || !organizationId) return;
+    const refresh = () => void loadUsersRef.current?.();
     const onVis = () => {
       if (document.visibilityState !== "visible") return;
-      void loadUsersRef.current?.();
+      refresh();
+    };
+    const onFocus = () => refresh();
+    const onPageShow = () => {
+      if (document.visibilityState === "visible") refresh();
     };
     document.addEventListener("visibilitychange", onVis);
-    return () => document.removeEventListener("visibilitychange", onVis);
+    window.addEventListener("focus", onFocus);
+    window.addEventListener("pageshow", onPageShow);
+    return () => {
+      document.removeEventListener("visibilitychange", onVis);
+      window.removeEventListener("focus", onFocus);
+      window.removeEventListener("pageshow", onPageShow);
+    };
   }, [token, organizationId]);
 
   useEffect(() => {
@@ -3882,6 +3976,36 @@ export default function App() {
         if (workspaceId) await loadChannels({ emptySelection: avoidAutoFirstChat });
         if (cancelled) return;
         connectSocket();
+        try {
+          const folderData = await gql<{ me: { id: string; chatFoldersJson?: string | null } }>(
+            `query { me { id chatFoldersJson } }`,
+            {},
+            token,
+          );
+          const meId = folderData.me?.id;
+          const raw = folderData.me?.chatFoldersJson;
+          const remote = raw && String(raw).trim() ? parseChatFolderStateJson(String(raw)) : null;
+          const local = loadChatFolders();
+          const remoteNonempty = remote && (remote.folders.length > 0 || Object.keys(remote.assignment).length > 0);
+          if (remoteNonempty && remote) {
+            chatFoldersSkipServerSaveRef.current = true;
+            setUserChatFolderLayout(remote);
+            saveChatFolders(remote);
+          } else if (
+            (local.folders.length > 0 || Object.keys(local.assignment).length > 0) &&
+            meId
+          ) {
+            await gql(
+              `mutation($input: UpdateUserInput!) { updateUser(input: $input) { id } }`,
+              { input: { userId: meId, chatFoldersJson: JSON.stringify(local) } },
+              token,
+            );
+          }
+        } catch {
+          /* ignore */
+        } finally {
+          chatFoldersHydratedRef.current = true;
+        }
         try {
           if (savedChatKey) await openChatFromList(savedChatKey);
         } catch {
@@ -5836,14 +5960,7 @@ export default function App() {
               {Object.entries(groupMeshUi.remotes).map(([pid, stream]) => (
                 <div key={pid} className="groupMeshCell">
                   {stream && !groupMeshUi.audioOnly ? (
-                    <video
-                      className="groupMeshVideo"
-                      autoPlay
-                      playsInline
-                      ref={(el) => {
-                        if (el && stream) el.srcObject = stream;
-                      }}
-                    />
+                    <GroupMeshRemoteVideo userId={pid} stream={stream} />
                   ) : (
                     <div className="groupMeshAudioOnly">{displayUser(pid)}</div>
                   )}
@@ -6026,7 +6143,7 @@ export default function App() {
             <button
               type="button"
               className="tgCircleBtn"
-              title="Папки с чатами (только на этом устройстве)"
+              title="Папки с чатами (синхронизируются с аккаунтом)"
               onClick={() => setChatFoldersEditorOpen(true)}
             >
               📁
@@ -6034,19 +6151,34 @@ export default function App() {
             <button
               type="button"
               className="tgCircleBtn tgChatScopeFilterBtn"
-              title="Показать: все чаты, личные, группы или каналы"
+              title={
+                chatListScope === "all"
+                  ? "Фильтр списка: все чаты"
+                  : chatListScope === "dms"
+                    ? "Фильтр: личные чаты"
+                    : chatListScope === "groups"
+                      ? "Фильтр: группы"
+                      : "Фильтр: каналы"
+              }
+              aria-label={
+                chatListScope === "all"
+                  ? "Фильтр: все чаты"
+                  : chatListScope === "dms"
+                    ? "Фильтр: личные"
+                    : chatListScope === "groups"
+                      ? "Фильтр: группы"
+                      : "Фильтр: каналы"
+              }
               aria-expanded={chatListFilterOpen}
               aria-haspopup="menu"
               onClick={() => setChatListFilterOpen((v) => !v)}
             >
-              {chatListScope === "all"
-                ? "Все чаты"
-                : chatListScope === "dms"
-                  ? "Личные"
-                  : chatListScope === "groups"
-                    ? "Группы"
-                    : "Каналы"}{" "}
-              ▾
+              <svg className="tgChatScopeFilterIcon" width="18" height="18" viewBox="0 0 24 24" aria-hidden>
+                <path
+                  fill="currentColor"
+                  d="M10 18h4v-2h-4v2zM3 6v2h18V6H3zm3 7h12v-2H6v2z"
+                />
+              </svg>
             </button>
             {chatListFilterOpen ? (
               <div className="tgPopoverMenu tgChatScopePopover" role="menu">
@@ -8019,15 +8151,9 @@ export default function App() {
                       ref={webrtcRemoteVideoRef}
                       autoPlay
                       playsInline
-                      muted
                       className="webrtcRemote"
                     />
-                    <audio
-                      ref={webrtcRemoteAudioRef}
-                      autoPlay
-                      playsInline
-                      className="webrtcRemote webrtcRemote--videoCallAudio"
-                    />
+                    <audio ref={webrtcRemoteAudioRef} playsInline className="webrtcRemote webrtcRemote--videoCallAudio" hidden />
                   </>
                 )}
                 {!webrtcUi.audioOnly ? (

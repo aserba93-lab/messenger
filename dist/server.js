@@ -236,8 +236,10 @@ const yoga = createYoga({
         maskError: (err) => err,
     },
     context: async ({ request, response }) => {
-        const authHeader = request?.headers?.get?.("authorization") ?? undefined;
-        const token = authHeader?.startsWith("Bearer ") ? authHeader.slice("Bearer ".length) : undefined;
+        const rawAuth = request?.headers?.get?.("authorization") ?? request?.headers?.get?.("Authorization") ?? "";
+        const token = /^Bearer\s+/i.test(String(rawAuth))
+            ? String(rawAuth).replace(/^Bearer\s+/i, "").trim() || undefined
+            : undefined;
         const payload = token ? verifyAccessToken(token) : null;
         let viewer = null;
         if (payload) {

@@ -23,6 +23,7 @@ function mapUserWithMember(member) {
         department: member.department,
         role: member.role,
         lastSeen: member.user.lastSeen,
+        chatFoldersJson: member.user.chatFoldersJson ?? null,
     };
 }
 export const authResolvers = {
@@ -80,7 +81,10 @@ export const authResolvers = {
             if (viewer.organizationId !== args.organizationId)
                 throw new Error("Forbidden");
             const member = await ctx.authService.getUser(viewer, args.id);
-            return mapUserWithMember(member);
+            const u = mapUserWithMember(member);
+            if (String(args.id) !== String(viewer.userId))
+                return { ...u, chatFoldersJson: null };
+            return u;
         },
     },
     Mutation: {
@@ -162,6 +166,7 @@ export const authResolvers = {
                 statusText: input.statusText,
                 department: input.department,
                 title: input.title,
+                chatFoldersJson: input.chatFoldersJson,
             });
             return mapUserWithMember({ ...out.member, user: out.user });
         },
