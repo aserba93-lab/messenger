@@ -144,14 +144,15 @@ function isIosLikeBrowser(): boolean {
   return false;
 }
 
-/** Открыто с ярлыка «На экран Домой» (iOS / часть Android). В этом режиме апгрейд Socket.IO до WebSocket часто рвётся — остаёмся на long-polling. */
+/** Открыто с ярлыка «На экран Домой» / установленное PWA. Без display-mode: fullscreen — иначе обычная вкладка в полноэкранном режиме (F11) ошибочно считается PWA. */
 function isStandaloneWebApp(): boolean {
   if (typeof window === "undefined") return false;
   try {
     const nav = window.navigator as Navigator & { standalone?: boolean };
     if (nav.standalone === true) return true;
     if (window.matchMedia?.("(display-mode: standalone)")?.matches) return true;
-    if (window.matchMedia?.("(display-mode: fullscreen)")?.matches) return true;
+    if (window.matchMedia?.("(display-mode: minimal-ui)")?.matches) return true;
+    if (window.matchMedia?.("(display-mode: window-controls-overlay)")?.matches) return true;
   } catch {
     /* ignore */
   }
@@ -902,7 +903,10 @@ export default function App() {
     webrtcUi?.audioOnly,
     webrtcUi?.remoteStream,
     webrtcUi?.remoteStream
-      ? webrtcUi.remoteStream.getTracks().map((t) => `${t.id}:${t.readyState}`).join("|")
+      ? webrtcUi.remoteStream
+          .getTracks()
+          .map((t) => `${t.id}:${t.readyState}:${t.muted ? "m" : "u"}`)
+          .join("|")
       : "",
   ]);
   const userIdRef = useRef("");
@@ -2383,8 +2387,8 @@ export default function App() {
     });
     s.on("connect", () => {
       pushLog(pwaStandalone ? "Socket подключен (ярлык на Домой, long-polling)." : "Socket подключен.");
-      if (pwaStandalone && organizationId.trim()) {
-        window.setTimeout(() => void loadUsers(), 700);
+      if (organizationId.trim()) {
+        window.setTimeout(() => void loadUsers(), 500);
       }
     });
     s.on("connect_error", (err: Error) => {
@@ -2462,14 +2466,15 @@ export default function App() {
         v === "forever" ||
         (v && v !== "forever" && !Number.isNaN(Date.parse(v)) && Date.now() < Date.parse(v));
 
+      const isCallOrMeetHint = /🎥|📞|Видеозвонок|видеовстреч|Аудиозвонок|видеовстречи/i.test(String(msg.content ?? ""));
       const shouldNotify =
         key &&
         !muted &&
         !fromMe &&
-        browserNotifyRef.current &&
         typeof Notification !== "undefined" &&
         Notification.permission === "granted" &&
-        (!isActive || tabHidden);
+        (!isActive || tabHidden) &&
+        (browserNotifyRef.current || isCallOrMeetHint);
 
       if (shouldNotify) {
         try {
@@ -2663,12 +2668,8 @@ export default function App() {
       incomingCallIceBufferRef.current = [];
       const audioOnly = !String(p.sdp).includes("m=video");
       setIncomingCall({ fromUserId: from, offerSdp: p.sdp, audioOnly });
-      // OS notification for incoming call (when tab is hidden / another tab)
-      if (
-        browserNotifyRef.current &&
-        typeof Notification !== "undefined" &&
-        Notification.permission === "granted"
-      ) {
+      // Входящий звонок: уведомление при разрешении, даже если отключены «обычные» уведомления о сообщениях
+      if (typeof Notification !== "undefined" && Notification.permission === "granted") {
         try {
           const caller = displayUser(from);
           const n = new Notification(caller || "Входящий звонок", {
@@ -2688,21 +2689,6 @@ export default function App() {
               /* ignore */
             }
           };
-        } catch {
-          /* ignore */
-        }
-      }
-      if (
-        browserNotifyRef.current &&
-        typeof Notification !== "undefined" &&
-        Notification.permission === "granted"
-      ) {
-        try {
-          new Notification("Sales factory", {
-            body: audioOnly ? "Входящий аудиозвонок" : "Входящий видеозвонок",
-            tag: `call:${from}:${Date.now()}`,
-            requireInteraction: typeof document !== "undefined" && document.hidden,
-          });
         } catch {
           /* ignore */
         }

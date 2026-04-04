@@ -80,21 +80,27 @@ function makeIceCandidateQueue(pc: RTCPeerConnection) {
 
 function attachRemoteTracks(pc: RTCPeerConnection, onRemoteStream: (s: MediaStream) => void) {
   const remoteMediaStream = new MediaStream();
+  const notify = () => onRemoteStream(remoteMediaStream);
   pc.ontrack = (ev) => {
     const t = ev.track;
     const existing = remoteMediaStream.getTracks().some((x) => x.id === t.id);
     if (!existing) {
       remoteMediaStream.addTrack(t);
     }
+    // Пока трек «muted» в браузере, картинки может не быть — обновляем при unmute.
+    t.addEventListener("unmute", notify);
+    t.addEventListener("mute", notify);
     t.addEventListener("ended", () => {
       try {
         remoteMediaStream.removeTrack(t);
       } catch {
         /* ignore */
       }
-      onRemoteStream(remoteMediaStream);
+      t.removeEventListener("unmute", notify);
+      t.removeEventListener("mute", notify);
+      notify();
     });
-    onRemoteStream(remoteMediaStream);
+    notify();
   };
 }
 
