@@ -2424,22 +2424,30 @@ export default function App() {
     socketRef.current = null;
     const iosLike = isIosLikeBrowser();
     const standalone = isStandaloneWebApp();
-    // Любое приложение с экрана «Домой» (iOS/Android): WebSocket к Socket.IO часто нестабилен — только long-polling.
+    /** PWA раньше были только polling + upgrade:false — на балансировщике без sticky каждый poll мог попадать на разный инстанс и рвать сессию/presence. Стартуем с polling, затем upgrade на websocket. */
     const pwaStandalone = standalone;
     const s = io(SOCKET_URL, {
       auth: { token },
       path: "/socket.io/",
-      transports: pwaStandalone ? ["polling"] : iosLike ? ["polling", "websocket"] : ["websocket", "polling"],
-      upgrade: !pwaStandalone,
+      transports: pwaStandalone || iosLike ? ["polling", "websocket"] : ["websocket", "polling"],
+      upgrade: true,
       reconnection: true,
       reconnectionAttempts: 25,
       reconnectionDelay: 800,
     });
+    const refreshPresenceFromApi = () => {
+      if (!organizationId.trim()) return;
+      void loadUsers();
+      window.setTimeout(() => void loadUsers(), 450);
+      window.setTimeout(() => void loadUsers(), 2200);
+    };
     s.on("connect", () => {
-      pushLog(pwaStandalone ? "Socket подключен (ярлык на Домой, long-polling)." : "Socket подключен.");
-      if (organizationId.trim()) {
-        window.setTimeout(() => void loadUsers(), 500);
-      }
+      pushLog(pwaStandalone ? "Socket подключен (PWA/ярлык, polling→websocket)." : "Socket подключен.");
+      refreshPresenceFromApi();
+    });
+    s.on("reconnect", () => {
+      pushLog("Socket переподключён.");
+      refreshPresenceFromApi();
     });
     s.on("connect_error", (err: Error) => {
       pushLog(`Socket ошибка: ${err?.message || "connect_error"} (проверьте прокси /socket.io/ на nginx)`);
@@ -2595,7 +2603,7 @@ export default function App() {
         if (!osShown && wantPing) {
           pushAppToast(`${fromLabelPreview}: ${bodyPreview.slice(0, 120)}`);
         }
-      } else if (wantPing && (isCallOrMeetHint || browserNotifyRef.current)) {
+      } else if (wantPing) {
         pushAppToast(`${fromLabelPreview}: ${bodyPreview.slice(0, 120)}`);
       }
       if (
