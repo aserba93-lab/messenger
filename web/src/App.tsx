@@ -119,6 +119,17 @@ function getSocketUrl(): string {
   return API_BASE || (typeof window !== "undefined" ? window.location.origin : "");
 }
 const SOCKET_URL = getSocketUrl();
+
+/** Safari / веб-приложение на экране «Домой» на iOS: чистый WebSocket к Socket.IO часто не поднимается — сначала long-polling. */
+function isIosLikeBrowser(): boolean {
+  if (typeof navigator === "undefined") return false;
+  const ua = navigator.userAgent || "";
+  if (/iPhone|iPad|iPod/i.test(ua)) return true;
+  const nav = navigator as Navigator & { maxTouchPoints?: number };
+  if (navigator.platform === "MacIntel" && (nav.maxTouchPoints ?? 0) > 1) return true;
+  return false;
+}
+
 const quickEmojis = ["👍", "❤️", "😂", "🔥", "🎉", "😮"];
 const defaultStickerCatalog = [
   { id: "basic-emoji", title: "Basic Emoji", stickers: ["😀", "😁", "😂", "😍", "🤝", "👍", "🔥", "🎉"] },
@@ -543,6 +554,7 @@ export default function App() {
   const [typingUserIds, setTypingUserIds] = useState<string[]>([]);
   const [log, setLog] = useState<string[]>([]);
   const [socket, setSocket] = useState<Socket | null>(null);
+  const socketRef = useRef<Socket | null>(null);
   const [showSaved, setShowSaved] = useState(false);
   const [savedIds, setSavedIds] = useState<Set<string>>(new Set());
   const [showPins, setShowPins] = useState(false);
@@ -2102,10 +2114,11 @@ export default function App() {
       // ignore
     }
     try {
-      socket?.disconnect();
+      socketRef.current?.disconnect();
     } catch {
       // ignore
     }
+    socketRef.current = null;
     setSocket(null);
     setToken("");
     setUserId("");
@@ -2136,11 +2149,17 @@ export default function App() {
 
   function connectSocket() {
     if (!token) return;
-    if (socket) socket.disconnect();
+    try {
+      socketRef.current?.disconnect();
+    } catch {
+      /* ignore */
+    }
+    socketRef.current = null;
+    const iosLike = isIosLikeBrowser();
     const s = io(SOCKET_URL, {
       auth: { token },
       path: "/socket.io/",
-      transports: ["websocket", "polling"],
+      transports: iosLike ? ["polling", "websocket"] : ["websocket", "polling"],
       reconnection: true,
       reconnectionAttempts: 25,
       reconnectionDelay: 800,
@@ -2160,8 +2179,8 @@ export default function App() {
         for (const it of items) {
           const uid = String(it?.userId ?? "");
           if (!uid) continue;
-          const status = String(it?.status ?? "");
-          if (!status) continue;
+          const raw = it?.status;
+          const status = raw != null && String(raw) !== "" ? String(raw) : "offline";
           next[uid] = {
             status,
             lastSeen: it?.lastSeen != null ? String(it.lastSeen) : next[uid]?.lastSeen,
@@ -2458,8 +2477,30 @@ export default function App() {
       if (!from || from !== webrtcPeerRef.current) return;
       setWebrtcPeerHandRaised(!!data?.raised);
     });
+    socketRef.current = s;
     setSocket(s);
   }
+
+  useEffect(() => {
+    if (!token) return;
+    const onVisible = () => {
+      if (typeof document === "undefined" || document.visibilityState !== "visible") return;
+      const s = socketRef.current;
+      if (s && !s.connected) {
+        try {
+          s.connect();
+        } catch {
+          /* ignore */
+        }
+      }
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("pageshow", onVisible);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("pageshow", onVisible);
+    };
+  }, [token]);
 
   function emitTypingStart() {
     if (!socket) return;
