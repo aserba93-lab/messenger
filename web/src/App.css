@@ -44,6 +44,39 @@ body {
   font-family: Inter, "Segoe UI", Roboto, Arial, sans-serif;
 }
 
+/* Когда системные уведомления недоступны (часто Android WebView / без разрешения) */
+.appToast {
+  position: fixed;
+  top: max(12px, env(safe-area-inset-top, 12px));
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 100002;
+  max-width: min(92vw, 440px);
+  padding: 12px 38px 12px 14px;
+  border-radius: 12px;
+  background: var(--tg-bg-elevated);
+  border: 1px solid var(--tg-border-subtle);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.38);
+  font-size: 14px;
+  line-height: 1.35;
+  color: var(--tg-text);
+}
+.appToastClose {
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  border: none;
+  background: transparent;
+  color: var(--tg-muted);
+  cursor: pointer;
+  font-size: 20px;
+  line-height: 1;
+  padding: 4px 8px;
+}
+.appToastText {
+  word-break: break-word;
+}
+
 .authPage {
   height: 100vh;
   display: grid;

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, FormEvent, MouseEvent } from "react";
 import { io, Socket } from "socket.io-client";
 import * as XLSX from "xlsx";
@@ -970,6 +970,19 @@ export default function App() {
   }, [users, userId, wizardUserQuery, newThingWizardKind]);
 
   const [presenceByUserId, setPresenceByUserId] = useState<Record<string, { status: string; lastSeen?: string }>>({});
+  const presenceByUserIdRef = useRef(presenceByUserId);
+  useEffect(() => {
+    presenceByUserIdRef.current = presenceByUserId;
+  }, [presenceByUserId]);
+  /** Внутриприложенческое всплывающее уведомление, если OS Notification недоступен или не сработал. */
+  const [appToast, setAppToast] = useState<null | { text: string; id: number }>(null);
+  const pushAppToast = useCallback((text: string) => {
+    const id = Date.now();
+    setAppToast({ text, id });
+    window.setTimeout(() => {
+      setAppToast((t) => (t?.id === id ? null : t));
+    }, 5200);
+  }, []);
   const isCompanyAdmin = viewerRole === "owner" || viewerRole === "admin";
   useEffect(() => {
     if (!isCompanyAdmin) {
@@ -2414,6 +2427,15 @@ export default function App() {
         }
         return next;
       });
+      setUsers((prev) => {
+        const byId = new Map(items.map((it: any) => [String(it?.userId ?? ""), it]));
+        return prev.map((u) => {
+          const it = byId.get(u.id) as { status?: string | null } | undefined;
+          if (!it) return u;
+          const st = it.status != null && String(it.status) !== "" ? String(it.status) : u.status;
+          return { ...u, status: st as typeof u.status };
+        });
+      });
     });
     s.on("presence:update", (evt: any) => {
       const who = String(evt?.userId ?? "");
@@ -2421,6 +2443,7 @@ export default function App() {
       if (!who || !status) return;
       pushLog(`🟢 presence: ${displayUser(who)} -> ${status}`);
       setPresenceByUserId((prev) => ({ ...prev, [who]: { status, lastSeen: String(evt?.lastSeen ?? "") || undefined } }));
+      setUsers((prev) => prev.map((u) => (u.id === who ? { ...u, status: status as typeof u.status } : u)));
     });
     s.on("message:new", (m: any) => {
       const channelId = String(m.channelId ?? "");
@@ -2476,16 +2499,33 @@ export default function App() {
         (!isActive || tabHidden) &&
         (browserNotifyRef.current || isCallOrMeetHint);
 
-      if (shouldNotify) {
+      const bodyPreview =
+        msg.type === "voice"
+          ? "Голосовое сообщение"
+          : msg.type === "file"
+            ? "Файл"
+            : (msg.content || "Новое сообщение").slice(0, 160);
+      const fromLabelPreview = displayUserNameForSidebar(msg.author as any, String(msg.author?.email ?? "Участник"));
+
+      const wantPing = key && !muted && !fromMe && (!isActive || tabHidden);
+      if (wantPing) {
         try {
-          const body =
-            msg.type === "voice"
-              ? "Голосовое сообщение"
-              : msg.type === "file"
-                ? "Файл"
-                : (msg.content || "Новое сообщение").slice(0, 160);
-          const fromLabel = displayUserNameForSidebar(msg.author as any, String(msg.author?.email ?? "Участник"));
-          const n = new Notification(fromLabel || "Новое сообщение", { body, tag: key ? `${key}:${msg.id}` : "dm" });
+          if (typeof navigator !== "undefined" && typeof (navigator as Navigator & { vibrate?: (p: number | number[]) => boolean }).vibrate === "function") {
+            (navigator as Navigator & { vibrate?: (p: number | number[]) => boolean }).vibrate?.(85);
+          }
+        } catch {
+          /* ignore */
+        }
+      }
+
+      if (shouldNotify) {
+        let osShown = false;
+        try {
+          const n = new Notification(fromLabelPreview || "Новое сообщение", {
+            body: bodyPreview,
+            tag: key ? `${key}:${msg.id}` : "dm",
+          });
+          osShown = true;
           n.onclick = () => {
             try {
               window.focus();
@@ -2506,6 +2546,11 @@ export default function App() {
         } catch {
           /* ignore */
         }
+        if (!osShown && wantPing) {
+          pushAppToast(`${fromLabelPreview}: ${bodyPreview.slice(0, 120)}`);
+        }
+      } else if (wantPing && (isCallOrMeetHint || browserNotifyRef.current)) {
+        pushAppToast(`${fromLabelPreview}: ${bodyPreview.slice(0, 120)}`);
       }
       if (
         key &&
@@ -2668,15 +2713,16 @@ export default function App() {
       incomingCallIceBufferRef.current = [];
       const audioOnly = !String(p.sdp).includes("m=video");
       setIncomingCall({ fromUserId: from, offerSdp: p.sdp, audioOnly });
-      // Входящий звонок: уведомление при разрешении, даже если отключены «обычные» уведомления о сообщениях
+      const callerLabel = displayUser(from);
+      let incomingCallOs = false;
       if (typeof Notification !== "undefined" && Notification.permission === "granted") {
         try {
-          const caller = displayUser(from);
-          const n = new Notification(caller || "Входящий звонок", {
+          const n = new Notification(callerLabel || "Входящий звонок", {
             body: audioOnly ? "Входящий аудиозвонок" : "Входящий видеозвонок",
             tag: `call:${from}:${Date.now()}`,
             requireInteraction: typeof document !== "undefined" && document.hidden,
           });
+          incomingCallOs = true;
           n.onclick = () => {
             try {
               window.focus();
@@ -2692,6 +2738,16 @@ export default function App() {
         } catch {
           /* ignore */
         }
+      }
+      if (!incomingCallOs) {
+        pushAppToast(`${callerLabel || "Входящий звонок"} — ${audioOnly ? "аудио" : "видео"}`);
+      }
+      try {
+        if (typeof navigator !== "undefined" && typeof (navigator as Navigator & { vibrate?: (p: number | number[]) => boolean }).vibrate === "function") {
+          (navigator as Navigator & { vibrate?: (p: number | number[]) => boolean }).vibrate?.([90, 60, 90]);
+        }
+      } catch {
+        /* ignore */
       }
     });
     s.on("call:hand", (data: any) => {
@@ -3260,12 +3316,26 @@ export default function App() {
       { organizationId: orgId },
       t,
     );
-    setUsers(data.users);
+    const socketUp = !!socketRef.current?.connected;
+    const prevP = presenceByUserIdRef.current;
+    setUsers(
+      data.users.map((u) => {
+        let st =
+          u.status != null && String(u.status).trim() !== "" ? String(u.status) : (prevP[u.id]?.status ?? "offline");
+        if (socketUp && prevP[u.id]?.status === "online" && st === "offline") {
+          st = "online";
+        }
+        return { ...u, status: st as typeof u.status };
+      }),
+    );
     setPresenceByUserId((prev) => {
       const next = { ...prev };
       for (const u of data.users) {
-        const st =
+        let st =
           u.status != null && String(u.status).trim() !== "" ? String(u.status) : (next[u.id]?.status ?? "offline");
+        if (socketUp && next[u.id]?.status === "online" && st === "offline") {
+          st = "online";
+        }
         next[u.id] = {
           status: st,
           lastSeen: u.lastSeen != null ? String(u.lastSeen) : next[u.id]?.lastSeen,
@@ -4953,6 +5023,14 @@ export default function App() {
       className={`layout ${showRightPanel ? "layout--info" : ""} ${viewportW < 800 && mobileSidebarOpen ? "layout--sidebarOpen" : ""}`}
       style={orgChatLogoCss ? ({ ["--org-chat-logo" as string]: orgChatLogoCss } as CSSProperties) : undefined}
     >
+      {appToast ? (
+        <div className="appToast" role="status">
+          <button type="button" className="appToastClose" onClick={() => setAppToast(null)} aria-label="Закрыть">
+            ×
+          </button>
+          <div className="appToastText">{appToast.text}</div>
+        </div>
+      ) : null}
       {viewportW < 800 && mobileSidebarOpen ? (
         <button type="button" className="sidebarBackdrop" aria-label="Закрыть список чатов" onClick={() => setMobileSidebarOpen(false)} />
       ) : null}
@@ -7084,6 +7162,14 @@ export default function App() {
                   />
                 ) : (
                   <video
+                    key={
+                      webrtcUi.remoteStream
+                        ? `${webrtcUi.callPeerId}-${webrtcUi.remoteStream.id}-${webrtcUi.remoteStream
+                            .getTracks()
+                            .map((t) => `${t.id}:${t.muted ? "m" : "u"}`)
+                            .join("|")}`
+                        : `${webrtcUi.callPeerId}-nor`
+                    }
                     ref={webrtcRemoteVideoRef}
                     autoPlay
                     playsInline

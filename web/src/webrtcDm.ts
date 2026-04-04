@@ -79,20 +79,36 @@ function makeIceCandidateQueue(pc: RTCPeerConnection) {
 }
 
 function attachRemoteTracks(pc: RTCPeerConnection, onRemoteStream: (s: MediaStream) => void) {
-  const remoteMediaStream = new MediaStream();
-  const notify = () => onRemoteStream(remoteMediaStream);
+  /** Предпочитаем MediaStream из события — так делает Chrome/Firefox; ручная сборка иногда даёт чёрный экран у инициатора звонка. */
+  let remoteMediaStream: MediaStream | null = null;
+  const notify = () => {
+    if (remoteMediaStream) onRemoteStream(remoteMediaStream);
+  };
   pc.ontrack = (ev) => {
     const t = ev.track;
-    const existing = remoteMediaStream.getTracks().some((x) => x.id === t.id);
-    if (!existing) {
-      remoteMediaStream.addTrack(t);
+    const fromEvent = ev.streams && ev.streams[0];
+    if (fromEvent) {
+      if (!remoteMediaStream || remoteMediaStream.id === fromEvent.id) {
+        remoteMediaStream = fromEvent;
+      } else if (!remoteMediaStream.getTracks().some((x) => x.id === t.id)) {
+        try {
+          remoteMediaStream.addTrack(t);
+        } catch {
+          /* ignore */
+        }
+      }
+    } else {
+      if (!remoteMediaStream) remoteMediaStream = new MediaStream();
+      if (!remoteMediaStream.getTracks().some((x) => x.id === t.id)) {
+        remoteMediaStream.addTrack(t);
+      }
     }
     // Пока трек «muted» в браузере, картинки может не быть — обновляем при unmute.
     t.addEventListener("unmute", notify);
     t.addEventListener("mute", notify);
     t.addEventListener("ended", () => {
       try {
-        remoteMediaStream.removeTrack(t);
+        remoteMediaStream?.removeTrack(t);
       } catch {
         /* ignore */
       }
