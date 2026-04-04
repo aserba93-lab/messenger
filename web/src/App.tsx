@@ -8,6 +8,20 @@ import "./App.css";
 const TG_SESSION_KEY = "tg:session";
 const TG_LAST_OPEN_CHAT_KEY = "tg:lastOpenChat";
 
+function readTgLastOpenChatKey(): string | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = localStorage.getItem(TG_LAST_OPEN_CHAT_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as { key?: string } | string;
+    const key = typeof parsed === "string" ? parsed : parsed?.key;
+    if (key && typeof key === "string" && /^[cgd]:/.test(key)) return key;
+  } catch {
+    /* ignore */
+  }
+  return null;
+}
+
 type StoredSession = {
   token: string;
   userId?: string;
@@ -770,6 +784,24 @@ export default function App() {
     () => Object.values(unreadByKey).reduce((sum, n) => sum + (Number.isFinite(n) ? n : 0), 0),
     [unreadByKey],
   );
+  /** Значок на иконке PWA (Chrome/Edge/Android): непрочитанные. */
+  useEffect(() => {
+    if (!isStandaloneWebApp()) return;
+    const nav = navigator as Navigator & { setAppBadge?: (n?: number) => Promise<void>; clearAppBadge?: () => Promise<void> };
+    if (!nav.setAppBadge) return;
+    void (async () => {
+      try {
+        if (totalUnread > 0) {
+          const n = totalUnread > 99 ? 99 : totalUnread;
+          await nav.setAppBadge(n);
+        } else {
+          await nav.clearAppBadge?.();
+        }
+      } catch {
+        /* ignore */
+      }
+    })();
+  }, [totalUnread]);
   const [threadSearchQ, setThreadSearchQ] = useState("");
   const [threadSearchHits, setThreadSearchHits] = useState<Message[]>([]);
   const [threadSearchOpen, setThreadSearchOpen] = useState(false);
@@ -1501,20 +1533,86 @@ export default function App() {
   useEffect(() => {
     const el = messagesWrapRef.current;
     if (!el) return;
+    const hint = chatPullHintRef.current;
     const onScroll = () => {
       const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
       const nearBottom = distance < 120;
       stickToBottomRef.current = nearBottom;
       setShowScrollToBottom(!nearBottom);
     };
+    const onTouchStart = (e: TouchEvent) => {
+      if (threadRootId || showPins || showSaved) return;
+      chatPullTouchRef.current = { y: e.touches[0].clientY, active: el.scrollTop <= 2 };
+    };
+    const onTouchMove = (e: TouchEvent) => {
+      if (!chatPullTouchRef.current.active) return;
+      if (el.scrollTop > 2) {
+        chatPullTouchRef.current.active = false;
+        if (hint) hint.style.height = "0px";
+        return;
+      }
+      const dy = e.touches[0].clientY - chatPullTouchRef.current.y;
+      if (dy > 0 && hint) {
+        hint.style.height = `${Math.min(56, dy * 0.45)}px`;
+      }
+    };
+    const onTouchEnd = () => {
+      if (!chatPullTouchRef.current.active) return;
+      chatPullTouchRef.current.active = false;
+      const h = hint ? parseInt(hint.style.height || "0", 10) || 0 : 0;
+      if (hint) hint.style.height = "0px";
+      if (h < 28) return;
+      if (!token || threadRootId || showPins || showSaved) return;
+      if (mode === "channels" && activeChannelId) void loadMessages(activeChannelId);
+      else if (mode === "groups" && activeGroupChatId) void loadGroupMessages(activeGroupChatId);
+      else if (mode === "dms" && activeDirectChatId) void loadDirectMessages(activeDirectChatId);
+    };
+    let wheelPullAcc = 0;
+    const onWheel = (e: WheelEvent) => {
+      if (threadRootId || showPins || showSaved) return;
+      if (el.scrollTop > 2) {
+        wheelPullAcc = 0;
+        return;
+      }
+      if (e.deltaY >= 0) {
+        wheelPullAcc = 0;
+        return;
+      }
+      wheelPullAcc += -e.deltaY;
+      if (wheelPullAcc < 100) return;
+      wheelPullAcc = 0;
+      if (!token) return;
+      if (mode === "channels" && activeChannelId) void loadMessages(activeChannelId);
+      else if (mode === "groups" && activeGroupChatId) void loadGroupMessages(activeGroupChatId);
+      else if (mode === "dms" && activeDirectChatId) void loadDirectMessages(activeDirectChatId);
+    };
     el.addEventListener("scroll", onScroll, { passive: true });
+    el.addEventListener("touchstart", onTouchStart, { passive: true });
+    el.addEventListener("touchmove", onTouchMove, { passive: true });
+    el.addEventListener("touchend", onTouchEnd);
+    el.addEventListener("wheel", onWheel, { passive: true });
     stickToBottomRef.current = true;
     onScroll();
     queueMicrotask(() => {
       messagesEndRef.current?.scrollIntoView({ block: "end" });
     });
-    return () => el.removeEventListener("scroll", onScroll);
-  }, [activeChannelId, activeGroupChatId, activeDirectChatId, threadRootId, showPins, showSaved]);
+    return () => {
+      el.removeEventListener("scroll", onScroll);
+      el.removeEventListener("touchstart", onTouchStart);
+      el.removeEventListener("touchmove", onTouchMove);
+      el.removeEventListener("touchend", onTouchEnd);
+      el.removeEventListener("wheel", onWheel);
+    };
+  }, [
+    activeChannelId,
+    activeGroupChatId,
+    activeDirectChatId,
+    threadRootId,
+    showPins,
+    showSaved,
+    token,
+    mode,
+  ]);
 
   // Ringtone for incoming calls when tab is hidden / another tab
   useEffect(() => {
@@ -1560,6 +1658,8 @@ export default function App() {
   const threadSearchInputRef = useRef<HTMLInputElement | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const messagesWrapRef = useRef<HTMLDivElement | null>(null);
+  const chatPullHintRef = useRef<HTMLDivElement | null>(null);
+  const chatPullTouchRef = useRef<{ y: number; active: boolean }>({ y: 0, active: false });
   const chatSearchRef = useRef<HTMLInputElement | null>(null);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const stickToBottomRef = useRef(true);
@@ -2636,7 +2736,7 @@ export default function App() {
     }, 1500);
   }
 
-  async function loadChannels() {
+  async function loadChannels(opts?: { emptySelection?: boolean }) {
     if (!token || !workspaceId) return;
     const data = await gql<{ channels: Channel[] }>(
       `query($workspaceId: ID!) { channels(workspaceId: $workspaceId) { id workspaceId name type avatarUrl createdByUserId } }`,
@@ -2647,12 +2747,14 @@ export default function App() {
     setActiveChannelId((prev) => {
       const ids = new Set(data.channels.map((c) => c.id));
       if (prev && ids.has(prev)) return prev;
+      if (prev === "") return "";
+      if (opts?.emptySelection) return "";
       return data.channels[0]?.id ?? "";
     });
     pushLog(`Каналов: ${data.channels.length}`);
   }
 
-  async function loadGroupChats() {
+  async function loadGroupChats(opts?: { emptySelection?: boolean }) {
     if (!token) return;
     const data = await gql<{ groupChats: GroupChat[] }>(
       `query { groupChats { id name memberIds createdByUserId avatarUrl } }`,
@@ -2663,18 +2765,22 @@ export default function App() {
     setActiveGroupChatId((prev) => {
       const ids = new Set(data.groupChats.map((g) => g.id));
       if (prev && ids.has(prev)) return prev;
+      if (prev === "") return "";
+      if (opts?.emptySelection) return "";
       return data.groupChats[0]?.id ?? "";
     });
     pushLog(`Групп: ${data.groupChats.length}`);
   }
 
-  async function loadDirectChats() {
+  async function loadDirectChats(opts?: { emptySelection?: boolean }) {
     if (!token) return;
     const data = await gql<{ dms: DirectChat[] }>(`query { dms { id userIds } }`, {}, token);
     setDirectChats(data.dms);
     setActiveDirectChatId((prev) => {
       const ids = new Set(data.dms.map((d) => d.id));
       if (prev && ids.has(prev)) return prev;
+      if (prev === "") return "";
+      if (opts?.emptySelection) return "";
       return data.dms[0]?.id ?? "";
     });
     pushLog(`DM: ${data.dms.length}`);
@@ -3107,12 +3213,12 @@ export default function App() {
     setPresenceByUserId((prev) => {
       const next = { ...prev };
       for (const u of data.users) {
-        if (u.status) {
-          next[u.id] = {
-            status: u.status,
-            lastSeen: u.lastSeen != null ? String(u.lastSeen) : next[u.id]?.lastSeen,
-          };
-        }
+        const st =
+          u.status != null && String(u.status).trim() !== "" ? String(u.status) : (next[u.id]?.status ?? "offline");
+        next[u.id] = {
+          status: st,
+          lastSeen: u.lastSeen != null ? String(u.lastSeen) : next[u.id]?.lastSeen,
+        };
       }
       return next;
     });
@@ -3124,26 +3230,22 @@ export default function App() {
     let cancelled = false;
     void (async () => {
       try {
+        const savedChatKey = readTgLastOpenChatKey();
+        const avoidAutoFirstChat = Boolean(savedChatKey) || (isStandaloneWebApp() && !savedChatKey);
+
         if (organizationId) {
           await loadUsers();
           if (cancelled) return;
         }
-        await loadGroupChats();
+        await loadGroupChats({ emptySelection: avoidAutoFirstChat });
         if (cancelled) return;
-        await loadDirectChats();
+        await loadDirectChats({ emptySelection: avoidAutoFirstChat });
         if (cancelled) return;
-        if (workspaceId) await loadChannels();
+        if (workspaceId) await loadChannels({ emptySelection: avoidAutoFirstChat });
         if (cancelled) return;
         connectSocket();
         try {
-          const raw = localStorage.getItem(TG_LAST_OPEN_CHAT_KEY);
-          if (raw) {
-            const parsed = JSON.parse(raw) as { key?: string } | string;
-            const key = typeof parsed === "string" ? parsed : parsed?.key;
-            if (key && typeof key === "string" && /^[cgd]:/.test(key)) {
-              await openChatFromList(key);
-            }
-          }
+          if (savedChatKey) await openChatFromList(savedChatKey);
         } catch {
           /* ignore */
         }
@@ -3901,7 +4003,7 @@ export default function App() {
       void loadGroupChats();
       void loadDirectChats();
       if (workspaceId) void loadChannels();
-      if (isStandaloneWebApp() && organizationId) void loadUsers();
+      if (organizationId) void loadUsers();
       if (threadRootId || showPins || showSaved) return;
       if (mode === "channels" && activeChannelId) void loadMessages(activeChannelId);
       else if (mode === "groups" && activeGroupChatId) void loadGroupMessages(activeGroupChatId);
@@ -6438,6 +6540,7 @@ export default function App() {
         ) : null}
 
         <section className="messages mainMessages" ref={messagesWrapRef}>
+          <div ref={chatPullHintRef} className="chatPullHint" aria-hidden />
           {typingUserIds.length ? <div className="typing">Печатает: {typingUserIds.map(displayUser).join(", ")}</div> : null}
           {messages.map((m, idx) => {
             const prev = idx > 0 ? messages[idx - 1] : null;

@@ -6,7 +6,7 @@ function requireViewer(ctx) {
     return ctx.viewer;
 }
 function mapUserWithMember(member) {
-    // member: OrganizationMember include user
+    // member: OrganizationMember include user — живое «в сети» хранится на User (сокет обновляет User.status).
     return {
         id: member.user.id,
         email: member.user.email,
@@ -16,7 +16,7 @@ function mapUserWithMember(member) {
         birthDate: member.user.birthDate ?? null,
         avatarUrl: member.user.avatarUrl,
         phone: member.user.phone,
-        status: member.status,
+        status: member.user.status,
         statusEmoji: member.user.statusEmoji,
         statusText: member.user.statusText,
         title: member.title,
