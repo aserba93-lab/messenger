@@ -2300,6 +2300,13 @@ pre {
   border-color: rgba(255, 90, 90, 0.35);
   color: #ffb8b8;
 }
+.moreMenuNotifyHint {
+  margin: -6px 16px 10px;
+  font-size: 12px;
+  line-height: 1.35;
+  color: var(--tg-hint, #8a8a8e);
+}
+
 .moreMenuWideBtn.danger:hover:not(:disabled) {
   background: rgba(255, 60, 60, 0.12);
 }

@@ -561,7 +561,14 @@ export default function App() {
   });
   const [browserNotify, setBrowserNotify] = useState(() => {
     if (typeof window === "undefined") return false;
-    return localStorage.getItem("tg:browserNotify") === "1";
+    try {
+      if (typeof Notification === "undefined") return false;
+      const want = localStorage.getItem("tg:browserNotify") === "1";
+      if (want && Notification.permission !== "granted") return false;
+      return want;
+    } catch {
+      return false;
+    }
   });
   const browserNotifyRef = useRef(browserNotify);
   const [moreMenuOpen, setMoreMenuOpen] = useState(false);
@@ -627,6 +634,23 @@ export default function App() {
       /* ignore */
     }
   }, [browserNotify]);
+
+  /** Почему на телефоне «не включаются» уведомления: iOS Safari в вкладке часто без Notification API; нужен PWA на экран «Домой». */
+  const browserNotifyHint = useMemo(() => {
+    if (typeof window === "undefined") return "";
+    if (!window.isSecureContext) return "Нужен адрес по HTTPS — иначе браузер не покажет уведомления.";
+    if (typeof Notification === "undefined") {
+      const ua = navigator.userAgent || "";
+      if (/iPhone|iPad|iPod/i.test(ua)) {
+        return "На iPhone/iPad в Safari во вкладке веб-уведомления обычно недоступны. Добавьте сайт на экран «Домой» (Поделиться → На экран «Домой»), откройте ярлык — там запрос разрешения возможен (iOS 16.4+). Либо проверьте в Chrome на Android.";
+      }
+      return "Этот браузер не отдаёт API уведомлений для сайта. Попробуйте Chrome на Android или другой браузер.";
+    }
+    if (Notification.permission === "denied") {
+      return "Разрешение заблокировано. Откройте настройки сайта в браузере и включите «Уведомления», затем обновите страницу.";
+    }
+    return "";
+  }, []);
 
   useEffect(() => {
     try {
@@ -5259,17 +5283,49 @@ export default function App() {
                     className="moreMenuWideBtn subtle"
                     onClick={() => {
                       void (async () => {
-                        const next = !browserNotify;
-                        if (next && typeof Notification !== "undefined" && Notification.permission === "default") {
-                          await Notification.requestPermission();
+                        if (!token) return;
+                        if (!browserNotify) {
+                          if (typeof Notification === "undefined") {
+                            setChatError(
+                              browserNotifyHint ||
+                                "В этом браузере уведомления для сайта недоступны. На iPhone — ярлык на экран «Домой»; на Android — Chrome и разрешение для сайта.",
+                            );
+                            pushLog("Notifications API недоступен (часто мобильный Safari во вкладке).");
+                            return;
+                          }
+                          if (Notification.permission === "denied") {
+                            setChatError(
+                              "Уведомления заблокированы в браузере. Откройте настройки сайта для sf-communication.ru и разрешите уведомления, затем обновите страницу.",
+                            );
+                            pushLog("Notifications permission=denied");
+                            return;
+                          }
+                          if (Notification.permission === "default") {
+                            const r = await Notification.requestPermission();
+                            if (r !== "granted") {
+                              setChatError(
+                                "Разрешение не выдано (закрыли запрос или нажали «Блокировать»). Разрешите уведомления в настройках сайта и попробуйте снова.",
+                              );
+                              setBrowserNotify(false);
+                              pushLog(`Notifications permission=${r}`);
+                              return;
+                            }
+                          }
+                          setBrowserNotify(true);
+                          pushLog("Уведомления браузера включены.");
+                          return;
                         }
-                        setBrowserNotify(next);
+                        setBrowserNotify(false);
+                        pushLog("Уведомления браузера выключены.");
                       })();
                     }}
-                    disabled={!token || typeof Notification === "undefined"}
+                    disabled={!token}
                   >
                     {browserNotify ? "Отключить уведомления браузера" : "Включить уведомления браузера"}
                   </button>
+                  {browserNotifyHint ? (
+                    <p className="moreMenuNotifyHint">{browserNotifyHint}</p>
+                  ) : null}
                   <button
                     type="button"
                     className="moreMenuWideBtn"
