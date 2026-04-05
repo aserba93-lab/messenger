@@ -17,6 +17,31 @@ import "./App.css";
 /** Актуальный access token для fetch GraphQL, если замыкание передало undefined */
 const gqlAuthTokenRef = { current: "" };
 
+/** Внутри приложения — только если системный тост недоступен (ПК с разрешением → тост Windows справа снизу). */
+function preferInAppNotifyCards(): boolean {
+  if (typeof window === "undefined") return true;
+  if (window.electronShell?.isElectron) {
+    return typeof Notification === "undefined" || Notification.permission !== "granted";
+  }
+  if (typeof Notification === "undefined") return true;
+  if (Notification.permission !== "granted") return true;
+  try {
+    if (window.matchMedia("(max-width: 640px)").matches) return true;
+  } catch {
+    /* ignore */
+  }
+  return false;
+}
+
+function notificationIconUrl(): string | undefined {
+  if (typeof window === "undefined") return undefined;
+  try {
+    return new URL("/pwa-icon-192.png", window.location.origin).href;
+  } catch {
+    return undefined;
+  }
+}
+
 function GroupMeshRemoteVideo({
   stream,
   userId,
@@ -911,6 +936,17 @@ export default function App() {
     return () => window.clearTimeout(tid);
   }, [token]);
 
+  /** Десктоп Electron: сразу запрашиваем разрешение на тосты Windows (иначе только карточки внутри окна). */
+  useEffect(() => {
+    if (!token) return;
+    if (typeof window === "undefined" || !window.electronShell?.isElectron) return;
+    if (typeof Notification === "undefined") return;
+    if (Notification.permission !== "default") return;
+    void Notification.requestPermission().then((r) => {
+      if (r === "granted") setBrowserNotify(true);
+    });
+  }, [token]);
+
   /** Почему на телефоне «не включаются» уведомления: iOS Safari в вкладке часто без Notification API; нужен PWA на экран «Домой». */
   const browserNotifyHint = useMemo(() => {
     if (typeof window === "undefined") return "";
@@ -1410,6 +1446,7 @@ export default function App() {
   type NotifyCard = { id: number; title: string; body: string; chatKey?: string; peerUserId?: string };
   const [notifyCards, setNotifyCards] = useState<NotifyCard[]>([]);
   const pushNotifyCard = useCallback((c: Omit<NotifyCard, "id">) => {
+    if (!preferInAppNotifyCards()) return;
     const id = Date.now() + Math.random();
     setNotifyCards((prev) => {
       const withoutDup = c.chatKey ? prev.filter((x) => x.chatKey !== c.chatKey) : prev;
@@ -3102,11 +3139,12 @@ export default function App() {
       );
       const isDmSocketMessage = !!directChatId;
       const wantPing = key && !muted && !fromMe && (!isActive || tabHidden);
+      const isElectronApp = typeof window !== "undefined" && !!window.electronShell?.isElectron;
       const canBrowserOsNotify =
         wantPing &&
         typeof Notification !== "undefined" &&
         Notification.permission === "granted" &&
-        (browserNotifyRef.current || isCallOrMeetHint || isDmSocketMessage);
+        (browserNotifyRef.current || isCallOrMeetHint || isDmSocketMessage || isElectronApp);
 
       const bodyPreview =
         msg.type === "voice"
@@ -3128,8 +3166,7 @@ export default function App() {
 
       if (canBrowserOsNotify) {
         try {
-          const origin = typeof window !== "undefined" ? window.location.origin : "";
-          const nIcon = origin ? `${origin}/favicon.svg` : undefined;
+          const nIcon = notificationIconUrl();
           const n = new Notification(fromLabelPreview || "Новое сообщение", {
             body: bodyPreview,
             icon: nIcon,
@@ -3369,11 +3406,14 @@ export default function App() {
       let incomingCallOs = false;
       if (typeof Notification !== "undefined" && Notification.permission === "granted") {
         try {
+          const nIcon = notificationIconUrl();
           const n = new Notification(callerLabel || "Входящий звонок", {
             body: audioOnly ? "Входящий аудиозвонок" : "Входящий видеозвонок",
+            icon: nIcon,
+            badge: nIcon,
             tag: `call:${from}:${Date.now()}`,
             requireInteraction: typeof document !== "undefined" && document.hidden,
-          });
+          } as NotificationOptions);
           incomingCallOs = true;
           n.onclick = () => {
             focusNotificationsWindow();
@@ -3457,11 +3497,14 @@ export default function App() {
       let showed = false;
       if (typeof Notification !== "undefined" && Notification.permission === "granted") {
         try {
+          const nIcon = notificationIconUrl();
           const n = new Notification("Групповой звонок", {
             body: `${label} — ${audioOnly ? "аудио" : "видео"}. Откройте приложение.`,
+            icon: nIcon,
+            badge: nIcon,
             tag: `gcall-inv:${gc}`,
             requireInteraction: tabHidden,
-          });
+          } as NotificationOptions);
           showed = true;
           n.onclick = () => {
             focusNotificationsWindow();
@@ -3506,22 +3549,22 @@ export default function App() {
       const directChatId = String(data?.directChatId ?? "");
       const label = from ? displayUserNameForSidebar(usersRef.current.find((x) => x.id === from), from) : "Собеседник";
       const dmKey = directChatId ? `d:${directChatId}` : "";
-      pushNotifyCard({
-        title: "Личный созвон",
-        body: `${label} — ${audioOnly ? "звонок" : "видеозвонок"}`,
-        chatKey: dmKey || undefined,
-        peerUserId: dmKey ? undefined : from || undefined,
-      });
+      const nIconDm = notificationIconUrl();
       try {
         if (
           typeof Notification !== "undefined" &&
           Notification.permission === "granted" &&
-          (browserNotifyRef.current || typeof document === "undefined" || document.hidden)
+          (browserNotifyRef.current ||
+            typeof document === "undefined" ||
+            document.hidden ||
+            window.electronShell?.isElectron)
         ) {
           const nDm = new Notification("Личный созвон", {
             body: `${label} — ${audioOnly ? "звонок" : "видеозвонок"}`,
+            icon: nIconDm,
+            badge: nIconDm,
             tag: `dmcall:${meshId}`,
-          });
+          } as NotificationOptions);
           nDm.onclick = () => {
             focusNotificationsWindow();
             if (directChatId) {
@@ -3548,6 +3591,12 @@ export default function App() {
       } catch {
         /* ignore */
       }
+      pushNotifyCard({
+        title: "Личный созвон",
+        body: `${label} — ${audioOnly ? "звонок" : "видеозвонок"}`,
+        chatKey: dmKey || undefined,
+        peerUserId: dmKey ? undefined : from || undefined,
+      });
     });
     s.on("dmCall:end", (data: any) => {
       const meshId = String(data?.meshGroupChatId ?? "");
@@ -4034,13 +4083,16 @@ export default function App() {
     try {
       if (typeof Notification !== "undefined" && Notification.permission === "granted") {
         try {
+          const nIconJ = notificationIconUrl();
           const nJoin = new Notification(isDmMesh ? "Личный звонок" : `Группа: ${resolvedTitle}`, {
             body: isDmMesh
               ? `${callerLabel} — ${audioOnly ? "звонок" : "видеозвонок"}`
               : `${callerLabel} — групповой ${audioOnly ? "звонок" : "видеозвонок"}`,
+            icon: nIconJ,
+            badge: nIconJ,
             tag: isDmMesh ? `dmcall:${gc}` : `gcall:${gc}`,
             requireInteraction: typeof document !== "undefined" && document.hidden,
-          });
+          } as NotificationOptions);
           nJoin.onclick = () => {
             focusNotificationsWindow();
             try {
@@ -6373,7 +6425,7 @@ export default function App() {
       <div className="authPage">
         <div className="authCard">
           <div className="authLogoRow" aria-hidden>
-            <img className="authLogoImg" src="/favicon.svg" width={48} height={48} alt="" />
+            <img className="authLogoImg" src="/pwa-icon-192.png" width={48} height={48} alt="" />
           </div>
           <div className="authTitle">sf-communication</div>
           <div className="authSub">Вход</div>

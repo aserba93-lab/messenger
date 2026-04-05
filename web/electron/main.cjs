@@ -8,6 +8,11 @@ const path = require("path");
 const fs = require("fs/promises");
 const fsSync = require("fs");
 
+/** Windows: группировка тостов и иконка в центре уведомлений совпадают с ярлыком/установщиком */
+if (process.platform === "win32") {
+  app.setAppUserModelId("com.salesfactory.messenger");
+}
+
 const APP_HOST = "root";
 const APP_ORIGIN = `app://${APP_HOST}`;
 
@@ -120,7 +125,8 @@ function createWindow() {
       permission === "media" ||
       permission === "display-capture" ||
       permission === "audioCapture" ||
-      permission === "videoCapture"
+      permission === "videoCapture" ||
+      permission === "notifications"
     ) {
       callback(true);
       return;
