@@ -1,4 +1,5 @@
 {
-  "windows": "https://ваш-домен.ru/path/SalesFactory-Setup.exe",
-  "android": "https://ваш-домен.ru/path/app.apk"
+  "windows": "",
+  "android": "",
+  "_comment": "Вставьте РЕАЛЬНЫЕ полные URL https://... где лежат .exe и .apk (или Google Play). Пустые поля — кнопки откроют подсказку. Не используйте вымышленные домены — браузер выдаст DNS_PROBE_FINISHED_NXDOMAIN."
 }

@@ -13,7 +13,8 @@
     "electron:build": "cross-env ELECTRON_BUILD=1 npm run build",
     "electron:dist": "npm run electron:build && electron-builder",
     "cap:sync": "npm run build && npx cap sync android",
-    "cap:open": "npx cap open android"
+    "cap:open": "npx cap open android",
+    "android:apk:debug": "npm run cap:sync && cd android && gradlew.bat assembleDebug"
   },
   "dependencies": {
     "graphql": "^16.13.2",

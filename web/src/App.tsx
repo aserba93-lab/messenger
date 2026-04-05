@@ -395,6 +395,26 @@ function normalizeDownloadUrl(url?: string | null) {
   return url;
 }
 
+/** Шаблоны из инструкций — не реальные хосты; открытие даёт DNS NXDOMAIN. */
+function isPlaceholderClientDownloadUrl(url: string): boolean {
+  const s = String(url || "").trim();
+  if (!s) return true;
+  /** Относительный путь на том же сайте: `/downloads/app.exe` */
+  if (s.startsWith("/")) return false;
+  const low = s.toLowerCase();
+  if (low.includes("ваш-домен") || low.includes("ваш‐домен") || low.includes("ваш_домен")) return true;
+  if (low.includes("vash-domen") || low.includes("your-domain.")) return true;
+  if (low.includes("example.com") || low.includes("example.org")) return true;
+  if (/placeholder|changeme|replace-me|todo\.exe|fake\.exe/i.test(low)) return true;
+  try {
+    const h = new URL(s).hostname.toLowerCase();
+    if (h === "example.com" || h.endsWith(".example.com") || h === "example.org") return true;
+  } catch {
+    return true;
+  }
+  return false;
+}
+
 /** Выдача вложений через GET /files/access/:id + Bearer (обходит presigned URL и nginx SPA). */
 function isFilesAccessProxyUrl(url: string): boolean {
   if (!url) return false;
@@ -6602,11 +6622,11 @@ export default function App() {
 
   async function openClientDownload(kind: "windows" | "android") {
     const url = await resolveClientDownloadUrl(kind);
-    if (!url) {
+    if (!url || isPlaceholderClientDownloadUrl(url)) {
       setAuthError(
         kind === "windows"
-          ? "Windows: укажите URL в public/client-downloads.json или VITE_DOWNLOAD_WINDOWS_URL при сборке."
-          : "Android: укажите URL в public/client-downloads.json или VITE_DOWNLOAD_ANDROID_URL при сборке.",
+          ? "Windows: укажите реальный https://… на .exe в client-downloads.json (после сборки в dist) или VITE_DOWNLOAD_WINDOWS_URL. Шаблоны вроде «ваш-домен» не работают (ошибка DNS)."
+          : "Android: укажите реальный https://… на APK или Google Play в client-downloads.json или VITE_DOWNLOAD_ANDROID_URL.",
       );
       return;
     }
