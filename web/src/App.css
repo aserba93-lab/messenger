@@ -2342,44 +2342,19 @@ button.active {
   clip: rect(0, 0, 0, 0);
   border: 0;
 }
-.composerAttachWrap {
-  position: relative;
+.composerAttachBar {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 2px;
   align-self: end;
 }
-.composerAttachBtn--open {
-  outline: 2px solid rgba(110, 170, 255, 0.45);
+.composerAttachIconBtn {
+  flex: 0 0 auto;
 }
-.composerAttachMenu {
-  position: absolute;
-  bottom: calc(100% + 8px);
-  left: 0;
-  min-width: 200px;
-  padding: 6px;
-  border-radius: 12px;
-  border: 1px solid var(--tg-border-subtle);
-  background: var(--tg-bg-elevated);
-  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
-  z-index: 30;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-.composerAttachMenuItem {
-  text-align: left;
-  width: 100%;
-  padding: 10px 12px;
-  border: none;
-  border-radius: 8px;
-  background: transparent;
-  color: var(--tg-text);
-  font-size: 14px;
-  cursor: pointer;
-}
-.composerAttachMenuItem:hover {
-  background: rgba(255, 255, 255, 0.06);
-}
-:root[data-theme="light"] .composerAttachMenuItem:hover {
-  background: rgba(0, 0, 0, 0.06);
+.composerAttachIconBtn svg {
+  display: block;
 }
 .composerInput {
   min-height: 40px;

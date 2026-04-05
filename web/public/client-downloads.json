@@ -1,5 +1,5 @@
 {
-  "windows": "https://example.com/SalesFactory-Setup.exe",
-  "android": "https://example.com/app-release.apk",
-  "_comment": "Полные URL https://... Замените на свои. См. CLIENT_DOWNLOADS_HOWTO.txt в этой же папке."
+  "windows": "",
+  "android": "",
+  "_comment": "Укажите полные URL https://... на установщик .exe и APK или Google Play. Пока пусто — кнопки на экране входа неактивны (или задайте VITE_DOWNLOAD_* при сборке). См. CLIENT_DOWNLOADS_HOWTO.txt"
 }

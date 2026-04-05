@@ -429,11 +429,34 @@ async function triggerBrowserDownloadFromUrl(rawUrl: string | null | undefined, 
       URL.revokeObjectURL(u);
       return;
     }
+    /** Прямая ссылка (presigned и т.д.): при CORS ответ — сохраняем blob, иначе браузер часто игнорирует download и открывает вкладку (в т.ч. HTML «Example Domain»). */
+    try {
+      const r = await fetch(href, { mode: "cors", credentials: "omit" });
+      if (r.ok) {
+        const ct = (r.headers.get("content-type") || "").toLowerCase();
+        if (ct.includes("text/html")) {
+          return;
+        }
+        const blob = await r.blob();
+        if (blob.size === 0) return;
+        const u = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = u;
+        a.download = filename || "file";
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(u);
+        return;
+      }
+    } catch {
+      /* нет CORS — ниже запасной вариант */
+    }
     const a = document.createElement("a");
     a.href = href;
     a.download = filename || "file";
     a.target = "_blank";
-    a.rel = "noreferrer";
+    a.rel = "noreferrer noopener";
     document.body.appendChild(a);
     a.click();
     a.remove();
@@ -1252,8 +1275,6 @@ export default function App() {
   const [callJoinModalKind, setCallJoinModalKind] = useState<null | "group" | "dm">(null);
   /** Полноэкранный просмотр фото (если новая вкладка заблокирована — как отдельная «страница» внутри приложения) */
   const [mediaPageViewer, setMediaPageViewer] = useState<{ url: string; revoke?: () => void } | null>(null);
-  const [composerAttachOpen, setComposerAttachOpen] = useState(false);
-  const composerAttachWrapRef = useRef<HTMLDivElement | null>(null);
   const attachInputPhotoRef = useRef<HTMLInputElement | null>(null);
   const attachInputFileRef = useRef<HTMLInputElement | null>(null);
   const attachInputAudioRef = useRef<HTMLInputElement | null>(null);
@@ -6258,20 +6279,7 @@ export default function App() {
     e.target.value = "";
     if (!f) return;
     void uploadAndSend("file", f, f.name);
-    setComposerAttachOpen(false);
   }
-
-  useEffect(() => {
-    if (!composerAttachOpen) return;
-    const onDown = (ev: globalThis.MouseEvent) => {
-      const el = composerAttachWrapRef.current;
-      const t = ev.target as Node | null;
-      if (el && t && el.contains(t)) return;
-      setComposerAttachOpen(false);
-    };
-    document.addEventListener("mousedown", onDown, true);
-    return () => document.removeEventListener("mousedown", onDown, true);
-  }, [composerAttachOpen]);
 
   useEffect(() => {
     if (!mediaPageViewer) return;
@@ -8929,62 +8937,64 @@ export default function App() {
             <input ref={attachInputAudioRef} type="file" accept="audio/*" tabIndex={-1} onChange={onComposerAttachmentChange} />
             <input ref={attachInputVideoRef} type="file" accept="video/*" tabIndex={-1} onChange={onComposerAttachmentChange} />
           </div>
-          <div className="composerAttachWrap" ref={composerAttachWrapRef}>
+          <div className="composerAttachBar" aria-label="Вложения">
             <button
               type="button"
-              className={`composerAttachBtn ${composerAttachOpen ? "composerAttachBtn--open" : ""}`}
-              onClick={() => setComposerAttachOpen((v) => !v)}
+              className="composerAttachIconBtn"
               disabled={uploadDisabled}
-              aria-expanded={composerAttachOpen}
-              aria-haspopup="menu"
-              title="Вложение"
+              title="Фото"
+              aria-label="Фото"
+              onClick={() => attachInputPhotoRef.current?.click()}
             >
-              📎
+              <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden>
+                <path
+                  fill="currentColor"
+                  d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"
+                />
+              </svg>
             </button>
-            {composerAttachOpen ? (
-              <div className="composerAttachMenu" role="menu" aria-label="Тип вложения">
-                <button
-                  type="button"
-                  role="menuitem"
-                  className="composerAttachMenuItem"
-                  onClick={() => {
-                    attachInputPhotoRef.current?.click();
-                  }}
-                >
-                  1. Фото
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  className="composerAttachMenuItem"
-                  onClick={() => {
-                    attachInputFileRef.current?.click();
-                  }}
-                >
-                  2. Файл
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  className="composerAttachMenuItem"
-                  onClick={() => {
-                    attachInputAudioRef.current?.click();
-                  }}
-                >
-                  3. Аудио
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  className="composerAttachMenuItem"
-                  onClick={() => {
-                    attachInputVideoRef.current?.click();
-                  }}
-                >
-                  4. Видео
-                </button>
-              </div>
-            ) : null}
+            <button
+              type="button"
+              className="composerAttachIconBtn"
+              disabled={uploadDisabled}
+              title="Файл"
+              aria-label="Файл"
+              onClick={() => attachInputFileRef.current?.click()}
+            >
+              <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden>
+                <path
+                  fill="currentColor"
+                  d="M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z"
+                />
+              </svg>
+            </button>
+            <button
+              type="button"
+              className="composerAttachIconBtn"
+              disabled={uploadDisabled}
+              title="Аудио"
+              aria-label="Аудио"
+              onClick={() => attachInputAudioRef.current?.click()}
+            >
+              <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden>
+                <path
+                  fill="currentColor"
+                  d="M12 3v9.28c-.47-.17-.97-.28-1.5-.28C8.01 12 6 14.01 6 16.5S8.01 21 10.5 21c2.31 0 4.2-1.75 4.45-4H15V6h4V3h-7z"
+                />
+              </svg>
+            </button>
+            <button
+              type="button"
+              className="composerAttachIconBtn"
+              disabled={uploadDisabled}
+              title="Видео"
+              aria-label="Видео"
+              onClick={() => attachInputVideoRef.current?.click()}
+            >
+              <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden>
+                <path fill="currentColor" d="M17 10.5V7c0-.55-.45-1-1-1H4c-.55 0-1 .45-1 1v10c0 .55.45 1 1 1h12c.55 0 1-.45 1-1v-3.5l4 4v-11l-4 4z" />
+              </svg>
+            </button>
           </div>
           <button
             type="button"
