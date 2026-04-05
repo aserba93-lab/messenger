@@ -40,6 +40,16 @@ function notificationIconUrl(): string | undefined {
   }
 }
 
+function formatWebRtcMediaError(e: unknown): string {
+  const err = e as DOMException;
+  const name = String(err?.name ?? "");
+  const msg = String(err?.message ?? e ?? "");
+  if (name === "NotAllowedError" || /not allowed by the user agent/i.test(msg)) {
+    return "Камера/микрофон: разрешите доступ в настройках Safari (иконка «aA» слева от адреса → «Настройки для сайта» → Камера/Микрофон) или откройте сайт по HTTPS. Нажмите кнопку звонка ещё раз и сразу подтвердите запрос.";
+  }
+  return msg;
+}
+
 function GroupMeshRemoteVideo({
   stream,
   userId,
@@ -3075,6 +3085,66 @@ export default function App() {
     }
   }
 
+  /** В Electron — нативный тост из main (Windows); в браузере — Notification API. */
+  function showDesktopNotification(opts: {
+    title: string;
+    body: string;
+    tag?: string;
+    chatKey?: string;
+    fromUserId?: string;
+    requireInteraction?: boolean;
+  }): boolean {
+    const el = typeof window !== "undefined" ? window.electronShell : undefined;
+    if (el?.showNativeNotification) {
+      el.showNativeNotification({
+        title: opts.title,
+        body: opts.body,
+        chatKey: opts.chatKey,
+        fromUserId: opts.fromUserId,
+      });
+      return true;
+    }
+    if (typeof Notification === "undefined" || Notification.permission !== "granted") return false;
+    try {
+      const nIcon = notificationIconUrl();
+      const n = new Notification(opts.title, {
+        body: opts.body,
+        icon: nIcon,
+        badge: nIcon,
+        tag: opts.tag,
+        requireInteraction: opts.requireInteraction,
+      } as NotificationOptions);
+      n.onclick = () => {
+        focusNotificationsWindow();
+        if (opts.chatKey) void openChatFromListRef.current?.(opts.chatKey);
+        else if (opts.fromUserId) {
+          void (async () => {
+            try {
+              const tok = gqlAuthTokenRef.current;
+              if (!tok) return;
+              const data = await gql<{ dms: DirectChat[] }>(`query { dms { id userIds } }`, {}, tok);
+              const uid = userIdRef.current;
+              const dc = data.dms.find(
+                (d) => d.userIds.includes(opts.fromUserId!) && (!uid || d.userIds.includes(uid)),
+              );
+              if (dc) void openChatFromListRef.current?.(`d:${dc.id}`);
+            } catch {
+              /* ignore */
+            }
+          })();
+        }
+        try {
+          n.close();
+        } catch {
+          /* ignore */
+        }
+      };
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   function connectSocket() {
     if (!token) return;
     try {
@@ -3215,12 +3285,15 @@ export default function App() {
       );
       const isDmSocketMessage = !!directChatId;
       const wantPing = key && !muted && !fromMe && (!isActive || tabHidden);
-      const isElectronApp = typeof window !== "undefined" && !!window.electronShell?.isElectron;
+      const electronNative =
+        typeof window !== "undefined" && typeof window.electronShell?.showNativeNotification === "function";
+      const notifyPrefs =
+        browserNotifyRef.current || isCallOrMeetHint || isDmSocketMessage || electronNative;
       const canBrowserOsNotify =
         wantPing &&
-        typeof Notification !== "undefined" &&
-        Notification.permission === "granted" &&
-        (browserNotifyRef.current || isCallOrMeetHint || isDmSocketMessage || isElectronApp);
+        notifyPrefs &&
+        (electronNative ||
+          (typeof Notification !== "undefined" && Notification.permission === "granted"));
 
       const bodyPreview =
         msg.type === "voice"
@@ -3242,30 +3315,12 @@ export default function App() {
       }
 
       if (canBrowserOsNotify) {
-        try {
-          const nIcon = notificationIconUrl();
-          const n = new Notification(fromLabelPreview || "Новое сообщение", {
-            body: bodyPreview,
-            icon: nIcon,
-            badge: nIcon,
-            tag: `${key || "dm"}:latest`,
-          } as NotificationOptions);
-          n.onclick = () => {
-            focusNotificationsWindow();
-            try {
-              if (key) void openChatFromListRef.current?.(key);
-            } catch {
-              /* ignore */
-            }
-            try {
-              n.close();
-            } catch {
-              /* ignore */
-            }
-          };
-        } catch {
-          /* ignore */
-        }
+        showDesktopNotification({
+          title: fromLabelPreview || "Новое сообщение",
+          body: bodyPreview,
+          tag: `${key || "dm"}:latest`,
+          chatKey: key || undefined,
+        });
       }
       if (wantPing && key) {
         pushNotifyCard({
@@ -3480,41 +3535,18 @@ export default function App() {
       const audioOnly = !String(p.sdp).includes("m=video");
       setIncomingCall({ fromUserId: from, offerSdp: p.sdp, audioOnly });
       const callerLabel = displayUser(from);
-      let incomingCallOs = false;
-      if (typeof Notification !== "undefined" && Notification.permission === "granted") {
-        try {
-          const nIcon = notificationIconUrl();
-          const n = new Notification(callerLabel || "Входящий звонок", {
-            body: audioOnly ? "Входящий аудиозвонок" : "Входящий видеозвонок",
-            icon: nIcon,
-            badge: nIcon,
-            tag: `call:${from}:${Date.now()}`,
-            requireInteraction: typeof document !== "undefined" && document.hidden,
-          } as NotificationOptions);
-          incomingCallOs = true;
-          n.onclick = () => {
-            focusNotificationsWindow();
-            void (async () => {
-              try {
-                if (!token) return;
-                const data = await gql<{ dms: DirectChat[] }>(`query { dms { id userIds } }`, {}, token);
-                const uid = userIdRef.current;
-                const dc = data.dms.find((d) => d.userIds.includes(from) && (!uid || d.userIds.includes(uid)));
-                if (dc) void openChatFromListRef.current?.(`d:${dc.id}`);
-              } catch {
-                /* ignore */
-              }
-            })();
-            try {
-              n.close();
-            } catch {
-              /* ignore */
-            }
-          };
-        } catch {
-          /* ignore */
-        }
-      }
+      const electronCall =
+        typeof window !== "undefined" && typeof window.electronShell?.showNativeNotification === "function";
+      const incomingCallOs =
+        (electronCall ||
+          (typeof Notification !== "undefined" && Notification.permission === "granted")) &&
+        showDesktopNotification({
+          title: callerLabel || "Входящий звонок",
+          body: audioOnly ? "Входящий аудиозвонок" : "Входящий видеозвонок",
+          tag: `call:${from}:${Date.now()}`,
+          fromUserId: from,
+          requireInteraction: typeof document !== "undefined" && document.hidden,
+        });
       if (!incomingCallOs) {
         pushNotifyCard({
           title: callerLabel || "Входящий звонок",
@@ -3571,35 +3603,18 @@ export default function App() {
       const u = usersRef.current.find((x) => x.id === from);
       const label = displayUserNameForSidebar(u, from);
       const tabHidden = typeof document !== "undefined" && document.hidden;
-      let showed = false;
-      if (typeof Notification !== "undefined" && Notification.permission === "granted") {
-        try {
-          const nIcon = notificationIconUrl();
-          const n = new Notification("Групповой звонок", {
-            body: `${label} — ${audioOnly ? "аудио" : "видео"}. Откройте приложение.`,
-            icon: nIcon,
-            badge: nIcon,
-            tag: `gcall-inv:${gc}`,
-            requireInteraction: tabHidden,
-          } as NotificationOptions);
-          showed = true;
-          n.onclick = () => {
-            focusNotificationsWindow();
-            try {
-              void openChatFromListRef.current?.(`g:${gc}`);
-            } catch {
-              /* ignore */
-            }
-            try {
-              n.close();
-            } catch {
-              /* ignore */
-            }
-          };
-        } catch {
-          /* ignore */
-        }
-      }
+      const electronG =
+        typeof window !== "undefined" && typeof window.electronShell?.showNativeNotification === "function";
+      const showed =
+        (electronG ||
+          (typeof Notification !== "undefined" && Notification.permission === "granted")) &&
+        showDesktopNotification({
+          title: "Групповой звонок",
+          body: `${label} — ${audioOnly ? "аудио" : "видео"}. Откройте приложение.`,
+          tag: `gcall-inv:${gc}`,
+          chatKey: `g:${gc}`,
+          requireInteraction: tabHidden,
+        });
       if (!showed) {
         pushNotifyCard({
           title: "Групповой звонок",
@@ -3626,47 +3641,26 @@ export default function App() {
       const directChatId = String(data?.directChatId ?? "");
       const label = from ? displayUserNameForSidebar(usersRef.current.find((x) => x.id === from), from) : "Собеседник";
       const dmKey = directChatId ? `d:${directChatId}` : "";
-      const nIconDm = notificationIconUrl();
-      try {
-        if (
-          typeof Notification !== "undefined" &&
+      const electronDm =
+        typeof window !== "undefined" && typeof window.electronShell?.showNativeNotification === "function";
+      const dmNotifyOk =
+        electronDm ||
+        (typeof Notification !== "undefined" &&
           Notification.permission === "granted" &&
           (browserNotifyRef.current ||
             typeof document === "undefined" ||
             document.hidden ||
-            window.electronShell?.isElectron)
-        ) {
-          const nDm = new Notification("Личный созвон", {
-            body: `${label} — ${audioOnly ? "звонок" : "видеозвонок"}`,
-            icon: nIconDm,
-            badge: nIconDm,
-            tag: `dmcall:${meshId}`,
-          } as NotificationOptions);
-          nDm.onclick = () => {
-            focusNotificationsWindow();
-            if (directChatId) {
-              try {
-                void openChatFromListRef.current?.(`d:${directChatId}`);
-              } catch {
-                /* ignore */
-              }
-            } else if (meshId.startsWith(DM_MESH_PREFIX)) {
-              const dcid = meshId.slice(DM_MESH_PREFIX.length);
-              try {
-                void openChatFromListRef.current?.(`d:${dcid}`);
-              } catch {
-                /* ignore */
-              }
-            }
-            try {
-              nDm.close();
-            } catch {
-              /* ignore */
-            }
-          };
-        }
-      } catch {
-        /* ignore */
+            window.electronShell?.isElectron));
+      if (dmNotifyOk) {
+        const ck =
+          directChatId ? `d:${directChatId}` : meshId.startsWith(DM_MESH_PREFIX) ? `d:${meshId.slice(DM_MESH_PREFIX.length)}` : "";
+        showDesktopNotification({
+          title: "Личный созвон",
+          body: `${label} — ${audioOnly ? "звонок" : "видеозвонок"}`,
+          tag: `dmcall:${meshId}`,
+          chatKey: ck || undefined,
+          fromUserId: ck ? undefined : from || undefined,
+        });
       }
       pushNotifyCard({
         title: "Личный созвон",
@@ -3863,6 +3857,35 @@ export default function App() {
   }
   openChatFromListRef.current = openChatFromList;
 
+  useEffect(() => {
+    const off = window.electronShell?.onNativeNotificationAction?.((data) => {
+      focusNotificationsWindow();
+      if (data?.chatKey) {
+        void openChatFromListRef.current?.(data.chatKey);
+        return;
+      }
+      if (data?.fromUserId) {
+        void (async () => {
+          try {
+            const tok = gqlAuthTokenRef.current;
+            if (!tok) return;
+            const d = await gql<{ dms: DirectChat[] }>(`query { dms { id userIds } }`, {}, tok);
+            const uid = userIdRef.current;
+            const dc = d.dms.find(
+              (x) => x.userIds.includes(data.fromUserId!) && (!uid || x.userIds.includes(uid)),
+            );
+            if (dc) void openChatFromListRef.current?.(`d:${dc.id}`);
+          } catch {
+            /* ignore */
+          }
+        })();
+      }
+    });
+    return () => {
+      off?.();
+    };
+  }, []);
+
   const openNotifyCardTarget = useCallback(
     async (c: NotifyCard) => {
       if (c.chatKey) {
@@ -4046,8 +4069,8 @@ export default function App() {
       });
     } catch (e: any) {
       webrtcBusyRef.current = false;
-      setChatError(String(e?.message ?? e));
-      diagLog(`acceptIncomingCall error: ${String(e?.name ?? "")} ${String(e?.message ?? e)}`);
+      setChatError(formatWebRtcMediaError(e));
+      diagLog(`acceptIncomingCall error: ${String((e as DOMException)?.name ?? "")} ${String((e as Error)?.message ?? e)}`);
     }
   }
 
@@ -4074,7 +4097,8 @@ export default function App() {
     groupMeshJoiningRef.current = false;
   }, []);
 
-  const prepareDeviceForCall = useCallback(async () => {
+  /** Синхронно: иначе на iPhone Safari теряется user gesture и getUserMedia даёт NotAllowedError. */
+  const prepareDeviceForCall = useCallback(() => {
     try {
       stopVoiceRecordRef.current();
     } catch {
@@ -4144,40 +4168,22 @@ export default function App() {
     const initialCam = mediaPrefs != null ? mediaPrefs.cam && !audioOnly : !audioOnly;
     const callerLabel = displayUser(from);
     try {
-      if (typeof Notification !== "undefined" && Notification.permission === "granted") {
-        try {
-          const nIconJ = notificationIconUrl();
-          const nJoin = new Notification(isDmMesh ? "Личный звонок" : `Группа: ${resolvedTitle}`, {
-            body: isDmMesh
-              ? `${callerLabel} — ${audioOnly ? "звонок" : "видеозвонок"}`
-              : `${callerLabel} — групповой ${audioOnly ? "звонок" : "видеозвонок"}`,
-            icon: nIconJ,
-            badge: nIconJ,
-            tag: isDmMesh ? `dmcall:${gc}` : `gcall:${gc}`,
-            requireInteraction: typeof document !== "undefined" && document.hidden,
-          } as NotificationOptions);
-          nJoin.onclick = () => {
-            focusNotificationsWindow();
-            try {
-              if (isDmMesh) {
-                const directChatId = gc.slice(DM_MESH_PREFIX.length);
-                void openChatFromListRef.current?.(`d:${directChatId}`);
-              } else {
-                void openChatFromListRef.current?.(`g:${gc}`);
-              }
-            } catch {
-              /* ignore */
-            }
-            try {
-              nJoin.close();
-            } catch {
-              /* ignore */
-            }
-          };
-        } catch {
-          /* ignore */
-        }
-      } else {
+      const electronJ =
+        typeof window !== "undefined" && typeof window.electronShell?.showNativeNotification === "function";
+      const joinKey = isDmMesh ? `d:${gc.slice(DM_MESH_PREFIX.length)}` : `g:${gc}`;
+      const joinOs =
+        (electronJ ||
+          (typeof Notification !== "undefined" && Notification.permission === "granted")) &&
+        showDesktopNotification({
+          title: isDmMesh ? "Личный звонок" : `Группа: ${resolvedTitle}`,
+          body: isDmMesh
+            ? `${callerLabel} — ${audioOnly ? "звонок" : "видеозвонок"}`
+            : `${callerLabel} — групповой ${audioOnly ? "звонок" : "видеозвонок"}`,
+          tag: isDmMesh ? `dmcall:${gc}` : `gcall:${gc}`,
+          chatKey: joinKey,
+          requireInteraction: typeof document !== "undefined" && document.hidden,
+        });
+      if (!joinOs) {
         pushNotifyCard(
           isDmMesh
             ? {
@@ -4244,7 +4250,7 @@ export default function App() {
       }
       await session.startOfferers(peerIds);
     } catch (e: any) {
-      setChatError(String(e?.message ?? e));
+      setChatError(formatWebRtcMediaError(e));
       groupMeshSessionRef.current = null;
       setGroupMeshUi(null);
       webrtcBusyRef.current = false;
@@ -4315,7 +4321,7 @@ export default function App() {
       void sendServiceMessageToCurrentChat(inviteUrl);
       pushLog("Групповой mesh-созвон");
     } catch (e: any) {
-      setChatError(String(e?.message ?? e));
+      setChatError(formatWebRtcMediaError(e));
       groupMeshSessionRef.current = null;
       setGroupMeshUi(null);
       webrtcBusyRef.current = false;
@@ -4393,7 +4399,7 @@ export default function App() {
       void sendServiceMessageToCurrentChat(inviteUrl);
       pushLog("Личный созвон (mesh)");
     } catch (e: any) {
-      setChatError(String(e?.message ?? e));
+      setChatError(formatWebRtcMediaError(e));
       groupMeshSessionRef.current = null;
       setGroupMeshUi(null);
       webrtcBusyRef.current = false;
@@ -6500,10 +6506,29 @@ export default function App() {
     return fromFile || fromEnv || undefined;
   }
 
+  function openDownloadUrlInBrowser(url: string) {
+    try {
+      const a = document.createElement("a");
+      a.href = url;
+      a.target = "_blank";
+      a.rel = "noopener noreferrer";
+      a.style.display = "none";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    } catch {
+      try {
+        window.open(url, "_blank", "noopener,noreferrer");
+      } catch {
+        window.location.href = url;
+      }
+    }
+  }
+
   async function openClientDownload(kind: "windows" | "android") {
     const url = await resolveClientDownloadUrl(kind);
     if (!url) return;
-    window.location.assign(url);
+    openDownloadUrlInBrowser(url);
   }
 
   if (!isAuthed) {
@@ -7307,6 +7332,12 @@ export default function App() {
                     Избранное — заметки для себя
                   </button>
                   {/* Админские отладочные панели скрыты по требованию */}
+                  <div
+                    className="moreMenuBuildInfo"
+                    title="Время и git обновляются только после «npm run build» в каталоге web на сервере. Ctrl+Shift+R сбрасывает кеш браузера, но не пересобирает файлы."
+                  >
+                    Сборка: {__BUILD_TIME__} · git {__GIT_SHA__} · кэш: Ctrl+Shift+R
+                  </div>
                   <button
                     type="button"
                     className="moreMenuWideBtn danger"
@@ -8990,12 +9021,6 @@ export default function App() {
             </div>
           ) : null}
         </form>
-        <div
-          style={{ fontSize: 10, opacity: 0.42, padding: "2px 10px 6px", gridColumn: "1 / -1" }}
-          title="Время и git обновляются только после «npm run build» в каталоге web на сервере. Ctrl+Shift+R сбрасывает кеш браузера, но не пересобирает файлы."
-        >
-          Сборка: {__BUILD_TIME__} · git {__GIT_SHA__} · кэш: Ctrl+Shift+R
-        </div>
 
         {webrtcUi ? (
           <div className="webrtcOverlay webrtcOverlay--meeting" role="dialog" aria-label="Звонок">

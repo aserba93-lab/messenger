@@ -1,5 +1,5 @@
 import type { Socket } from "socket.io-client";
-import { getUserMediaWithRelease } from "./mediaCapture";
+import { avConstraintsForCall, getUserMediaWithRelease } from "./mediaCapture";
 import type { CallSignalPayload } from "./webrtcDm";
 
 /** Полносвязный mesh WebRTC внутри организации (тот же сокет, что и 1:1). Без SFU: нагрузка растёт с N², поэтому жёсткий лимит участников. */
@@ -434,13 +434,7 @@ export async function createGroupMeshSession(
   },
 ): Promise<{ session: GroupMeshSession; localStream: MediaStream; peerIds: string[] }> {
   const peers = prepareGroupMeshPeerIds(opts.myUserId, opts.peerUserIds);
-  const stream = await getUserMediaWithRelease(
-    {
-      audio: true,
-      video: !opts.audioOnly,
-    },
-    opts.beforeCapture,
-  );
+  const stream = await getUserMediaWithRelease(avConstraintsForCall(opts.audioOnly), opts.beforeCapture);
   const micOn = opts.initialMicEnabled !== false;
   const camOn = opts.initialCamEnabled !== false;
   stream.getAudioTracks().forEach((t) => {

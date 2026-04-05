@@ -20,6 +20,13 @@ interface Window {
     platform: NodeJS.Platform;
     focusAppWindow?: () => void;
     setWindowChrome?: (theme: "dark" | "light") => void;
+    showNativeNotification?: (payload: {
+      title: string;
+      body: string;
+      chatKey?: string;
+      fromUserId?: string;
+    }) => void;
+    onNativeNotificationAction?: (handler: (data: { chatKey?: string | null; fromUserId?: string | null }) => void) => () => void;
   };
 }
 

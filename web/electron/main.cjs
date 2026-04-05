@@ -3,7 +3,7 @@
  * Разработка: ELECTRON_START_URL=http://127.0.0.1:5173 (Vite dev).
  * Прод: не file:// — у Chromium нет getDisplayMedia в небезопасном контексте; грузим app://root/ (privileged + secure).
  */
-const { app, BrowserWindow, shell, protocol, ipcMain, session } = require("electron");
+const { app, BrowserWindow, shell, protocol, ipcMain, session, Notification } = require("electron");
 const path = require("path");
 const fs = require("fs/promises");
 const fsSync = require("fs");
@@ -101,7 +101,8 @@ function messengerChromeColors(theme) {
   if (theme === "light") {
     return { bg: "#d8dce8", border: "#168ad0" };
   }
-  return { bg: "#1e1e2e", border: "#26a5e4" };
+  /** Как --tg-bg-app в тёмной теме, без «серой» окантовки окна */
+  return { bg: "#0f0f12", border: "#1a3a52" };
 }
 
 function applyWindowChrome(theme) {
@@ -188,6 +189,44 @@ ipcMain.on("bring-to-front", () => {
 ipcMain.on("electron:set-window-chrome", (_e, payload) => {
   const t = payload && typeof payload.theme === "string" ? payload.theme : "dark";
   applyWindowChrome(t === "light" ? "light" : "dark");
+});
+
+/** Тосты Windows: в рендерере new Notification() часто не показывается — шлём из main. */
+ipcMain.on("electron:show-notification", (_e, payload) => {
+  const w = mainWindow;
+  if (!w || w.isDestroyed()) return;
+  try {
+    if (typeof Notification.isSupported === "function" && !Notification.isSupported()) return;
+    const title = String(payload?.title ?? "Sales factory").slice(0, 200);
+    const body = String(payload?.body ?? "").slice(0, 500);
+    const icon = windowIconPath();
+    const n = new Notification({
+      title,
+      body,
+      ...(icon ? { icon } : {}),
+    });
+    n.on("click", () => {
+      if (w.isDestroyed()) return;
+      try {
+        if (w.isMinimized()) w.restore();
+        w.show();
+        w.focus();
+      } catch {
+        /* ignore */
+      }
+      try {
+        w.webContents.send("electron:native-notification-action", {
+          chatKey: typeof payload?.chatKey === "string" ? payload.chatKey : null,
+          fromUserId: typeof payload?.fromUserId === "string" ? payload.fromUserId : null,
+        });
+      } catch {
+        /* ignore */
+      }
+    });
+    n.show();
+  } catch (err) {
+    console.error("electron:show-notification", err);
+  }
 });
 
 app.whenReady().then(async () => {
