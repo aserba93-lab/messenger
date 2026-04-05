@@ -6605,8 +6605,8 @@ export default function App() {
     if (!url) {
       setAuthError(
         kind === "windows"
-          ? "Ссылка на установщик Windows не задана. Укажите URL в client-downloads.json на сервере или в .env (VITE_DOWNLOAD_WINDOWS_URL) и пересоберите сайт."
-          : "Ссылка на Android не задана. Укажите URL в client-downloads.json на сервере или в .env (VITE_DOWNLOAD_ANDROID_URL) и пересоберите сайт.",
+          ? "Windows: укажите URL в public/client-downloads.json или VITE_DOWNLOAD_WINDOWS_URL при сборке."
+          : "Android: укажите URL в public/client-downloads.json или VITE_DOWNLOAD_ANDROID_URL при сборке.",
       );
       return;
     }
@@ -9128,63 +9128,67 @@ export default function App() {
                 <button
                   type="button"
                   role="menuitem"
-                  className="composerAttachMenuTile"
+                  className="composerAttachMenuIconBtn"
+                  title="Фото"
+                  aria-label="Фото"
                   onClick={() => {
                     attachInputPhotoRef.current?.click();
                   }}
                 >
-                  <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden>
+                  <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden>
                     <path
                       fill="currentColor"
                       d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"
                     />
                   </svg>
-                  <span>Фото</span>
                 </button>
                 <button
                   type="button"
                   role="menuitem"
-                  className="composerAttachMenuTile"
+                  className="composerAttachMenuIconBtn"
+                  title="Файл"
+                  aria-label="Файл"
                   onClick={() => {
                     attachInputFileRef.current?.click();
                   }}
                 >
-                  <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden>
+                  <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden>
                     <path
                       fill="currentColor"
                       d="M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z"
                     />
                   </svg>
-                  <span>Файл</span>
                 </button>
                 <button
                   type="button"
                   role="menuitem"
-                  className="composerAttachMenuTile"
+                  className="composerAttachMenuIconBtn"
+                  title="Аудио"
+                  aria-label="Аудио"
                   onClick={() => {
                     attachInputAudioRef.current?.click();
                   }}
                 >
-                  <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden>
+                  <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden>
                     <path
                       fill="currentColor"
                       d="M12 3v9.28c-.47-.17-.97-.28-1.5-.28C8.01 12 6 14.01 6 16.5S8.01 21 10.5 21c2.31 0 4.2-1.75 4.45-4H15V6h4V3h-7z"
                     />
                   </svg>
-                  <span>Аудио</span>
                 </button>
                 <button
                   type="button"
                   role="menuitem"
-                  className="composerAttachMenuTile"
+                  className="composerAttachMenuIconBtn"
+                  title="Видео"
+                  aria-label="Видео"
                   onClick={() => {
                     attachInputVideoRef.current?.click();
                   }}
                 >
-                  <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden>
+                  <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden>
                     <path fill="currentColor" d="M17 10.5V7c0-.55-.45-1-1-1H4c-.55 0-1 .45-1 1v10c0 .55.45 1 1 1h12c.55 0 1-.45 1-1v-3.5l4 4v-11l-4 4z" />
                   </svg>
-                  <span>Видео</span>
                 </button>
               </div>
             ) : null}

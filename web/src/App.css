@@ -2354,41 +2354,51 @@ button.active {
   bottom: calc(100% + 8px);
   left: 0;
   z-index: 40;
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px;
-  padding: 10px;
-  min-width: 200px;
-  border-radius: 14px;
+  display: flex;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 8px;
+  border-radius: 999px;
   border: 1px solid var(--tg-border-subtle);
   background: var(--tg-bg-elevated);
   box-shadow: 0 10px 36px rgba(0, 0, 0, 0.42);
 }
-.composerAttachMenuTile {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  min-height: 76px;
-  padding: 10px 8px;
-  border-radius: 12px;
-  border: 1px solid var(--tg-border-subtle);
-  background: rgba(255, 255, 255, 0.04);
+.composerAttachMenuIconBtn {
+  flex: 0 0 auto;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  margin: 0;
+  display: inline-grid;
+  place-items: center;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  background: rgba(255, 255, 255, 0.05);
   color: var(--tg-text);
-  font-size: 12px;
   cursor: pointer;
-  line-height: 1.2;
 }
-.composerAttachMenuTile:hover {
-  background: rgba(255, 255, 255, 0.08);
+.composerAttachMenuIconBtn:hover {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: var(--tg-border-subtle);
 }
-:root[data-theme="light"] .composerAttachMenuTile:hover {
-  background: rgba(0, 0, 0, 0.05);
+:root[data-theme="light"] .composerAttachMenuIconBtn:hover {
+  background: rgba(0, 0, 0, 0.06);
 }
-.composerAttachMenuTile svg {
+.composerAttachMenuIconBtn svg {
   display: block;
   opacity: 0.95;
+}
+/* Поверх общих правил `.composer button` (36×36) */
+.composer .composerAttachMenu .composerAttachMenuIconBtn {
+  width: 40px;
+  height: 40px;
+  min-width: 40px;
+  background: rgba(255, 255, 255, 0.05);
+}
+:root[data-theme="light"] .composer .composerAttachMenu .composerAttachMenuIconBtn {
+  background: rgba(0, 0, 0, 0.04);
 }
 
 .chatVideoWrap {
