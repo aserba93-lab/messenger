@@ -17,12 +17,10 @@ import "./App.css";
 /** Актуальный access token для fetch GraphQL, если замыкание передало undefined */
 const gqlAuthTokenRef = { current: "" };
 
-/** Внутри приложения — только если системный тост недоступен (ПК с разрешением → тост Windows справа снизу). */
+/** Карточки внутри окна: на ПК в браузере скрываем, если уже есть системные тосты; в Electron всегда показываем (Windows-тост часто не виден). */
 function preferInAppNotifyCards(): boolean {
   if (typeof window === "undefined") return true;
-  if (window.electronShell?.isElectron) {
-    return typeof Notification === "undefined" || Notification.permission !== "granted";
-  }
+  if (window.electronShell?.isElectron) return true;
   if (typeof Notification === "undefined") return true;
   if (Notification.permission !== "granted") return true;
   try {
@@ -774,6 +772,8 @@ export default function App() {
   const [chatListFilterOpen, setChatListFilterOpen] = useState(false);
   const chatListFilterAnchorRef = useRef<HTMLDivElement | null>(null);
   const clientDownloadsJsonRef = useRef<{ windows?: string; android?: string } | null | undefined>(undefined);
+  /** На экране входа: есть ли URL для кнопок скачивания (без лишних ошибок в интерфейсе). */
+  const [loginDlAvailable, setLoginDlAvailable] = useState({ win: false, and: false });
   const [channels, setChannels] = useState<Channel[]>([]);
   const [activeChannelId, setActiveChannelId] = useState("");
   const [groupChats, setGroupChats] = useState<GroupChat[]>([]);
@@ -904,6 +904,56 @@ export default function App() {
     }
   }, [browserNotify]);
 
+  useEffect(() => {
+    if (token) return;
+    void (async () => {
+      try {
+        const r = await fetch("/client-downloads.json", { cache: "no-store" });
+        const j = r.ok ? await r.json() : {};
+        const win =
+          ((typeof j.windows === "string" ? j.windows : "").trim() || import.meta.env.VITE_DOWNLOAD_WINDOWS_URL?.trim() || "") !== "";
+        const and =
+          ((typeof j.android === "string" ? j.android : "").trim() || import.meta.env.VITE_DOWNLOAD_ANDROID_URL?.trim() || "") !== "";
+        setLoginDlAvailable({ win, and });
+      } catch {
+        setLoginDlAvailable({
+          win: Boolean(import.meta.env.VITE_DOWNLOAD_WINDOWS_URL?.trim()),
+          and: Boolean(import.meta.env.VITE_DOWNLOAD_ANDROID_URL?.trim()),
+        });
+      }
+    })();
+  }, [token]);
+
+  const playMessagePingSound = useCallback(() => {
+    if (!audioUnlockedRef.current) return;
+    if (!browserNotifyRef.current) return;
+    try {
+      const AC = window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+      if (!AC) return;
+      const ctx = new AC();
+      const o = ctx.createOscillator();
+      const g = ctx.createGain();
+      o.type = "sine";
+      o.frequency.setValueAtTime(880, ctx.currentTime);
+      o.connect(g);
+      g.connect(ctx.destination);
+      g.gain.setValueAtTime(0.0001, ctx.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.09, ctx.currentTime + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.15);
+      o.start(ctx.currentTime);
+      o.stop(ctx.currentTime + 0.16);
+      window.setTimeout(() => {
+        try {
+          void ctx.close();
+        } catch {
+          /* ignore */
+        }
+      }, 400);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
   /**
    * Один раз после входа запрашиваем разрешение на уведомления (HTTPS).
    * Раньше только PWA — в обычном браузере permission оставался default и new Notification молча не показывался.
@@ -1027,6 +1077,12 @@ export default function App() {
     if (typeof window !== "undefined" && window.electronShell?.setWindowChrome) {
       window.electronShell.setWindowChrome(theme);
     }
+    try {
+      const meta = document.querySelector('meta[name="theme-color"]');
+      if (meta) meta.setAttribute("content", theme === "light" ? "#c8ccd8" : "#0f0f12");
+    } catch {
+      /* ignore */
+    }
   }, [theme]);
 
   useEffect(() => {
@@ -1036,6 +1092,27 @@ export default function App() {
       document.body.classList.remove("electron-app");
     };
   }, []);
+
+  /** PWA с экрана «Домой» — без строки браузера; класс для отступов safe-area. */
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof document === "undefined") return;
+    try {
+      const mq = window.matchMedia("(display-mode: standalone)");
+      const apply = () => document.documentElement.classList.toggle("tg-pwa-standalone", mq.matches);
+      apply();
+      mq.addEventListener("change", apply);
+      return () => mq.removeEventListener("change", apply);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  /** После входа фиксируем высоту под мобильный браузер (прокрутка только внутри чата/списка). */
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    document.body.classList.toggle("tg-app-session", !!token);
+    document.documentElement.classList.toggle("tg-app-session", !!token);
+  }, [token]);
   const [profileFirstName, setProfileFirstName] = useState("");
   const [profileLastName, setProfileLastName] = useState("");
   const [profileMiddleName, setProfileMiddleName] = useState("");
@@ -3161,6 +3238,7 @@ export default function App() {
         } catch {
           /* ignore */
         }
+        playMessagePingSound();
       }
 
       if (canBrowserOsNotify) {
@@ -6424,14 +6502,7 @@ export default function App() {
 
   async function openClientDownload(kind: "windows" | "android") {
     const url = await resolveClientDownloadUrl(kind);
-    if (!url) {
-      setAuthError(
-        kind === "windows"
-          ? "Ссылка на установщик Windows не задана: укажите URL в файле client-downloads.json на сервере или в VITE_DOWNLOAD_WINDOWS_URL при сборке."
-          : "Ссылка на Android не задана: укажите URL в файле client-downloads.json на сервере или в VITE_DOWNLOAD_ANDROID_URL при сборке.",
-      );
-      return;
-    }
+    if (!url) return;
     window.location.assign(url);
   }
 
@@ -6524,8 +6595,13 @@ export default function App() {
                 <button
                   type="button"
                   className="authPlatformIcon"
-                  title="Скачать для Windows"
-                  onClick={() => openClientDownload("windows")}
+                  disabled={!loginDlAvailable.win}
+                  title={
+                    loginDlAvailable.win
+                      ? "Скачать для Windows"
+                      : "Установщик Windows не настроен (client-downloads.json или VITE_DOWNLOAD_WINDOWS_URL)"
+                  }
+                  onClick={() => void openClientDownload("windows")}
                 >
                   <svg width="28" height="28" viewBox="0 0 24 24" aria-hidden>
                     <path fill="currentColor" d="M3 5.5 11 4v7H3V5.5zm9-.4 9-1.2V11h-9V5.1zM3 13h8v7.5l-8-1V13zm9 0h9v8.2l-9-1.2V13z" />
@@ -6534,8 +6610,13 @@ export default function App() {
                 <button
                   type="button"
                   className="authPlatformIcon"
-                  title="Скачать для Android"
-                  onClick={() => openClientDownload("android")}
+                  disabled={!loginDlAvailable.and}
+                  title={
+                    loginDlAvailable.and
+                      ? "Скачать для Android"
+                      : "Ссылка на Android не настроена (client-downloads.json или VITE_DOWNLOAD_ANDROID_URL)"
+                  }
+                  onClick={() => void openClientDownload("android")}
                 >
                   <svg width="28" height="28" viewBox="0 0 24 24" aria-hidden>
                     <path

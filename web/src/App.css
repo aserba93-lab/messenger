@@ -369,11 +369,15 @@ button.authPlatformIcon {
   font: inherit;
   color: inherit;
 }
-button.authPlatformIcon:hover {
+button.authPlatformIcon:hover:not(:disabled) {
   background: rgba(255, 255, 255, 0.08);
 }
-:root[data-theme="light"] button.authPlatformIcon:hover {
+:root[data-theme="light"] button.authPlatformIcon:hover:not(:disabled) {
   background: rgba(0, 0, 0, 0.06);
+}
+button.authPlatformIcon:disabled {
+  opacity: 0.38;
+  cursor: not-allowed;
 }
 .authPlatformIcon--ios {
   border: none;
@@ -514,6 +518,37 @@ button.authPlatformIcon:hover {
   background: var(--tg-bg-app);
   position: relative;
   --org-chat-logo: none;
+}
+
+/* Смартфон после входа: интерфейс в видимую область; экран входа прокручивается как обычно. */
+@media (max-width: 799px) {
+  html.tg-app-session,
+  body.tg-app-session {
+    height: 100%;
+    overflow: hidden;
+    overscroll-behavior: none;
+    touch-action: manipulation;
+  }
+  body.tg-app-session #root {
+    height: 100%;
+    min-height: 0;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+  body.tg-app-session .layout {
+    flex: 1;
+    min-height: 0;
+    height: 100%;
+    max-height: 100%;
+    min-height: 100svh;
+    min-height: 100dvh;
+  }
+  html.tg-pwa-standalone body.tg-app-session .layout {
+    min-height: 100dvh;
+    padding-top: env(safe-area-inset-top, 0);
+    box-sizing: border-box;
+  }
 }
 
 .layout.layout--info {
@@ -1719,8 +1754,14 @@ button.active {
   position: relative;
 }
 
-/* iPhone/PWA: при открытой клавиатуре шапка чата остаётся у верхнего края области просмотра */
+/* Мобильный браузер: чат заполняет колонку без лишней высоты страницы */
 @media (max-width: 799px) {
+  .chat {
+    height: 100%;
+    min-height: 0;
+    max-height: 100%;
+  }
+  /* iPhone/PWA: при открытой клавиатуре шапка чата остаётся у верхнего края области просмотра */
   .chat .chatHeader {
     position: -webkit-sticky;
     position: sticky;
