@@ -323,6 +323,9 @@ export class GroupMeshSession {
   async startScreenShare(): Promise<void> {
     if (this.closed) throw new Error("Созвон завершён");
     if (this.audioOnly) throw new Error("Демонстрация экрана только в видеозвонке");
+    if (typeof navigator !== "undefined" && /Android|iPhone|iPad|iPod/i.test(navigator.userAgent)) {
+      throw new Error("Демонстрация экрана на телефоне не поддерживается — откройте созвон на ПК (Chrome или Edge).");
+    }
     const cam = this.localStream.getVideoTracks()[0];
     if (!cam) throw new Error("Нет видеотрека камеры");
     if (this.screenShareEnd) return;

@@ -272,6 +272,9 @@ export async function startOutgoingCall(
   const startScreenShareWrapped = async () => {
     if (opts.audioOnly) throw new Error("Демонстрация экрана доступна в видеозвонке");
     if (screenStop) return;
+    if (typeof navigator !== "undefined" && /Android|iPhone|iPad|iPod/i.test(navigator.userAgent)) {
+      throw new Error("Демонстрация экрана на телефоне не поддерживается — откройте звонок на ПК (Chrome или Edge).");
+    }
 
     const display = await navigator.mediaDevices.getDisplayMedia({
       video: { frameRate: { ideal: 30 } },
@@ -476,6 +479,9 @@ export async function acceptIncomingOffer(
   const startScreenShareWrapped = async () => {
     if (opts.audioOnly) throw new Error("Демонстрация экрана доступна в видеозвонке");
     if (screenStop) return;
+    if (typeof navigator !== "undefined" && /Android|iPhone|iPad|iPod/i.test(navigator.userAgent)) {
+      throw new Error("Демонстрация экрана на телефоне не поддерживается — откройте звонок на ПК (Chrome или Edge).");
+    }
 
     const display = await navigator.mediaDevices.getDisplayMedia({
       video: { frameRate: { ideal: 30 } },

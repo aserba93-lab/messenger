@@ -320,9 +320,90 @@ body {
   height: 48px;
   border-radius: 10px;
   box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.12);
+  filter: grayscale(1) contrast(1.05);
 }
 :root[data-theme="light"] .authLogoImg {
   box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.12);
+}
+.authPlatformRow {
+  display: flex;
+  justify-content: center;
+  align-items: flex-end;
+  gap: 20px;
+  margin-bottom: 14px;
+}
+.authPlatformIcon {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  color: #c8c8d0;
+  filter: grayscale(1);
+  opacity: 0.92;
+}
+.authPlatformIcon--ios {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 10px;
+  font: inherit;
+  color: inherit;
+}
+.authPlatformIcon--ios:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+.authPlatformIconHint {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  margin-top: 2px;
+  opacity: 0.85;
+}
+:root[data-theme="light"] .authPlatformIcon {
+  color: #3a3a44;
+}
+.authCard--guide {
+  max-width: min(560px, 100%);
+  text-align: left;
+}
+.authBackBtn {
+  border: none;
+  background: none;
+  color: #9acbff;
+  font-size: 13px;
+  cursor: pointer;
+  padding: 0 0 12px;
+  display: block;
+}
+.authBackBtn:hover {
+  text-decoration: underline;
+}
+.authGuideLead {
+  font-size: 14px;
+  line-height: 1.45;
+  margin: 0 0 12px;
+  opacity: 0.92;
+}
+.authIosSteps {
+  margin: 0 0 16px;
+  padding-left: 1.25rem;
+  font-size: 14px;
+  line-height: 1.5;
+}
+.authIosSteps li {
+  margin-bottom: 8px;
+}
+.authGuideUpdate {
+  font-size: 13px;
+  line-height: 1.45;
+  opacity: 0.88;
+  margin: 0;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+:root[data-theme="light"] .authGuideUpdate {
+  border-top-color: rgba(0, 0, 0, 0.08);
 }
 .authTitle {
   font-weight: 900;
