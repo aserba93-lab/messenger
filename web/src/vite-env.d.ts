@@ -20,6 +20,7 @@ interface Window {
     platform: NodeJS.Platform;
     focusAppWindow?: () => void;
     setWindowChrome?: (theme: "dark" | "light") => void;
+    openExternal?: (url: string) => void;
     showNativeNotification?: (payload: {
       title: string;
       body: string;

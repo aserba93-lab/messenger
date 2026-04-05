@@ -783,7 +783,10 @@ export default function App() {
   const chatListFilterAnchorRef = useRef<HTMLDivElement | null>(null);
   const clientDownloadsJsonRef = useRef<{ windows?: string; android?: string } | null | undefined>(undefined);
   /** На экране входа: есть ли URL для кнопок скачивания (без лишних ошибок в интерфейсе). */
-  const [loginDlAvailable, setLoginDlAvailable] = useState({ win: false, and: false });
+  const [loginDlAvailable, setLoginDlAvailable] = useState(() => ({
+    win: Boolean(import.meta.env.VITE_DOWNLOAD_WINDOWS_URL?.trim()),
+    and: Boolean(import.meta.env.VITE_DOWNLOAD_ANDROID_URL?.trim()),
+  }));
   const [channels, setChannels] = useState<Channel[]>([]);
   const [activeChannelId, setActiveChannelId] = useState("");
   const [groupChats, setGroupChats] = useState<GroupChat[]>([]);
@@ -917,20 +920,24 @@ export default function App() {
   useEffect(() => {
     if (token) return;
     void (async () => {
+      let j: { windows?: unknown; android?: unknown } = {};
       try {
         const r = await fetch("/client-downloads.json", { cache: "no-store" });
-        const j = r.ok ? await r.json() : {};
-        const win =
-          ((typeof j.windows === "string" ? j.windows : "").trim() || import.meta.env.VITE_DOWNLOAD_WINDOWS_URL?.trim() || "") !== "";
-        const and =
-          ((typeof j.android === "string" ? j.android : "").trim() || import.meta.env.VITE_DOWNLOAD_ANDROID_URL?.trim() || "") !== "";
-        setLoginDlAvailable({ win, and });
+        if (r.ok) {
+          try {
+            j = await r.json();
+          } catch {
+            j = {};
+          }
+        }
       } catch {
-        setLoginDlAvailable({
-          win: Boolean(import.meta.env.VITE_DOWNLOAD_WINDOWS_URL?.trim()),
-          and: Boolean(import.meta.env.VITE_DOWNLOAD_ANDROID_URL?.trim()),
-        });
+        j = {};
       }
+      const win =
+        ((typeof j.windows === "string" ? j.windows : "").trim() || import.meta.env.VITE_DOWNLOAD_WINDOWS_URL?.trim() || "") !== "";
+      const and =
+        ((typeof j.android === "string" ? j.android : "").trim() || import.meta.env.VITE_DOWNLOAD_ANDROID_URL?.trim() || "") !== "";
+      setLoginDlAvailable({ win, and });
     })();
   }, [token]);
 
@@ -6493,7 +6500,15 @@ export default function App() {
     if (clientDownloadsJsonRef.current === undefined) {
       try {
         const r = await fetch("/client-downloads.json", { cache: "no-store" });
-        clientDownloadsJsonRef.current = r.ok ? await r.json() : {};
+        if (r.ok) {
+          try {
+            clientDownloadsJsonRef.current = await r.json();
+          } catch {
+            clientDownloadsJsonRef.current = {};
+          }
+        } else {
+          clientDownloadsJsonRef.current = {};
+        }
       } catch {
         clientDownloadsJsonRef.current = {};
       }
@@ -6507,9 +6522,19 @@ export default function App() {
   }
 
   function openDownloadUrlInBrowser(url: string) {
+    const u = String(url || "").trim();
+    if (!u) return;
+    try {
+      if (typeof window !== "undefined" && window.electronShell?.openExternal && /^https?:\/\//i.test(u)) {
+        window.electronShell.openExternal(u);
+        return;
+      }
+    } catch {
+      /* fall through */
+    }
     try {
       const a = document.createElement("a");
-      a.href = url;
+      a.href = u;
       a.target = "_blank";
       a.rel = "noopener noreferrer";
       a.style.display = "none";
@@ -6518,16 +6543,23 @@ export default function App() {
       a.remove();
     } catch {
       try {
-        window.open(url, "_blank", "noopener,noreferrer");
+        window.open(u, "_blank", "noopener,noreferrer");
       } catch {
-        window.location.href = url;
+        window.location.href = u;
       }
     }
   }
 
   async function openClientDownload(kind: "windows" | "android") {
     const url = await resolveClientDownloadUrl(kind);
-    if (!url) return;
+    if (!url) {
+      setAuthError(
+        kind === "windows"
+          ? "Ссылка на установщик Windows не задана. Укажите URL в client-downloads.json на сервере или в .env (VITE_DOWNLOAD_WINDOWS_URL) и пересоберите сайт."
+          : "Ссылка на Android не задана. Укажите URL в client-downloads.json на сервере или в .env (VITE_DOWNLOAD_ANDROID_URL) и пересоберите сайт.",
+      );
+      return;
+    }
     openDownloadUrlInBrowser(url);
   }
 

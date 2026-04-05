@@ -178,6 +178,16 @@ function createWindow() {
   });
 }
 
+ipcMain.on("electron:open-external", (_e, payload) => {
+  const url = String(payload?.url ?? "").trim();
+  if (!/^https?:\/\//i.test(url)) return;
+  try {
+    void shell.openExternal(url);
+  } catch (e) {
+    console.error("electron:open-external", e);
+  }
+});
+
 ipcMain.on("bring-to-front", () => {
   const w = mainWindow;
   if (!w || w.isDestroyed()) return;

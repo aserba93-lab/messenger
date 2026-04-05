@@ -11,6 +11,10 @@ contextBridge.exposeInMainWorld("electronShell", {
   setWindowChrome: (theme) => {
     ipcRenderer.send("electron:set-window-chrome", { theme });
   },
+  /** Ссылки загрузки клиента / внешние URL (надёжнее, чем target=_blank в некоторых сборках). */
+  openExternal: (url) => {
+    ipcRenderer.send("electron:open-external", { url });
+  },
   /** Тост Windows из main process (в рендерере часто не показывается). */
   showNativeNotification: (payload) => {
     ipcRenderer.send("electron:show-notification", payload);
