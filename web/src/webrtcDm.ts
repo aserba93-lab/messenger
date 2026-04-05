@@ -1,4 +1,5 @@
 import type { Socket } from "socket.io-client";
+import { getUserMediaWithRelease } from "./mediaCapture";
 
 const DEFAULT_ICE: RTCIceServer[] = [
   { urls: "stun:stun.l.google.com:19302" },
@@ -165,13 +166,17 @@ export async function startOutgoingCall(
     audioOnly: boolean;
     onRemoteStream: (s: MediaStream) => void;
     onClose: () => void;
+    beforeCapture?: () => void | Promise<void>;
   },
 ): Promise<ActiveCall> {
   const iceServers = parseIceFromEnv();
-  const stream = await navigator.mediaDevices.getUserMedia({
-    audio: true,
-    video: !opts.audioOnly,
-  });
+  const stream = await getUserMediaWithRelease(
+    {
+      audio: true,
+      video: !opts.audioOnly,
+    },
+    opts.beforeCapture,
+  );
   const pc = createPeerConnection(iceServers);
   const iceQueue = makeIceCandidateQueue(pc);
   for (const t of stream.getTracks()) pc.addTrack(t, stream);
@@ -375,13 +380,17 @@ export async function acceptIncomingOffer(
     preBufferedIceCandidates?: RTCIceCandidateInit[];
     onRemoteStream: (s: MediaStream) => void;
     onClose: () => void;
+    beforeCapture?: () => void | Promise<void>;
   },
 ): Promise<ActiveCall> {
   const iceServers = parseIceFromEnv();
-  const stream = await navigator.mediaDevices.getUserMedia({
-    audio: true,
-    video: !opts.audioOnly,
-  });
+  const stream = await getUserMediaWithRelease(
+    {
+      audio: true,
+      video: !opts.audioOnly,
+    },
+    opts.beforeCapture,
+  );
   const pc = createPeerConnection(iceServers);
   const iceQueue = makeIceCandidateQueue(pc);
   for (const t of stream.getTracks()) pc.addTrack(t, stream);

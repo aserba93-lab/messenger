@@ -123,11 +123,11 @@
   color: rgba(20, 50, 90, 0.95);
 }
 
-:root[data-theme="light"] .appToast {
+:root[data-theme="light"] .notifyCard {
   background: #f6f7fb;
   border-color: rgba(0, 0, 0, 0.12);
   color: var(--tg-text);
-  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.12);
+  box-shadow: 0 10px 32px rgba(0, 0, 0, 0.14);
 }
 :root[data-theme="light"] .msgMenu {
   background: #f6f7fb;
@@ -161,36 +161,82 @@ body {
   font-family: Inter, "Segoe UI", Roboto, Arial, sans-serif;
 }
 
-/* Когда системные уведомления недоступны (часто Android WebView / без разрешения) */
-.appToast {
+/* Всплывающие карточки справа сверху (в духе Telegram), дублируют/заменяют системные уведомления */
+.notifyCardStack {
   position: fixed;
-  top: max(12px, env(safe-area-inset-top, 12px));
-  left: 50%;
-  transform: translateX(-50%);
+  top: max(10px, env(safe-area-inset-top, 10px));
+  right: max(10px, env(safe-area-inset-right, 10px));
   z-index: 2147483000;
-  max-width: min(92vw, 440px);
-  padding: 12px 38px 12px 14px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 10px;
+  max-width: min(calc(100vw - 20px), 360px);
+  pointer-events: none;
+}
+.notifyCardStack .notifyCard {
+  pointer-events: auto;
+}
+.notifyCard {
+  position: relative;
+  width: 100%;
   border-radius: 12px;
   background: var(--tg-bg-elevated);
   border: 1px solid var(--tg-border-subtle);
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.38);
-  font-size: 14px;
-  line-height: 1.35;
-  color: var(--tg-text);
+  overflow: hidden;
+  text-align: left;
+  animation: notifyCardIn 0.22s ease-out;
 }
-.appToastClose {
+@keyframes notifyCardIn {
+  from {
+    opacity: 0;
+    transform: translateX(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+.notifyCardClose {
   position: absolute;
-  top: 4px;
-  right: 6px;
+  top: 2px;
+  right: 4px;
+  z-index: 1;
   border: none;
   background: transparent;
   color: var(--tg-muted);
   cursor: pointer;
-  font-size: 20px;
+  font-size: 18px;
   line-height: 1;
-  padding: 4px 8px;
+  padding: 6px 10px;
 }
-.appToastText {
+.notifyCardMain {
+  display: block;
+  width: 100%;
+  margin: 0;
+  padding: 12px 36px 12px 14px;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.notifyCardMain:hover {
+  filter: brightness(1.06);
+}
+.notifyCardTitle {
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.25;
+  word-break: break-word;
+}
+.notifyCardBody {
+  margin-top: 4px;
+  font-size: 13px;
+  line-height: 1.35;
+  opacity: 0.92;
   word-break: break-word;
 }
 
@@ -263,6 +309,20 @@ body {
   background: rgba(248, 249, 252, 0.92);
   border: 1px solid rgba(0, 0, 0, 0.1);
   box-shadow: 0 12px 40px rgba(55, 65, 85, 0.12);
+}
+.authLogoRow {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 10px;
+}
+.authLogoImg {
+  width: 48px;
+  height: 48px;
+  border-radius: 10px;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.12);
+}
+:root[data-theme="light"] .authLogoImg {
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.12);
 }
 .authTitle {
   font-weight: 900;
@@ -440,7 +500,7 @@ body {
 .tgLogoMark {
   width: 32px;
   height: 32px;
-  border-radius: 999px;
+  border-radius: 7px;
   background: #000;
   display: grid;
   place-items: center;
@@ -480,6 +540,16 @@ body {
   background: #141418;
   color: #fff;
   box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.18);
+}
+/* Совпадает с public/favicon.svg: тёмный фон + рамка */
+.tgLogoMark--sf {
+  background: #0f0f12;
+  box-shadow: inset 0 0 0 1px #2e323c;
+}
+:root[data-theme="light"] .tgLogoMark--sf {
+  background: #0f0f12;
+  color: #f2f3f5;
+  box-shadow: inset 0 0 0 1px #2e323c;
 }
 .tgTopBarTitle {
   flex: 1;
@@ -1838,12 +1908,7 @@ button.active {
 .mainMessages {
   flex: 1 1 auto;
   isolation: isolate;
-}
-.mainMessages .chatPullHint {
-  flex-shrink: 0;
-  height: 0;
-  overflow: hidden;
-  box-sizing: border-box;
+  overscroll-behavior-y: contain;
 }
 .mainMessages::before {
   content: "";

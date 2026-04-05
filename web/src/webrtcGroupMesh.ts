@@ -1,4 +1,5 @@
 import type { Socket } from "socket.io-client";
+import { getUserMediaWithRelease } from "./mediaCapture";
 import type { CallSignalPayload } from "./webrtcDm";
 
 /** Полносвязный mesh WebRTC внутри организации (тот же сокет, что и 1:1). Без SFU: нагрузка растёт с N², поэтому жёсткий лимит участников. */
@@ -425,13 +426,18 @@ export async function createGroupMeshSession(
     initialCamEnabled?: boolean;
     onRemoteStream: (peerId: string, stream: MediaStream) => void;
     onPeerDisconnected?: (peerId: string) => void;
+    /** Перед захватом микрофона/камеры: остановить запись голоса и старые треки (Electron). */
+    beforeCapture?: () => void | Promise<void>;
   },
 ): Promise<{ session: GroupMeshSession; localStream: MediaStream; peerIds: string[] }> {
   const peers = prepareGroupMeshPeerIds(opts.myUserId, opts.peerUserIds);
-  const stream = await navigator.mediaDevices.getUserMedia({
-    audio: true,
-    video: !opts.audioOnly,
-  });
+  const stream = await getUserMediaWithRelease(
+    {
+      audio: true,
+      video: !opts.audioOnly,
+    },
+    opts.beforeCapture,
+  );
   const micOn = opts.initialMicEnabled !== false;
   const camOn = opts.initialCamEnabled !== false;
   stream.getAudioTracks().forEach((t) => {

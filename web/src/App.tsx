@@ -1406,14 +1406,16 @@ export default function App() {
     presenceByUserIdRef.current = presenceByUserId;
   }, [presenceByUserId]);
   const loadUsersRef = useRef<((tokenOverride?: string, orgIdOverride?: string) => Promise<void>) | null>(null);
-  /** Внутриприложенческое всплывающее уведомление, если OS Notification недоступен или не сработал. */
-  const [appToast, setAppToast] = useState<null | { text: string; id: number }>(null);
-  const pushAppToast = useCallback((text: string) => {
-    const id = Date.now();
-    setAppToast({ text, id });
-    window.setTimeout(() => {
-      setAppToast((t) => (t?.id === id ? null : t));
-    }, 5200);
+  /** Всплывающие карточки справа сверху (как в Telegram), в т.ч. когда OS-уведомления недоступны. */
+  type NotifyCard = { id: number; title: string; body: string; chatKey?: string; peerUserId?: string };
+  const [notifyCards, setNotifyCards] = useState<NotifyCard[]>([]);
+  const pushNotifyCard = useCallback((c: Omit<NotifyCard, "id">) => {
+    const id = Date.now() + Math.random();
+    setNotifyCards((prev) => {
+      const withoutDup = c.chatKey ? prev.filter((x) => x.chatKey !== c.chatKey) : prev;
+      return [...withoutDup, { ...c, id }].slice(-5);
+    });
+    window.setTimeout(() => setNotifyCards((p) => p.filter((x) => x.id !== id)), 6500);
   }, []);
   const isCompanyAdmin = viewerRole === "owner" || viewerRole === "admin";
   useEffect(() => {
@@ -2129,60 +2131,13 @@ export default function App() {
   useEffect(() => {
     const el = messagesWrapRef.current;
     if (!el) return;
-    const hint = chatPullHintRef.current;
     const onScroll = () => {
       const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
       const nearBottom = distance < 200;
       stickToBottomRef.current = nearBottom;
       setShowScrollToBottom(!nearBottom);
     };
-    const onTouchStart = (e: TouchEvent) => {
-      if (threadRootId || showPins || showSaved) return;
-      chatPullTouchRef.current = { y: e.touches[0].clientY, active: el.scrollTop <= 2 };
-    };
-    const onTouchMove = (e: TouchEvent) => {
-      if (!chatPullTouchRef.current.active) return;
-      if (el.scrollTop > 2) {
-        chatPullTouchRef.current.active = false;
-        if (hint) hint.style.height = "0px";
-        return;
-      }
-      const dy = e.touches[0].clientY - chatPullTouchRef.current.y;
-      if (dy > 0 && hint) {
-        hint.style.height = `${Math.min(56, dy * 0.45)}px`;
-      }
-    };
-    const onTouchEnd = () => {
-      if (!chatPullTouchRef.current.active) return;
-      chatPullTouchRef.current.active = false;
-      const h = hint ? parseInt(hint.style.height || "0", 10) || 0 : 0;
-      if (hint) hint.style.height = "0px";
-      if (h < 28) return;
-      if (!token || threadRootId || showPins || showSaved) return;
-      void refreshChatsAndPresenceRef.current?.();
-    };
-    let wheelPullAcc = 0;
-    const onWheel = (e: WheelEvent) => {
-      if (threadRootId || showPins || showSaved) return;
-      if (el.scrollTop > 2) {
-        wheelPullAcc = 0;
-        return;
-      }
-      if (e.deltaY >= 0) {
-        wheelPullAcc = 0;
-        return;
-      }
-      wheelPullAcc += -e.deltaY;
-      if (wheelPullAcc < 100) return;
-      wheelPullAcc = 0;
-      if (!token) return;
-      void refreshChatsAndPresenceRef.current?.();
-    };
     el.addEventListener("scroll", onScroll, { passive: true });
-    el.addEventListener("touchstart", onTouchStart, { passive: true });
-    el.addEventListener("touchmove", onTouchMove, { passive: true });
-    el.addEventListener("touchend", onTouchEnd);
-    el.addEventListener("wheel", onWheel, { passive: true });
     stickToBottomRef.current = true;
     onScroll();
     queueMicrotask(() => {
@@ -2190,10 +2145,6 @@ export default function App() {
     });
     return () => {
       el.removeEventListener("scroll", onScroll);
-      el.removeEventListener("touchstart", onTouchStart);
-      el.removeEventListener("touchmove", onTouchMove);
-      el.removeEventListener("touchend", onTouchEnd);
-      el.removeEventListener("wheel", onWheel);
     };
   }, [
     activeChannelId,
@@ -2202,7 +2153,6 @@ export default function App() {
     threadRootId,
     showPins,
     showSaved,
-    token,
     mode,
   ]);
 
@@ -2250,8 +2200,6 @@ export default function App() {
   const threadSearchInputRef = useRef<HTMLInputElement | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const messagesWrapRef = useRef<HTMLDivElement | null>(null);
-  const chatPullHintRef = useRef<HTMLDivElement | null>(null);
-  const chatPullTouchRef = useRef<{ y: number; active: boolean }>({ y: 0, active: false });
   const chatSearchRef = useRef<HTMLInputElement | null>(null);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const stickToBottomRef = useRef(true);
@@ -3178,7 +3126,6 @@ export default function App() {
         }
       }
 
-      let osShown = false;
       if (canBrowserOsNotify) {
         try {
           const origin = typeof window !== "undefined" ? window.location.origin : "";
@@ -3189,11 +3136,10 @@ export default function App() {
             badge: nIcon,
             tag: `${key || "dm"}:latest`,
           } as NotificationOptions);
-          osShown = true;
           n.onclick = () => {
             focusNotificationsWindow();
             try {
-              if (key) void openChatFromList(key);
+              if (key) void openChatFromListRef.current?.(key);
             } catch {
               /* ignore */
             }
@@ -3207,8 +3153,12 @@ export default function App() {
           /* ignore */
         }
       }
-      if (wantPing && !osShown) {
-        pushAppToast(`${fromLabelPreview}: ${bodyPreview.slice(0, 120)}`);
+      if (wantPing && key) {
+        pushNotifyCard({
+          title: fromLabelPreview || "Новое сообщение",
+          body: bodyPreview.slice(0, 120),
+          chatKey: key,
+        });
       }
       if (
         key &&
@@ -3433,7 +3383,7 @@ export default function App() {
                 const data = await gql<{ dms: DirectChat[] }>(`query { dms { id userIds } }`, {}, token);
                 const uid = userIdRef.current;
                 const dc = data.dms.find((d) => d.userIds.includes(from) && (!uid || d.userIds.includes(uid)));
-                if (dc) void openChatFromList(`d:${dc.id}`);
+                if (dc) void openChatFromListRef.current?.(`d:${dc.id}`);
               } catch {
                 /* ignore */
               }
@@ -3449,7 +3399,11 @@ export default function App() {
         }
       }
       if (!incomingCallOs) {
-        pushAppToast(`${callerLabel || "Входящий звонок"} — ${audioOnly ? "аудио" : "видео"}`);
+        pushNotifyCard({
+          title: callerLabel || "Входящий звонок",
+          body: audioOnly ? "Входящий аудиозвонок" : "Входящий видеозвонок",
+          peerUserId: from,
+        });
       }
       try {
         if (typeof navigator !== "undefined" && typeof (navigator as Navigator & { vibrate?: (p: number | number[]) => boolean }).vibrate === "function") {
@@ -3512,7 +3466,7 @@ export default function App() {
           n.onclick = () => {
             focusNotificationsWindow();
             try {
-              void openChatFromList(`g:${gc}`);
+              void openChatFromListRef.current?.(`g:${gc}`);
             } catch {
               /* ignore */
             }
@@ -3527,7 +3481,11 @@ export default function App() {
         }
       }
       if (!showed) {
-        pushAppToast(`Групповой звонок: ${label} (${audioOnly ? "аудио" : "видео"})`);
+        pushNotifyCard({
+          title: "Групповой звонок",
+          body: `${label} — ${audioOnly ? "аудио" : "видео"}`,
+          chatKey: `g:${gc}`,
+        });
       }
       setGroupCallLiveAt((prev) => ({ ...prev, [gc]: Date.now() }));
       try {
@@ -3545,8 +3503,15 @@ export default function App() {
       setGroupCallLiveAt((prev) => ({ ...prev, [meshId]: Date.now() }));
       const from = String(data?.fromUserId ?? "");
       const audioOnly = !!data?.audioOnly;
+      const directChatId = String(data?.directChatId ?? "");
       const label = from ? displayUserNameForSidebar(usersRef.current.find((x) => x.id === from), from) : "Собеседник";
-      pushAppToast(`${label} — ${audioOnly ? "аудио" : "видео"} созвон`);
+      const dmKey = directChatId ? `d:${directChatId}` : "";
+      pushNotifyCard({
+        title: "Личный созвон",
+        body: `${label} — ${audioOnly ? "звонок" : "видеозвонок"}`,
+        chatKey: dmKey || undefined,
+        peerUserId: dmKey ? undefined : from || undefined,
+      });
       try {
         if (
           typeof Notification !== "undefined" &&
@@ -3559,10 +3524,16 @@ export default function App() {
           });
           nDm.onclick = () => {
             focusNotificationsWindow();
-            if (meshId.startsWith(DM_MESH_PREFIX)) {
+            if (directChatId) {
+              try {
+                void openChatFromListRef.current?.(`d:${directChatId}`);
+              } catch {
+                /* ignore */
+              }
+            } else if (meshId.startsWith(DM_MESH_PREFIX)) {
               const dcid = meshId.slice(DM_MESH_PREFIX.length);
               try {
-                void openChatFromList(`d:${dcid}`);
+                void openChatFromListRef.current?.(`d:${dcid}`);
               } catch {
                 /* ignore */
               }
@@ -3749,6 +3720,8 @@ export default function App() {
     return data.dms;
   }
 
+  const openChatFromListRef = useRef<(raw: string) => Promise<void>>(async () => {});
+
   async function openChatFromList(raw: string) {
     const value = String(raw || "");
     if (!value) return;
@@ -3776,6 +3749,28 @@ export default function App() {
       setUnreadByKey((prev) => ({ ...prev, [chatKeyFor("d", id)]: 0 }));
     }
   }
+  openChatFromListRef.current = openChatFromList;
+
+  const openNotifyCardTarget = useCallback(
+    async (c: NotifyCard) => {
+      if (c.chatKey) {
+        await openChatFromListRef.current?.(c.chatKey);
+        return;
+      }
+      if (!c.peerUserId || !token) return;
+      try {
+        const data = await gql<{ dms: DirectChat[] }>(`query { dms { id userIds } }`, {}, token);
+        const uid = userIdRef.current;
+        const dc = data.dms.find(
+          (d) => d.userIds.includes(c.peerUserId!) && (!uid || d.userIds.includes(uid)),
+        );
+        if (dc) await openChatFromListRef.current?.(`d:${dc.id}`);
+      } catch {
+        /* ignore */
+      }
+    },
+    [token],
+  );
 
   async function sendServiceMessageToCurrentChat(content: string) {
     if (!token || !content.trim()) return;
@@ -3900,6 +3895,7 @@ export default function App() {
         offerSdp,
         audioOnly,
         preBufferedIceCandidates,
+        beforeCapture: prepareDeviceForCall,
         onRemoteStream: (stream) => {
           setWebrtcUi((prev) => {
             if (prev) return { ...prev, remoteStream: stream };
@@ -3965,6 +3961,24 @@ export default function App() {
     webrtcBusyRef.current = false;
     groupMeshJoiningRef.current = false;
   }, []);
+
+  const prepareDeviceForCall = useCallback(async () => {
+    try {
+      stopVoiceRecordRef.current();
+    } catch {
+      /* ignore */
+    }
+    try {
+      const ms = mediaStreamRef.current;
+      if (ms) {
+        ms.getTracks().forEach((t) => t.stop());
+        mediaStreamRef.current = null;
+      }
+    } catch {
+      /* ignore */
+    }
+    hangupGroupMesh();
+  }, [hangupGroupMesh]);
 
   async function joinGroupMeshFromPeerOffer(
     data: any,
@@ -4032,9 +4046,9 @@ export default function App() {
             try {
               if (isDmMesh) {
                 const directChatId = gc.slice(DM_MESH_PREFIX.length);
-                void openChatFromList(`d:${directChatId}`);
+                void openChatFromListRef.current?.(`d:${directChatId}`);
               } else {
-                void openChatFromList(`g:${gc}`);
+                void openChatFromListRef.current?.(`g:${gc}`);
               }
             } catch {
               /* ignore */
@@ -4049,8 +4063,18 @@ export default function App() {
           /* ignore */
         }
       } else {
-        pushAppToast(
-          isDmMesh ? `Личный звонок: ${callerLabel}` : `Групповой звонок: ${resolvedTitle} (${callerLabel})`,
+        pushNotifyCard(
+          isDmMesh
+            ? {
+                title: "Личный звонок",
+                body: callerLabel,
+                chatKey: `d:${gc.slice(DM_MESH_PREFIX.length)}`,
+              }
+            : {
+                title: "Групповой звонок",
+                body: `${resolvedTitle} — ${callerLabel}`,
+                chatKey: `g:${gc}`,
+              },
         );
       }
     } catch {
@@ -4064,6 +4088,7 @@ export default function App() {
         audioOnly,
         initialMicEnabled: initialMic,
         initialCamEnabled: initialCam,
+        beforeCapture: prepareDeviceForCall,
         onRemoteStream: (peerId, stream) => {
           setGroupMeshUi((prev) => (prev ? { ...prev, remotes: { ...prev.remotes, [peerId]: stream } } : prev));
         },
@@ -4142,6 +4167,7 @@ export default function App() {
         audioOnly,
         initialMicEnabled: prefs.mic,
         initialCamEnabled: prefs.video,
+        beforeCapture: prepareDeviceForCall,
         onRemoteStream: (peerId, stream) => {
           setGroupMeshUi((prev) => (prev ? { ...prev, remotes: { ...prev.remotes, [peerId]: stream } } : prev));
         },
@@ -4213,6 +4239,7 @@ export default function App() {
         audioOnly,
         initialMicEnabled: prefs.mic,
         initialCamEnabled: prefs.video,
+        beforeCapture: prepareDeviceForCall,
         onRemoteStream: (peerId, stream) => {
           setGroupMeshUi((prev) => (prev ? { ...prev, remotes: { ...prev.remotes, [peerId]: stream } } : prev));
         },
@@ -6345,6 +6372,9 @@ export default function App() {
     return (
       <div className="authPage">
         <div className="authCard">
+          <div className="authLogoRow" aria-hidden>
+            <img className="authLogoImg" src="/favicon.svg" width={48} height={48} alt="" />
+          </div>
           <div className="authTitle">sf-communication</div>
           <div className="authSub">Вход</div>
 
@@ -6431,14 +6461,24 @@ export default function App() {
       className={`layout ${showRightPanel ? "layout--info" : ""} ${viewportW < 800 && mobileSidebarOpen ? "layout--sidebarOpen" : ""}`}
       style={orgChatLogoCss ? ({ ["--org-chat-logo" as string]: orgChatLogoCss } as CSSProperties) : undefined}
     >
-      {appToast ? (
-        <div className="appToast" role="status">
-          <button type="button" className="appToastClose" onClick={() => setAppToast(null)} aria-label="Закрыть">
-            ×
-          </button>
-          <div className="appToastText">{appToast.text}</div>
-        </div>
-      ) : null}
+      <div className="notifyCardStack" aria-live="polite">
+        {notifyCards.map((c) => (
+          <div key={c.id} className="notifyCard" role="status">
+            <button
+              type="button"
+              className="notifyCardClose"
+              aria-label="Закрыть"
+              onClick={() => setNotifyCards((p) => p.filter((x) => x.id !== c.id))}
+            >
+              ×
+            </button>
+            <button type="button" className="notifyCardMain" onClick={() => void openNotifyCardTarget(c)}>
+              <div className="notifyCardTitle">{c.title}</div>
+              {c.body ? <div className="notifyCardBody">{c.body}</div> : null}
+            </button>
+          </div>
+        ))}
+      </div>
       {token &&
       typeof Notification !== "undefined" &&
       Notification.permission === "default" &&
@@ -6697,7 +6737,7 @@ export default function App() {
           >
             ☰
           </button>
-          <div className="tgLogoMark tgLogoMark--brand" aria-hidden title="Sales factory">
+          <div className="tgLogoMark tgLogoMark--brand tgLogoMark--sf" aria-hidden title="Sales factory">
             <span className="tgLogoPlane">SF</span>
             {totalUnread > 0 ? (
               <span className="tgLogoBadge" aria-hidden>
@@ -8354,7 +8394,6 @@ export default function App() {
               ) : null}
             </div>
           ) : null}
-          <div ref={chatPullHintRef} className="chatPullHint" aria-hidden />
           {typingUserIds.length ? <div className="typing">Печатает: {typingUserIds.map(displayUser).join(", ")}</div> : null}
           {messages.map((m, idx) => {
             const prev = idx > 0 ? messages[idx - 1] : null;
