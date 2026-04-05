@@ -1877,8 +1877,11 @@ export default function App() {
       const kb = b.kind === "d" ? chatKeyFor("d", b.d.id) : b.kind === "g" ? chatKeyFor("g", b.g.id) : chatKeyFor("c", b.c.id);
       return compareChatsByPinThenRecency(ka, kb);
     });
+    if (chatListScope === "dms") return rows.filter((r) => r.kind === "d");
+    if (chatListScope === "groups") return rows.filter((r) => r.kind === "g");
+    if (chatListScope === "channels") return rows.filter((r) => r.kind === "c");
     return rows;
-  }, [orderedDMs, orderedGroups, orderedChannels, pinnedChatByKey, pinnedOrderByKey, chatPreviewByKey]);
+  }, [orderedDMs, orderedGroups, orderedChannels, pinnedChatByKey, pinnedOrderByKey, chatPreviewByKey, chatListScope]);
 
   const sidebarFolderLayout = useMemo(():
     | { mode: "flat"; rows: (typeof unifiedChatRows)[number][] }
@@ -6395,6 +6398,22 @@ export default function App() {
 
   const isAuthed = !!token;
 
+  function openClientDownload(kind: "windows" | "android") {
+    const url =
+      kind === "windows"
+        ? import.meta.env.VITE_DOWNLOAD_WINDOWS_URL?.trim()
+        : import.meta.env.VITE_DOWNLOAD_ANDROID_URL?.trim();
+    if (!url) {
+      setAuthError(
+        kind === "windows"
+          ? "Ссылка на установщик Windows не задана (переменная VITE_DOWNLOAD_WINDOWS_URL для сборки)."
+          : "Ссылка на приложение Android не задана (переменная VITE_DOWNLOAD_ANDROID_URL для сборки).",
+      );
+      return;
+    }
+    window.location.assign(url);
+  }
+
   if (!isAuthed) {
     if (authScreen === "ios") {
       return (
@@ -6427,30 +6446,6 @@ export default function App() {
         <div className="authCard">
           <div className="authLogoRow" aria-hidden>
             <img className="authLogoImg" src="/pwa-icon-192.png" width={48} height={48} alt="" />
-          </div>
-          <div className="authPlatformRow" aria-label="Клиенты для разных систем">
-            <span className="authPlatformIcon" title="Windows">
-              <svg width="28" height="28" viewBox="0 0 24 24" aria-hidden>
-                <path fill="currentColor" d="M3 5.5 11 4v7H3V5.5zm9-.4 9-1.2V11h-9V5.1zM3 13h8v7.5l-8-1V13zm9 0h9v8.2l-9-1.2V13z" />
-              </svg>
-            </span>
-            <span className="authPlatformIcon" title="Android">
-              <svg width="28" height="28" viewBox="0 0 24 24" aria-hidden>
-                <path
-                  fill="currentColor"
-                  d="M17.6 9.48l1.84-3.36c.12-.22-.04-.48-.3-.48h-1.87l-1.47-2.54c-.12-.22-.42-.22-.54 0L13.75 5.64h-3.5L9.28 3.1c-.12-.22-.42-.22-.54 0L7.27 5.64H5.4c-.26 0-.42.26-.3.48L7 9.48C4.87 10.86 3.5 13.2 3.5 15.87V17h1.5v1.25c0 .69.56 1.25 1.25 1.25s1.25-.56 1.25-1.25V17h9v1.25c0 .69.56 1.25 1.25 1.25s1.25-.56 1.25-1.25V17H21v-1.13c0-2.67-1.37-5.01-3.4-6.39zM7.5 14c-.83 0-1.5-.67-1.5-1.5S6.67 11 7.5 11s1.5.67 1.5 1.5S8.33 14 7.5 14zm9 0c-.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5z"
-                />
-              </svg>
-            </span>
-            <button type="button" className="authPlatformIcon authPlatformIcon--ios" title="Инструкция для iPhone/iPad" onClick={() => setAuthScreen("ios")}>
-              <svg width="28" height="28" viewBox="0 0 24 24" aria-hidden>
-                <path
-                  fill="currentColor"
-                  d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.81-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M13 3.5c.73-.83 1.94-1.46 2.94-1.5.13 1.17-.34 2.35-1.04 3.19-.69.85-1.83 1.51-2.95 1.42-.15-1.15.41-2.35 1.05-3.11z"
-                />
-              </svg>
-              <span className="authPlatformIconHint">iOS</span>
-            </button>
           </div>
           <div className="authTitle">sf-communication</div>
           <div className="authSub">Вход</div>
@@ -6504,6 +6499,40 @@ export default function App() {
               >
                 Забыли пароль?
               </button>
+              <div className="authPlatformRow authPlatformRow--afterForgot" aria-label="Клиенты для разных систем">
+                <button
+                  type="button"
+                  className="authPlatformIcon"
+                  title="Скачать для Windows"
+                  onClick={() => openClientDownload("windows")}
+                >
+                  <svg width="28" height="28" viewBox="0 0 24 24" aria-hidden>
+                    <path fill="currentColor" d="M3 5.5 11 4v7H3V5.5zm9-.4 9-1.2V11h-9V5.1zM3 13h8v7.5l-8-1V13zm9 0h9v8.2l-9-1.2V13z" />
+                  </svg>
+                </button>
+                <button
+                  type="button"
+                  className="authPlatformIcon"
+                  title="Скачать для Android"
+                  onClick={() => openClientDownload("android")}
+                >
+                  <svg width="28" height="28" viewBox="0 0 24 24" aria-hidden>
+                    <path
+                      fill="currentColor"
+                      d="M17.6 9.48l1.84-3.36c.12-.22-.04-.48-.3-.48h-1.87l-1.47-2.54c-.12-.22-.42-.22-.54 0L13.75 5.64h-3.5L9.28 3.1c-.12-.22-.42-.22-.54 0L7.27 5.64H5.4c-.26 0-.42.26-.3.48L7 9.48C4.87 10.86 3.5 13.2 3.5 15.87V17h1.5v1.25c0 .69.56 1.25 1.25 1.25s1.25-.56 1.25-1.25V17h9v1.25c0 .69.56 1.25 1.25 1.25s1.25-.56 1.25-1.25V17H21v-1.13c0-2.67-1.37-5.01-3.4-6.39zM7.5 14c-.83 0-1.5-.67-1.5-1.5S6.67 11 7.5 11s1.5.67 1.5 1.5S8.33 14 7.5 14zm9 0c-.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5z"
+                    />
+                  </svg>
+                </button>
+                <button type="button" className="authPlatformIcon authPlatformIcon--ios" title="Инструкция для iPhone/iPad" onClick={() => setAuthScreen("ios")}>
+                  <svg width="28" height="28" viewBox="0 0 24 24" aria-hidden>
+                    <path
+                      fill="currentColor"
+                      d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.81-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M13 3.5c.73-.83 1.94-1.46 2.94-1.5.13 1.17-.34 2.35-1.04 3.19-.69.85-1.83 1.51-2.95 1.42-.15-1.15.41-2.35 1.05-3.11z"
+                    />
+                  </svg>
+                  <span className="authPlatformIconHint">iOS</span>
+                </button>
+              </div>
             </>
           )}
           {authError ? <div style={{ color: "#ff9ea6", fontSize: 12, marginTop: 6 }}>{authError}</div> : null}
@@ -6907,6 +6936,69 @@ export default function App() {
                 Архив
               </button>
             </div>
+            <button
+              type="button"
+              className="tgCircleBtn tgChatScopeFilterBtn"
+              title="Фильтр списка чатов"
+              aria-expanded={chatListFilterOpen}
+              aria-haspopup="menu"
+              onClick={() => setChatListFilterOpen((v) => !v)}
+            >
+              <svg className="tgChatScopeFilterIcon" width="18" height="18" viewBox="0 0 24 24" aria-hidden>
+                <path
+                  fill="currentColor"
+                  d="M10 18h4v-2h-4v2zM3 6v2h18V6H3zm3 7h12v-2H6v2z"
+                />
+              </svg>
+            </button>
+            {chatListFilterOpen ? (
+              <div className="tgPopoverMenu tgChatScopePopover" role="menu">
+                <button
+                  type="button"
+                  role="menuitem"
+                  className={`tgPopoverItem ${chatListScope === "all" ? "tgPopoverItem--active" : ""}`}
+                  onClick={() => {
+                    setChatListScope("all");
+                    setChatListFilterOpen(false);
+                  }}
+                >
+                  Все чаты
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  className={`tgPopoverItem ${chatListScope === "dms" ? "tgPopoverItem--active" : ""}`}
+                  onClick={() => {
+                    setChatListScope("dms");
+                    setChatListFilterOpen(false);
+                  }}
+                >
+                  Личные
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  className={`tgPopoverItem ${chatListScope === "groups" ? "tgPopoverItem--active" : ""}`}
+                  onClick={() => {
+                    setChatListScope("groups");
+                    setChatListFilterOpen(false);
+                  }}
+                >
+                  Группы
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  className={`tgPopoverItem ${chatListScope === "channels" ? "tgPopoverItem--active" : ""}`}
+                  onClick={() => {
+                    setChatListScope("channels");
+                    setChatListFilterOpen(false);
+                  }}
+                >
+                  Каналы
+                </button>
+              </div>
+            ) : null}
           </div>
           <div className="tgChatList">
             <>

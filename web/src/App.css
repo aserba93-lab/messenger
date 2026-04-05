@@ -332,6 +332,10 @@ body {
   gap: 20px;
   margin-bottom: 14px;
 }
+.authPlatformRow--afterForgot {
+  margin-top: 18px;
+  margin-bottom: 0;
+}
 .authPlatformIcon {
   display: inline-flex;
   flex-direction: column;
@@ -340,6 +344,21 @@ body {
   color: #c8c8d0;
   filter: grayscale(1);
   opacity: 0.92;
+}
+button.authPlatformIcon {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 10px;
+  font: inherit;
+  color: inherit;
+}
+button.authPlatformIcon:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+:root[data-theme="light"] button.authPlatformIcon:hover {
+  background: rgba(0, 0, 0, 0.06);
 }
 .authPlatformIcon--ios {
   border: none;
@@ -1678,6 +1697,18 @@ button.active {
   background: var(--tg-bg-chat);
   overflow: hidden;
   position: relative;
+}
+
+/* iPhone/PWA: при открытой клавиатуре шапка чата остаётся у верхнего края области просмотра */
+@media (max-width: 799px) {
+  .chat .chatHeader {
+    position: -webkit-sticky;
+    position: sticky;
+    top: 0;
+    z-index: 24;
+    flex-shrink: 0;
+    padding-top: max(0px, env(safe-area-inset-top, 0px));
+  }
 }
 
 .chat--dropTarget {

@@ -5,7 +5,7 @@ export const CreateGroupChatInputSchema = z.object({
 });
 export const GroupChatMessagesInputSchema = z.object({
     groupChatId: z.string().min(1),
-    limit: z.number().int().min(1).max(200).default(50),
+    limit: z.number().int().min(1).max(500).default(50),
 });
 export const SendGroupChatMessageInputSchema = z.object({
     groupChatId: z.string().min(1),
