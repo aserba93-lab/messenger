@@ -3,7 +3,7 @@
  * Разработка: ELECTRON_START_URL=http://127.0.0.1:5173 (Vite dev).
  * Прод: не file:// — у Chromium нет getDisplayMedia в небезопасном контексте; грузим app://root/ (privileged + secure).
  */
-const { app, BrowserWindow, shell, protocol, ipcMain } = require("electron");
+const { app, BrowserWindow, shell, protocol, ipcMain, session } = require("electron");
 const path = require("path");
 const fs = require("fs/promises");
 const fsSync = require("fs");
@@ -97,7 +97,26 @@ function windowIconPath() {
   return fsSync.existsSync(p) ? p : undefined;
 }
 
+function messengerChromeColors(theme) {
+  if (theme === "light") {
+    return { bg: "#d8dce8", border: "#168ad0" };
+  }
+  return { bg: "#1e1e2e", border: "#26a5e4" };
+}
+
+function applyWindowChrome(theme) {
+  const w = mainWindow;
+  if (!w || w.isDestroyed()) return;
+  const { bg } = messengerChromeColors(theme);
+  try {
+    w.setBackgroundColor(bg);
+  } catch {
+    /* ignore */
+  }
+}
+
 function createWindow() {
+  const initialChrome = messengerChromeColors("dark");
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 820,
@@ -107,6 +126,7 @@ function createWindow() {
     autoHideMenuBar: true,
     title: "Sales factory",
     icon: windowIconPath(),
+    backgroundColor: initialChrome.bg,
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
@@ -165,7 +185,20 @@ ipcMain.on("bring-to-front", () => {
   w.focus();
 });
 
+ipcMain.on("electron:set-window-chrome", (_e, payload) => {
+  const t = payload && typeof payload.theme === "string" ? payload.theme : "dark";
+  applyWindowChrome(t === "light" ? "light" : "dark");
+});
+
 app.whenReady().then(async () => {
+  try {
+    session.defaultSession.setPermissionCheckHandler((_wc, permission) => {
+      if (permission === "notifications") return true;
+      return null;
+    });
+  } catch {
+    /* ignore */
+  }
   if (!process.env.ELECTRON_START_URL) {
     protocol.handle("app", serveAppRequest);
   }

@@ -19,6 +19,7 @@ interface Window {
     isElectron: boolean;
     platform: NodeJS.Platform;
     focusAppWindow?: () => void;
+    setWindowChrome?: (theme: "dark" | "light") => void;
   };
 }
 

@@ -7,4 +7,8 @@ contextBridge.exposeInMainWorld("electronShell", {
   focusAppWindow: () => {
     ipcRenderer.send("bring-to-front");
   },
+  /** Синхронизировать цвет рамки окна Windows с темой приложения. */
+  setWindowChrome: (theme) => {
+    ipcRenderer.send("electron:set-window-chrome", { theme });
+  },
 });

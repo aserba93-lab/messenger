@@ -762,21 +762,18 @@ export default function App() {
 
   const [mode, setMode] = useState<"channels" | "groups" | "dms">("dms");
   /** Список слева: все чаты сразу или только один тип */
-  const [chatListScope, setChatListScope] = useState<"all" | "dms" | "groups" | "channels">(() => {
+  const [chatListScope, setChatListScope] = useState<"all" | "dms" | "groups">(() => {
     try {
-      const isMobile = typeof window !== "undefined" && window.innerWidth < 800;
       const v = localStorage.getItem("tg:chatListScope");
-      if (isMobile) return "all";
-      return (v === "all" || v === "dms" || v === "groups" || v === "channels" ? v : "all") as any;
+      if (v === "dms" || v === "groups") return v;
+      return "all";
     } catch {
       return "all";
     }
   });
   const [chatListFilterOpen, setChatListFilterOpen] = useState(false);
   const chatListFilterAnchorRef = useRef<HTMLDivElement | null>(null);
-  useEffect(() => {
-    setChatListScope("all");
-  }, []);
+  const clientDownloadsJsonRef = useRef<{ windows?: string; android?: string } | null | undefined>(undefined);
   const [channels, setChannels] = useState<Channel[]>([]);
   const [activeChannelId, setActiveChannelId] = useState("");
   const [groupChats, setGroupChats] = useState<GroupChat[]>([]);
@@ -1027,7 +1024,18 @@ export default function App() {
     } catch {
       /* ignore */
     }
+    if (typeof window !== "undefined" && window.electronShell?.setWindowChrome) {
+      window.electronShell.setWindowChrome(theme);
+    }
   }, [theme]);
+
+  useEffect(() => {
+    if (typeof document === "undefined" || typeof window === "undefined" || !window.electronShell?.isElectron) return;
+    document.body.classList.add("electron-app");
+    return () => {
+      document.body.classList.remove("electron-app");
+    };
+  }, []);
   const [profileFirstName, setProfileFirstName] = useState("");
   const [profileLastName, setProfileLastName] = useState("");
   const [profileMiddleName, setProfileMiddleName] = useState("");
@@ -1879,7 +1887,6 @@ export default function App() {
     });
     if (chatListScope === "dms") return rows.filter((r) => r.kind === "d");
     if (chatListScope === "groups") return rows.filter((r) => r.kind === "g");
-    if (chatListScope === "channels") return rows.filter((r) => r.kind === "c");
     return rows;
   }, [orderedDMs, orderedGroups, orderedChannels, pinnedChatByKey, pinnedOrderByKey, chatPreviewByKey, chatListScope]);
 
@@ -6398,16 +6405,30 @@ export default function App() {
 
   const isAuthed = !!token;
 
-  function openClientDownload(kind: "windows" | "android") {
-    const url =
-      kind === "windows"
-        ? import.meta.env.VITE_DOWNLOAD_WINDOWS_URL?.trim()
-        : import.meta.env.VITE_DOWNLOAD_ANDROID_URL?.trim();
+  async function resolveClientDownloadUrl(kind: "windows" | "android"): Promise<string | undefined> {
+    if (clientDownloadsJsonRef.current === undefined) {
+      try {
+        const r = await fetch("/client-downloads.json", { cache: "no-store" });
+        clientDownloadsJsonRef.current = r.ok ? await r.json() : {};
+      } catch {
+        clientDownloadsJsonRef.current = {};
+      }
+    }
+    const j = clientDownloadsJsonRef.current || {};
+    const raw = kind === "windows" ? (typeof j.windows === "string" ? j.windows : "") : typeof j.android === "string" ? j.android : "";
+    const fromFile = raw.trim();
+    const fromEnv =
+      kind === "windows" ? import.meta.env.VITE_DOWNLOAD_WINDOWS_URL?.trim() : import.meta.env.VITE_DOWNLOAD_ANDROID_URL?.trim();
+    return fromFile || fromEnv || undefined;
+  }
+
+  async function openClientDownload(kind: "windows" | "android") {
+    const url = await resolveClientDownloadUrl(kind);
     if (!url) {
       setAuthError(
         kind === "windows"
-          ? "Ссылка на установщик Windows не задана (переменная VITE_DOWNLOAD_WINDOWS_URL для сборки)."
-          : "Ссылка на приложение Android не задана (переменная VITE_DOWNLOAD_ANDROID_URL для сборки).",
+          ? "Ссылка на установщик Windows не задана: укажите URL в файле client-downloads.json на сервере или в VITE_DOWNLOAD_WINDOWS_URL при сборке."
+          : "Ссылка на Android не задана: укажите URL в файле client-downloads.json на сервере или в VITE_DOWNLOAD_ANDROID_URL при сборке.",
       );
       return;
     }
@@ -6523,14 +6544,13 @@ export default function App() {
                     />
                   </svg>
                 </button>
-                <button type="button" className="authPlatformIcon authPlatformIcon--ios" title="Инструкция для iPhone/iPad" onClick={() => setAuthScreen("ios")}>
+                <button type="button" className="authPlatformIcon" title="iPhone и iPad — добавить на экран «Домой»" onClick={() => setAuthScreen("ios")}>
                   <svg width="28" height="28" viewBox="0 0 24 24" aria-hidden>
                     <path
                       fill="currentColor"
-                      d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.81-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M13 3.5c.73-.83 1.94-1.46 2.94-1.5.13 1.17-.34 2.35-1.04 3.19-.69.85-1.83 1.51-2.95 1.42-.15-1.15.41-2.35 1.05-3.11z"
+                      d="M17.05 20.28c-.98.95-2.05.88-3.08.4-1.09-.5-2.08-.48-3.24 0-1.44.62-2.2.44-3.06-.4C2.79 15.25 3.51 7.59 9.05 7.31c1.35.07 2.29.74 3.08.8 1.18-.24 2.31-.93 3.57-.84 1.51.12 2.65.72 3.4 1.8-3.12 1.87-2.38 5.98.48 7.13-.57 1.5-1.31 2.99-2.54 4.09l.01-.01zM12.03 7.25c-.15-2.23 1.66-4.07 3.74-4.25.29 2.58-2.34 4.5-3.74 4.25z"
                     />
                   </svg>
-                  <span className="authPlatformIconHint">iOS</span>
                 </button>
               </div>
             </>
@@ -6588,10 +6608,12 @@ export default function App() {
       {token &&
       typeof Notification !== "undefined" &&
       Notification.permission === "default" &&
-      (isIosLikeBrowser() || isStandaloneWebApp()) ? (
+      (isIosLikeBrowser() || isStandaloneWebApp() || (typeof window !== "undefined" && !!window.electronShell?.isElectron)) ? (
         <div className="notifyPermissionBanner" role="status">
           <span>
-            Нажмите «Разрешить», чтобы показывать баннеры браузера, пока вкладка или PWA открыты. В фоне или при закрытом приложении нужны push-уведомления с сервера (Web Push) — без них сеть доставит событие только когда клиент снова онлайн. iPhone: ярлык «Домой», iOS 16.4+; в Яндекс.Браузере возможности могут отличаться от Safari.
+            {typeof window !== "undefined" && window.electronShell?.isElectron
+              ? "Нажмите «Разрешить», чтобы показывать уведомления Windows при новых сообщениях (в трее и поверх других окон)."
+              : "Нажмите «Разрешить», чтобы показывать баннеры браузера, пока вкладка или PWA открыты. В фоне или при закрытом приложении нужны push-уведомления с сервера (Web Push) — без них сеть доставит событие только когда клиент снова онлайн. iPhone: ярлык «Домой», iOS 16.4+; в Яндекс.Браузере возможности могут отличаться от Safari."}
           </span>
           <button
             type="button"
@@ -6932,9 +6954,6 @@ export default function App() {
               <button className={chatFolder === "unread" ? "active" : ""} onClick={() => setChatFolder("unread")}>
                 Непрочитанные
               </button>
-              <button className={chatFolder === "archived" ? "active" : ""} onClick={() => setChatFolder("archived")}>
-                Архив
-              </button>
             </div>
             <button
               type="button"
@@ -6956,9 +6975,10 @@ export default function App() {
                 <button
                   type="button"
                   role="menuitem"
-                  className={`tgPopoverItem ${chatListScope === "all" ? "tgPopoverItem--active" : ""}`}
+                  className={`tgPopoverItem ${chatListScope === "all" && chatFolder !== "archived" ? "tgPopoverItem--active" : ""}`}
                   onClick={() => {
                     setChatListScope("all");
+                    setChatFolder("all");
                     setChatListFilterOpen(false);
                   }}
                 >
@@ -6967,9 +6987,10 @@ export default function App() {
                 <button
                   type="button"
                   role="menuitem"
-                  className={`tgPopoverItem ${chatListScope === "dms" ? "tgPopoverItem--active" : ""}`}
+                  className={`tgPopoverItem ${chatListScope === "dms" && chatFolder !== "archived" ? "tgPopoverItem--active" : ""}`}
                   onClick={() => {
                     setChatListScope("dms");
+                    setChatFolder("all");
                     setChatListFilterOpen(false);
                   }}
                 >
@@ -6978,24 +6999,26 @@ export default function App() {
                 <button
                   type="button"
                   role="menuitem"
-                  className={`tgPopoverItem ${chatListScope === "groups" ? "tgPopoverItem--active" : ""}`}
+                  className={`tgPopoverItem ${chatListScope === "groups" && chatFolder !== "archived" ? "tgPopoverItem--active" : ""}`}
                   onClick={() => {
                     setChatListScope("groups");
+                    setChatFolder("all");
                     setChatListFilterOpen(false);
                   }}
                 >
                   Группы
                 </button>
+                <div className="tgPopoverSep" role="separator" />
                 <button
                   type="button"
                   role="menuitem"
-                  className={`tgPopoverItem ${chatListScope === "channels" ? "tgPopoverItem--active" : ""}`}
+                  className={`tgPopoverItem ${chatFolder === "archived" ? "tgPopoverItem--active" : ""}`}
                   onClick={() => {
-                    setChatListScope("channels");
+                    setChatFolder("archived");
                     setChatListFilterOpen(false);
                   }}
                 >
-                  Каналы
+                  Архив
                 </button>
               </div>
             ) : null}
