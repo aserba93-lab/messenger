@@ -858,28 +858,37 @@ export default function App() {
     }
   }, [browserNotify]);
 
-  /** PWA на ПК/Android: один раз авто-запрос разрешения. На iPhone запрос без нажатия обычно игнорируется — там баннер с кнопкой «Разрешить». */
+  /**
+   * Один раз после входа запрашиваем разрешение на уведомления (HTTPS).
+   * Раньше только PWA — в обычном браузере permission оставался default и new Notification молча не показывался.
+   * iOS Safari во вкладке: без PWA запрос часто бессмысленен — пропускаем.
+   */
   useEffect(() => {
     if (!token) return;
-    if (!isStandaloneWebApp()) return;
-    if (isIosLikeBrowser()) return;
     if (typeof Notification === "undefined") return;
     if (Notification.permission !== "default") return;
+    if (typeof window === "undefined" || !window.isSecureContext) return;
+    if (isIosLikeBrowser() && !isStandaloneWebApp()) return;
     try {
-      if (localStorage.getItem("tg:pwaNotifyRequested") === "1") return;
+      if (localStorage.getItem("tg:autoNotifyPrompted") === "1") return;
     } catch {
       /* ignore */
     }
     const tid = window.setTimeout(() => {
       void Notification.requestPermission().then((r) => {
         try {
-          localStorage.setItem("tg:pwaNotifyRequested", "1");
+          localStorage.setItem("tg:autoNotifyPrompted", "1");
         } catch {
           /* ignore */
         }
         if (r === "granted") setBrowserNotify(true);
+        if (r === "denied") {
+          pushLog(
+            "Уведомления отклонены. Чтобы видеть новые сообщения вне вкладки: значок замка в адресной строке → разрешите уведомления для сайта.",
+          );
+        }
       });
-    }, 1500);
+    }, 2200);
     return () => window.clearTimeout(tid);
   }, [token]);
 
@@ -3114,10 +3123,14 @@ export default function App() {
       let osShown = false;
       if (canBrowserOsNotify) {
         try {
+          const origin = typeof window !== "undefined" ? window.location.origin : "";
+          const nIcon = origin ? `${origin}/favicon.svg` : undefined;
           const n = new Notification(fromLabelPreview || "Новое сообщение", {
             body: bodyPreview,
-            tag: key ? `${key}:${msg.id}` : "dm",
-          });
+            icon: nIcon,
+            badge: nIcon,
+            tag: `${key || "dm"}:latest`,
+          } as NotificationOptions);
           osShown = true;
           n.onclick = () => {
             try {
@@ -3179,7 +3192,30 @@ export default function App() {
         next[key] = 0;
         return next;
       });
-      setMessages((prev) => (prev.some((x) => x.id === msg.id) ? prev : [...prev, msg]));
+      setMessages((prev) => {
+        if (prev.some((x) => x.id === msg.id)) return prev;
+        if (fromMe) {
+          const tmpIdx = prev.findIndex(
+            (x) =>
+              String(x.id).startsWith("tmp-") &&
+              x._sendState === "sending" &&
+              (x.type ?? "text") === (msg.type ?? "text") &&
+              String(x.content ?? "") === String(msg.content ?? ""),
+          );
+          if (tmpIdx >= 0) {
+            return prev.map((x, i) =>
+              i === tmpIdx
+                ? {
+                    ...msg,
+                    _sendState: undefined,
+                    file: msg.file?.id ? msg.file : x.file,
+                  }
+                : x,
+            );
+          }
+        }
+        return [...prev, msg];
+      });
       if (msg.file?.id && !msg.file.downloadUrl) void hydrateDownloadUrl(String(msg.file.id));
     });
     s.on("message:update", (m: any) => {
@@ -5520,9 +5556,27 @@ export default function App() {
       setNewMessage("");
       setReplyTo(null);
       setShowStickerPicker(false);
+      {
+        const syncMode = mode;
+        const syncCh = activeChannelId;
+        const syncG = activeGroupChatId;
+        const syncD = activeDirectChatId;
+        queueMicrotask(() => {
+          if (syncMode === "dms" && syncD) void loadDirectMessages(syncD);
+          else if (syncMode === "groups" && syncG) void loadGroupMessages(syncG);
+          else if (syncMode === "channels" && syncCh) void loadMessages(syncCh);
+        });
+      }
     } catch (e: any) {
       const msg = String(e?.message ?? e ?? "Не удалось отправить сообщение");
-      setChatError(msg);
+      const low = msg.toLowerCase();
+      if (low.includes("email not verified") || low.includes("подтвердите email") || msg.includes("Email not verified")) {
+        setChatError(
+          "Сообщения не сохраняются: подтвердите e-mail в организации (письмо при регистрации или запрос у администратора).",
+        );
+      } else {
+        setChatError(msg);
+      }
       pushLog(`sendMessage error: ${msg}`);
       setMessages((prev) => prev.map((m) => (m.id === tempId ? { ...m, _sendState: "failed" } : m)));
     }
