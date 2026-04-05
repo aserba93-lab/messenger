@@ -7,7 +7,8 @@ const LoginBodySchema = z
     email: z.string().email().optional(),
     identifier: z.string().min(3).max(200).optional(),
     password: z.string().min(1),
-    organizationId: z.string().min(1),
+    /** Необязательно: сервер подставит организацию по домену почты или при единственном членстве. */
+    organizationId: z.preprocess((v) => (typeof v === "string" && v.trim() === "" ? undefined : v), z.string().min(1).optional()),
     twoFactorCode: z.string().regex(/^[0-9]{6}$/).optional(),
     backupCode: z.string().min(6).max(64).optional(),
 })
@@ -33,11 +34,12 @@ export function createAuthRoutes(authService) {
                     needsEmailOtp: true,
                     challengeId: loginRes.challengeId,
                     emailMasked: loginRes.emailMasked,
+                    organizationId: loginRes.organizationId,
                 });
             }
             const out = await authService.finalizeLogin({
                 userId: loginRes.user.id,
-                organizationId: body.organizationId,
+                organizationId: loginRes.organizationId,
                 role: loginRes.membership.role,
                 refreshToken: loginRes.refresh.refreshToken,
                 refreshTokenHash: loginRes.refresh.refreshTokenHash,

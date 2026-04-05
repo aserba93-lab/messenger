@@ -235,6 +235,39 @@ export class AuthService {
             },
         });
     }
+    /**
+     * Пустой organizationId: совпадение домена email пользователя с Organization.domain,
+     * иначе единственная активная организация пользователя.
+     */
+    async resolveLoginOrganizationId(user, requestedOrgId) {
+        const trimmed = String(requestedOrgId ?? "").trim();
+        if (trimmed)
+            return trimmed;
+        const email = String(user.email ?? "").trim().toLowerCase();
+        const domain = email.split("@")[1] ?? "";
+        if (domain) {
+            const org = await prisma.organization.findUnique({
+                where: { domain },
+            });
+            if (org) {
+                const m = await this.repo.findActiveMembership({
+                    organizationId: org.id,
+                    userId: user.id,
+                });
+                if (m && !m.deactivatedAt)
+                    return org.id;
+            }
+        }
+        const members = await prisma.organizationMember.findMany({
+            where: { userId: user.id, deactivatedAt: null },
+            select: { organizationId: true },
+        });
+        if (members.length === 1)
+            return members[0].organizationId;
+        if (members.length === 0)
+            throw new Error("Пользователь не привязан к организации");
+        throw new Error("Несколько организаций: укажите ID организации в поле входа (узнайте у администратора). Для корпоративной почты домен должен совпадать с доменом организации в системе.");
+    }
     async login(params) {
         const identifier = String(params.identifier ?? params.email ?? "").trim();
         if (!identifier)
@@ -245,8 +278,9 @@ export class AuthService {
         if (user.lockedUntil && user.lockedUntil.getTime() > Date.now()) {
             throw new Error("Account locked. Try later.");
         }
+        const organizationId = await this.resolveLoginOrganizationId(user, params.organizationId);
         const membership = await this.repo.findActiveMembership({
-            organizationId: params.organizationId,
+            organizationId,
             userId: user.id,
         });
         if (!membership || membership.deactivatedAt)
@@ -289,7 +323,7 @@ export class AuthService {
             await this.repo.createLoginEmailOtpChallenge({
                 id: challengeId,
                 userId: user.id,
-                organizationId: params.organizationId,
+                organizationId,
                 codeHash: sha256Hex(code),
                 expiresAt,
             });
@@ -298,6 +332,7 @@ export class AuthService {
                 kind: "email_otp",
                 challengeId,
                 emailMasked: maskEmail(user.email),
+                organizationId,
             };
         }
         const sessionId = crypto.randomBytes(24).toString("hex");
@@ -309,6 +344,7 @@ export class AuthService {
             user,
             membership,
             refresh: { sessionId, refreshToken, refreshTokenHash, expiresAt },
+            organizationId,
         };
     }
     async confirmLoginEmailOtp(params) {

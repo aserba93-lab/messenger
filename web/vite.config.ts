@@ -9,6 +9,9 @@ import react from '@vitejs/plugin-react'
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 const webRoot = dirname(fileURLToPath(import.meta.url))
 
+/** Установщик Electron открывает index.html как file:// — пути к assets должны быть относительными. */
+const electronBuild = process.env.ELECTRON_BUILD === '1' || process.env.ELECTRON_BUILD === 'true'
+
 function gitShort(): string {
   try {
     return execSync('git rev-parse --short HEAD', { encoding: 'utf-8', cwd: repoRoot }).trim()
@@ -37,6 +40,7 @@ function buildInfoPlugin(): Plugin {
 
 // https://vite.dev/config/
 export default defineConfig({
+  base: electronBuild ? './' : '/',
   plugins: [react(), buildInfoPlugin()],
   define: {
     __BUILD_TIME__: JSON.stringify(new Date().toISOString()),

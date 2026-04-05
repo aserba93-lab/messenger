@@ -1,4 +1,7 @@
 node_modules
+
+# Сборка установщика Electron (web/)
+web/release/
 # Keep environment variables out of version control
 .env
 

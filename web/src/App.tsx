@@ -166,6 +166,8 @@ type LoginResult = {
   needsEmailOtp?: boolean;
   challengeId?: string;
   emailMasked?: string;
+  /** После автоподбора организации на сервере (код из письма привязан к org). */
+  organizationId?: string;
 };
 
 type Channel = {
@@ -236,6 +238,18 @@ function getApiBase(): string {
   const metaBase = readRuntimeApiBaseFromMeta();
   if (metaBase) return metaBase;
   if (typeof window === "undefined") return "";
+  if (window.location.protocol === "file:") {
+    console.warn(
+      "[Messenger] Открыто как file://. Укажите VITE_API_URL при сборке (Electron) или <meta name=\"tg-api-base\" content=\"https://...\" /> в index.html.",
+    );
+    return "";
+  }
+  if (window.location.protocol === "app:") {
+    console.warn(
+      "[Messenger] Контекст app:// (Electron). Задайте VITE_API_URL при сборке или meta tg-api-base в index.html.",
+    );
+    return "";
+  }
   const h = window.location.hostname;
   if (h === "localhost" || h === "127.0.0.1") return "http://localhost:3000";
   return window.location.origin;
@@ -249,6 +263,10 @@ function getSocketUrl(): string {
     const m = document.querySelector('meta[name="tg-socket-url"]');
     const c = m?.getAttribute("content")?.trim();
     if (c) return c.replace(/\/$/, "");
+  }
+  if (typeof window !== "undefined") {
+    const p = window.location.protocol;
+    if (!API_BASE && (p === "file:" || p === "app:")) return "";
   }
   return API_BASE || (typeof window !== "undefined" ? window.location.origin : "");
 }
@@ -1296,6 +1314,8 @@ export default function App() {
   ]);
   const userIdRef = useRef("");
   const directChatsRef = useRef<DirectChat[]>([]);
+  /** Сбрасывает устаревшие ответы loadMessages*, если пользователь быстро переключил чат. */
+  const messagesLoadGenRef = useRef(0);
   const webrtcBusyRef = useRef(false);
   /** Пока звонок не принят, ICE только здесь — обработчик webrtcDm ещё не подписан. */
   const incomingCallIceBufferRef = useRef<Array<{ candidate: string; sdpMid?: string | null; sdpMLineIndex?: number | null }>>(
@@ -2843,28 +2863,26 @@ export default function App() {
           /* ignore */
         }
       }
-      if (!orgId) {
-        throw new Error(
-          "Не указана организация. Войдите под корпоративной почтой — организация подставится автоматически, либо уточните ID у администратора.",
-        );
-      }
       const ident = loginIdentifier.trim();
       if (!ident || !password) throw new Error("Укажите почту или телефон и пароль.");
+      const loginBody: Record<string, string> = { identifier: ident, password };
+      if (orgId) loginBody.organizationId = orgId;
       const res = await fetch(`${API_BASE}/auth/login`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ identifier: ident, password, organizationId: orgId }),
+        body: JSON.stringify(loginBody),
       });
       const data = (await res.json()) as LoginResult & { error?: string };
       if (!res.ok || data.error) throw new Error(data.error || "Login failed");
       if (data.needsEmailOtp && data.challengeId) {
+        if (data.organizationId) setOrganizationId(String(data.organizationId));
         setPendingEmailOtp({ challengeId: data.challengeId, emailMasked: data.emailMasked });
         pushLog("Введите код из письма для подтверждения входа.");
         return;
       }
       if (!data.accessToken || !data.viewer) throw new Error("Неверный ответ сервера");
-      setOrganizationId(orgId);
+      setOrganizationId(data.viewer.organizationId);
       setToken(data.accessToken);
       setUserId(data.viewer.userId);
       setViewerRole((data.viewer.role as any) ?? "");
@@ -2954,6 +2972,20 @@ export default function App() {
     cancelForwardSelect();
     setShowLogs(false);
     pushLog("Выход выполнен.");
+  }
+
+  /** Фокус окна: в Electron — через main process (window.focus из уведомления часто не поднимает окно). */
+  function focusNotificationsWindow() {
+    try {
+      window.electronShell?.focusAppWindow?.();
+    } catch {
+      /* ignore */
+    }
+    try {
+      window.focus();
+    } catch {
+      /* ignore */
+    }
   }
 
   function connectSocket() {
@@ -3133,11 +3165,7 @@ export default function App() {
           } as NotificationOptions);
           osShown = true;
           n.onclick = () => {
-            try {
-              window.focus();
-            } catch {
-              /* ignore */
-            }
+            focusNotificationsWindow();
             try {
               if (key) void openChatFromList(key);
             } catch {
@@ -3372,11 +3400,18 @@ export default function App() {
           });
           incomingCallOs = true;
           n.onclick = () => {
-            try {
-              window.focus();
-            } catch {
-              /* ignore */
-            }
+            focusNotificationsWindow();
+            void (async () => {
+              try {
+                if (!token) return;
+                const data = await gql<{ dms: DirectChat[] }>(`query { dms { id userIds } }`, {}, token);
+                const uid = userIdRef.current;
+                const dc = data.dms.find((d) => d.userIds.includes(from) && (!uid || d.userIds.includes(uid)));
+                if (dc) void openChatFromList(`d:${dc.id}`);
+              } catch {
+                /* ignore */
+              }
+            })();
             try {
               n.close();
             } catch {
@@ -3449,8 +3484,9 @@ export default function App() {
           });
           showed = true;
           n.onclick = () => {
+            focusNotificationsWindow();
             try {
-              window.focus();
+              void openChatFromList(`g:${gc}`);
             } catch {
               /* ignore */
             }
@@ -3491,10 +3527,26 @@ export default function App() {
           Notification.permission === "granted" &&
           (browserNotifyRef.current || typeof document === "undefined" || document.hidden)
         ) {
-          new Notification("Личный созвон", {
+          const nDm = new Notification("Личный созвон", {
             body: `${label} — ${audioOnly ? "звонок" : "видеозвонок"}`,
             tag: `dmcall:${meshId}`,
           });
+          nDm.onclick = () => {
+            focusNotificationsWindow();
+            if (meshId.startsWith(DM_MESH_PREFIX)) {
+              const dcid = meshId.slice(DM_MESH_PREFIX.length);
+              try {
+                void openChatFromList(`d:${dcid}`);
+              } catch {
+                /* ignore */
+              }
+            }
+            try {
+              nDm.close();
+            } catch {
+              /* ignore */
+            }
+          };
         }
       } catch {
         /* ignore */
@@ -3656,7 +3708,7 @@ export default function App() {
     pushLog(`Групп: ${data.groupChats.length}`);
   }
 
-  async function loadDirectChats(opts?: { emptySelection?: boolean }) {
+  async function loadDirectChats(opts?: { emptySelection?: boolean }): Promise<DirectChat[] | void> {
     if (!token) return;
     const data = await gql<{ dms: DirectChat[] }>(`query { dms { id userIds } }`, {}, token);
     setDirectChats(data.dms);
@@ -3668,6 +3720,7 @@ export default function App() {
       return data.dms[0]?.id ?? "";
     });
     pushLog(`DM: ${data.dms.length}`);
+    return data.dms;
   }
 
   async function openChatFromList(raw: string) {
@@ -3941,13 +3994,31 @@ export default function App() {
     try {
       if (typeof Notification !== "undefined" && Notification.permission === "granted") {
         try {
-          new Notification(isDmMesh ? "Личный звонок" : `Группа: ${resolvedTitle}`, {
+          const nJoin = new Notification(isDmMesh ? "Личный звонок" : `Группа: ${resolvedTitle}`, {
             body: isDmMesh
               ? `${callerLabel} — ${audioOnly ? "звонок" : "видеозвонок"}`
               : `${callerLabel} — групповой ${audioOnly ? "звонок" : "видеозвонок"}`,
             tag: isDmMesh ? `dmcall:${gc}` : `gcall:${gc}`,
             requireInteraction: typeof document !== "undefined" && document.hidden,
           });
+          nJoin.onclick = () => {
+            focusNotificationsWindow();
+            try {
+              if (isDmMesh) {
+                const directChatId = gc.slice(DM_MESH_PREFIX.length);
+                void openChatFromList(`d:${directChatId}`);
+              } else {
+                void openChatFromList(`g:${gc}`);
+              }
+            } catch {
+              /* ignore */
+            }
+            try {
+              nJoin.close();
+            } catch {
+              /* ignore */
+            }
+          };
         } catch {
           /* ignore */
         }
@@ -5249,6 +5320,7 @@ export default function App() {
 
   async function loadMessages(channelId: string) {
     if (!token || !channelId) return;
+    const gen = ++messagesLoadGenRef.current;
     const data = await gql<{ messages: { items: Message[] } }>(
       `query($channelId: ID!, $limit: Int!) {
         messages(channelId: $channelId, limit: $limit) {
@@ -5258,16 +5330,19 @@ export default function App() {
       { channelId, limit: 50 },
       token,
     );
+    if (gen !== messagesLoadGenRef.current) return;
     setMessages(data.messages.items);
     const p = previewForMessages(data.messages.items);
     setChatPreviewByKey((prev) => ({ ...prev, [chatKeyFor("c", channelId)]: p }));
     socket?.emit("channel:join", { channelId });
     await mergeThreadReadStates("c", channelId);
+    if (gen !== messagesLoadGenRef.current) return;
     scrollMessagesToBottom();
   }
 
   async function loadGroupMessages(groupChatId: string) {
     if (!token || !groupChatId) return;
+    const gen = ++messagesLoadGenRef.current;
     const data = await gql<{ groupChatMessages: Message[] }>(
       `query($groupChatId: ID!, $limit: Int!) {
         groupChatMessages(groupChatId: $groupChatId, limit: $limit) {
@@ -5277,16 +5352,19 @@ export default function App() {
       { groupChatId, limit: 200 },
       token,
     );
+    if (gen !== messagesLoadGenRef.current) return;
     setMessages(data.groupChatMessages);
     const p = previewForMessages(data.groupChatMessages);
     setChatPreviewByKey((prev) => ({ ...prev, [chatKeyFor("g", groupChatId)]: p }));
     socket?.emit("group:join", { groupChatId });
     await mergeThreadReadStates("g", groupChatId);
+    if (gen !== messagesLoadGenRef.current) return;
     scrollMessagesToBottom();
   }
 
   async function loadDirectMessages(directChatId: string) {
     if (!token || !directChatId) return;
+    const gen = ++messagesLoadGenRef.current;
     const data = await gql<{ directChatMessages: DirectChatMessage[] }>(
       `query($directChatId: ID!, $limit: Int!) {
         directChatMessages(directChatId: $directChatId, limit: $limit) {
@@ -5322,11 +5400,13 @@ export default function App() {
         file: m.file ?? null,
         parentMessageId: m.parentMessageId ?? null,
       }));
+    if (gen !== messagesLoadGenRef.current) return;
     setMessages(mapped);
     const p = previewForMessages(mapped);
     setChatPreviewByKey((prev) => ({ ...prev, [chatKeyFor("d", directChatId)]: p }));
     socket?.emit("dm:join", { directChatId });
     await mergeThreadReadStates("d", directChatId);
+    if (gen !== messagesLoadGenRef.current) return;
     scrollMessagesToBottom();
   }
 
@@ -6260,6 +6340,9 @@ export default function App() {
             placeholder="+79991234567 или email@company.ru"
             autoComplete="username"
           />
+          <p style={{ fontSize: 12, opacity: 0.75, margin: "4px 0 10px", lineHeight: 1.35 }}>
+            Поле «организация» не обязательно: сервер подставит её по домену корпоративной почты или если у вас один аккаунт в компании. Несколько организаций — укажите ID (даст администратор).
+          </p>
 
           <label>Пароль</label>
           <input
