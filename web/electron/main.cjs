@@ -6,6 +6,7 @@
 const { app, BrowserWindow, shell, protocol, ipcMain } = require("electron");
 const path = require("path");
 const fs = require("fs/promises");
+const fsSync = require("fs");
 
 const APP_HOST = "root";
 const APP_ORIGIN = `app://${APP_HOST}`;
@@ -86,6 +87,11 @@ async function serveAppRequest(request) {
   }
 }
 
+function windowIconPath() {
+  const p = path.join(__dirname, "app-icon.png");
+  return fsSync.existsSync(p) ? p : undefined;
+}
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1280,
@@ -95,6 +101,7 @@ function createWindow() {
     show: false,
     autoHideMenuBar: true,
     title: "Sales factory",
+    icon: windowIconPath(),
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,

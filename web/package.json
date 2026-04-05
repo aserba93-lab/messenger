@@ -52,6 +52,7 @@
     ],
     "asar": true,
     "win": {
+      "icon": "electron/app-icon.png",
       "target": [
         {
           "target": "nsis",

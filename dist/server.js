@@ -28,12 +28,19 @@ import { DirectChatsService } from "./modules/directChats/service.js";
 import { NotificationsService } from "./modules/notifications/service.js";
 import fs from "node:fs/promises";
 import path from "node:path";
-/** Несколько origin из CLIENT_URL + dev-порты Vite */
+/** Несколько origin из CLIENT_URL + dev-порты Vite + Electron (app://) */
 function buildCorsOriginSet() {
     const set = new Set(String(env.CLIENT_URL || "")
         .split(",")
         .map((s) => s.trim())
         .filter(Boolean));
+    String(process.env.CORS_EXTRA_ORIGINS || "")
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean)
+        .forEach((u) => set.add(u));
+    set.add("app://root");
+    set.add("app://.");
     if (env.NODE_ENV !== "production") {
         ["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:4173", "http://127.0.0.1:4173"].forEach((u) => set.add(u));
     }

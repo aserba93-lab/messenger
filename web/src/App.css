@@ -1658,7 +1658,7 @@ button.active {
 
 .msgReactionPopover {
   position: fixed;
-  z-index: 90;
+  z-index: 2147483647;
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
@@ -1937,16 +1937,6 @@ button.active {
   border: 1px solid rgba(255, 255, 255, 0.08);
 }
 
-.msg .actions {
-  display: flex;
-  gap: 6px;
-  margin-bottom: 4px;
-  opacity: 0;
-  transition: opacity 120ms ease;
-}
-.msg:hover .actions {
-  opacity: 1;
-}
 .msg.selected .bubble {
   background: rgba(110, 170, 255, 0.16);
   border-color: rgba(110, 170, 255, 0.35);
@@ -1966,6 +1956,9 @@ button.active {
   white-space: pre-wrap;
   word-break: break-word;
   position: relative;
+}
+.bubble--interact {
+  touch-action: manipulation;
 }
 .bubble--stickerLarge {
   font-size: 3.25rem;
@@ -2725,6 +2718,12 @@ pre {
   z-index: 50;
 }
 
+.msgMenuBackdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483645;
+  background: transparent;
+}
 .msgMenu {
   position: fixed;
   z-index: 2147483646;

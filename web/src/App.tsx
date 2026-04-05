@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { CSSProperties, FormEvent, MouseEvent } from "react";
+import type { CSSProperties, FormEvent, MouseEvent, PointerEvent as ReactPointerEvent } from "react";
+import { createPortal } from "react-dom";
 import { io, Socket } from "socket.io-client";
 import * as XLSX from "xlsx";
 import { acceptIncomingOffer, debugIceServers, type ActiveCall } from "./webrtcDm";
@@ -1118,6 +1119,26 @@ export default function App() {
   const [chatMetaPopoverOpen, setChatMetaPopoverOpen] = useState(false);
   const callMenuWrapRef = useRef<HTMLDivElement | null>(null);
   const [msgMenu, setMsgMenu] = useState<null | { x: number; y: number; messageId: string }>(null);
+  /** После long-press не открывать «прочитано» по тому же тапу. */
+  const suppressMsgBubbleClickRef = useRef(false);
+  const msgLongPressRef = useRef<{
+    timer: number | null;
+    startX: number;
+    startY: number;
+    messageId: string | null;
+  }>({ timer: null, startX: 0, startY: 0, messageId: null });
+
+  function clampMsgMenuPosition(clientX: number, clientY: number) {
+    const menuW = 280;
+    const menuH = 380;
+    const pad = 8;
+    const maxX = window.innerWidth - menuW - pad;
+    const maxY = window.innerHeight - menuH - pad;
+    return {
+      x: Math.max(pad, Math.min(clientX, maxX)),
+      y: Math.max(pad, Math.min(clientY, maxY)),
+    };
+  }
   const [threadReadByKey, setThreadReadByKey] = useState<Record<string, Record<string, string>>>({});
   const [readReceiptModalForId, setReadReceiptModalForId] = useState<string | null>(null);
   const [readReceiptUsers, setReadReceiptUsers] = useState<
@@ -2086,17 +2107,18 @@ export default function App() {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") setMsgMenu(null);
     };
-    const onClick = () => setMsgMenu(null);
     const onScroll = () => setMsgMenu(null);
     window.addEventListener("keydown", onKey);
-    window.addEventListener("click", onClick);
     window.addEventListener("scroll", onScroll, { passive: true, capture: true } as any);
     return () => {
       window.removeEventListener("keydown", onKey);
-      window.removeEventListener("click", onClick);
       window.removeEventListener("scroll", onScroll, { capture: true } as any);
     };
   }, [msgMenu]);
+
+  useEffect(() => {
+    if (msgMenu && !messages.some((x) => x.id === msgMenu.messageId)) setMsgMenu(null);
+  }, [msgMenu, messages]);
 
   useEffect(() => {
     // Auto-scroll to bottom on new messages (Telegram behavior)
@@ -2892,7 +2914,9 @@ export default function App() {
       let msg = String(e?.message ?? e ?? "Login failed");
       if (msg === "Failed to fetch") {
         msg =
-          "Не удалось связаться с сервером (сеть / CORS / прокси). Проверьте, что backend запущен, в .env CLIENT_URL совпадает с адресом сайта (можно несколько через запятую), а Nginx проксирует /auth/ и /graphql.";
+          typeof window !== "undefined" && window.electronShell?.isElectron
+            ? "Нет связи с сервером: задайте VITE_API_URL при сборке. На backend в .env добавьте CORS_EXTRA_ORIGINS=app://root (или обновите код сервера — origin настольного приложения уже разрешён)."
+            : "Нет связи с сервером: проверьте адрес API, VPN и что backend доступен. В .env сервера CLIENT_URL должен включать точный URL страницы входа.";
       }
       setAuthError(`Ошибка входа: ${msg}`);
     }
@@ -2927,7 +2951,9 @@ export default function App() {
       let msg = String(e?.message ?? e ?? "Ошибка");
       if (msg === "Failed to fetch") {
         msg =
-          "Не удалось связаться с сервером. Проверьте сеть и что backend доступен по тому же домену (CORS / прокси).";
+          typeof window !== "undefined" && window.electronShell?.isElectron
+            ? "Нет связи с сервером (проверьте VITE_API_URL и CORS app://root на backend)."
+            : "Нет связи с сервером (сеть и CORS / CLIENT_URL на backend).";
       }
       setAuthError(`Подтверждение: ${msg}`);
     }
@@ -5636,17 +5662,6 @@ export default function App() {
       setNewMessage("");
       setReplyTo(null);
       setShowStickerPicker(false);
-      {
-        const syncMode = mode;
-        const syncCh = activeChannelId;
-        const syncG = activeGroupChatId;
-        const syncD = activeDirectChatId;
-        queueMicrotask(() => {
-          if (syncMode === "dms" && syncD) void loadDirectMessages(syncD);
-          else if (syncMode === "groups" && syncG) void loadGroupMessages(syncG);
-          else if (syncMode === "channels" && syncCh) void loadMessages(syncCh);
-        });
-      }
     } catch (e: any) {
       const msg = String(e?.message ?? e ?? "Не удалось отправить сообщение");
       const low = msg.toLowerCase();
@@ -6036,7 +6051,7 @@ export default function App() {
     if (!reactionPopover) return;
     const onDown = (e: globalThis.MouseEvent) => {
       const t = e.target as HTMLElement | null;
-      if (t?.closest?.("[data-reaction-trigger]")) return;
+      if (t?.closest?.("[data-reaction-trigger]") || t?.closest?.(".msgMenu")) return;
       const el = reactionPopoverRef.current;
       if (el && e.target instanceof Node && el.contains(e.target)) return;
       setReactionPopover(null);
@@ -6340,10 +6355,6 @@ export default function App() {
             placeholder="+79991234567 или email@company.ru"
             autoComplete="username"
           />
-          <p style={{ fontSize: 12, opacity: 0.75, margin: "4px 0 10px", lineHeight: 1.35 }}>
-            Поле «организация» не обязательно: сервер подставит её по домену корпоративной почты или если у вас один аккаунт в компании. Несколько организаций — укажите ID (даст администратор).
-          </p>
-
           <label>Пароль</label>
           <input
             type="password"
@@ -8368,79 +8379,61 @@ export default function App() {
                   <span>{dt.toLocaleDateString()}</span>
                 </div>
               ) : null}
-              <div className="actions">
-                <button className="chip" onClick={() => void editMessageInChat(m.id)} disabled={!token || !isMyMessageEmail(m.author?.email)}>
-                  ✎
-                </button>
-                <button className="chip" onClick={() => void deleteMessageInChat(m.id)} disabled={!token || !isMyMessageEmail(m.author?.email)}>
-                  🗑
-                </button>
-                {forwardSelecting ? (
-                  <button
-                    className={`chip ${forwardSelectedIds.has(m.id) ? "on" : ""}`}
-                    onClick={() => toggleForwardSelected(m.id)}
-                    disabled={!token}
-                    title="Выбрать для пересылки"
-                  >
-                    ↪✓
-                  </button>
-                ) : (
-                  <button className="chip" onClick={() => startForwardSelect(m.id)} disabled={!token} title="Выбрать для пересылки">
-                    ↪
-                  </button>
-                )}
-                <button
-                  className="chip"
-                  onClick={() => setReplyTo({ id: m.id, preview: (m.content || "").slice(0, 80) || m.type || "" })}
-                  disabled={!token}
-                  title="Ответить"
-                >
-                  ↩
-                </button>
-                {!threadRootId ? (
-                  <button className="chip" onClick={() => void openThread(m.id)} disabled={!token} title="Открыть тред">
-                    🧵
-                  </button>
-                ) : null}
-                <button className="chip" onClick={() => void pinMessage(m.id)} disabled={!token} title="Закрепить">
-                  📌
-                </button>
-                <button className="chip" onClick={() => void unpinMessage(m.id)} disabled={!token} title="Открепить">
-                  ✖📌
-                </button>
-                <button
-                  className={`chip ${savedIds.has(m.id) ? "on" : ""}`}
-                  onClick={() => void toggleSave(m.id, savedIds.has(m.id))}
-                  disabled={!token}
-                  title={savedIds.has(m.id) ? "Убрать из сохранённых" : "Сохранить"}
-                >
-                  ⭐
-                </button>
-                <button
-                  type="button"
-                  className="chip"
-                  data-reaction-trigger
-                  title="Реакция"
-                  disabled={!token}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    const r = e.currentTarget.getBoundingClientRect();
-                    const popH = 56;
-                    const popW = 300;
-                    let top = r.bottom + 6;
-                    if (top + popH > window.innerHeight - 8) top = Math.max(8, r.top - popH - 6);
-                    let left = Math.min(r.left, window.innerWidth - popW - 8);
-                    left = Math.max(8, left);
-                    setReactionPopover((p) => (p?.messageId === m.id ? null : { messageId: m.id, top, left }));
-                  }}
-                >
-                  😊
-                </button>
-              </div>
               <div
-                className={`bubble ${m.type !== "file" && m.type !== "voice" && m.content && isSingleStickerContent(m.content) ? "bubble--stickerLarge" : ""}`}
+                className={`bubble bubble--interact ${m.type !== "file" && m.type !== "voice" && m.content && isSingleStickerContent(m.content) ? "bubble--stickerLarge" : ""}`}
                 onDoubleClick={() => setReplyTo({ id: m.id, preview: (m.content || "").slice(0, 80) || m.type || "" })}
+                onPointerDown={(e: ReactPointerEvent<HTMLDivElement>) => {
+                  if (e.pointerType === "mouse") return;
+                  const lp = msgLongPressRef.current;
+                  if (lp.timer != null) window.clearTimeout(lp.timer);
+                  lp.startX = e.clientX;
+                  lp.startY = e.clientY;
+                  lp.messageId = m.id;
+                  const pid = e.pointerId;
+                  const el = e.currentTarget;
+                  lp.timer = window.setTimeout(() => {
+                    lp.timer = null;
+                    if (lp.messageId !== m.id) return;
+                    suppressMsgBubbleClickRef.current = true;
+                    const { x, y } = clampMsgMenuPosition(e.clientX, e.clientY);
+                    setMsgMenu({ x, y, messageId: m.id });
+                    try {
+                      el.releasePointerCapture(pid);
+                    } catch {
+                      /* ignore */
+                    }
+                  }, 580);
+                }}
+                onPointerMove={(e: ReactPointerEvent<HTMLDivElement>) => {
+                  const lp = msgLongPressRef.current;
+                  if (lp.timer == null || lp.messageId !== m.id) return;
+                  if (Math.hypot(e.clientX - lp.startX, e.clientY - lp.startY) > 14) {
+                    window.clearTimeout(lp.timer);
+                    lp.timer = null;
+                    lp.messageId = null;
+                  }
+                }}
+                onPointerUp={() => {
+                  const lp = msgLongPressRef.current;
+                  if (lp.timer != null) {
+                    window.clearTimeout(lp.timer);
+                    lp.timer = null;
+                  }
+                  lp.messageId = null;
+                }}
+                onPointerCancel={() => {
+                  const lp = msgLongPressRef.current;
+                  if (lp.timer != null) {
+                    window.clearTimeout(lp.timer);
+                    lp.timer = null;
+                  }
+                  lp.messageId = null;
+                }}
                 onClick={(e) => {
+                  if (suppressMsgBubbleClickRef.current) {
+                    suppressMsgBubbleClickRef.current = false;
+                    return;
+                  }
                   if (forwardSelecting) {
                     toggleForwardSelected(m.id);
                     return;
@@ -8465,13 +8458,7 @@ export default function App() {
                 }}
                 onContextMenu={(e) => {
                   e.preventDefault();
-                  const menuW = 260;
-                  const menuH = 260;
-                  const pad = 8;
-                  const maxX = window.innerWidth - menuW - pad;
-                  const maxY = window.innerHeight - menuH - pad;
-                  const x = Math.max(pad, Math.min(e.clientX, maxX));
-                  const y = Math.max(pad, Math.min(e.clientY, maxY));
+                  const { x, y } = clampMsgMenuPosition(e.clientX, e.clientY);
                   setMsgMenu({ x, y, messageId: m.id });
                 }}
               >
@@ -8672,26 +8659,6 @@ export default function App() {
                   {new Date(m.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
                 </span>
               </div>
-              {msgMenu?.messageId === m.id ? (
-                <div className="msgMenu" style={{ top: msgMenu.y, left: msgMenu.x }} role="menu">
-                  <button className="msgMenuItem" onClick={() => setReplyTo({ id: m.id, preview: (m.content || "").slice(0, 80) || m.type || "" })}>
-                    Ответить
-                  </button>
-                  <button className="msgMenuItem" onClick={() => startForwardSelect(m.id)}>
-                    Переслать
-                  </button>
-                  <button className="msgMenuItem" onClick={() => void toggleSave(m.id, savedIds.has(m.id))}>
-                    {savedIds.has(m.id) ? "Убрать из сохранённых" : "Сохранить"}
-                  </button>
-                  <div className="msgMenuSep" />
-                  <button className="msgMenuItem" onClick={() => void editMessageInChat(m.id)} disabled={!isMyMessageEmail(m.author?.email)}>
-                    Редактировать
-                  </button>
-                  <button className="msgMenuItem danger" onClick={() => void deleteMessageInChat(m.id)} disabled={!isMyMessageEmail(m.author?.email)}>
-                    Удалить
-                  </button>
-                </div>
-              ) : null}
               <div className="reactions">
                 {(m.reactions ?? []).map((r) => (
                   <button
@@ -8705,6 +8672,130 @@ export default function App() {
               </div>
             </div>
           );})}
+          {msgMenu && typeof document !== "undefined"
+            ? (() => {
+                const mm = messages.find((x) => x.id === msgMenu.messageId);
+                if (!mm) return null;
+                return createPortal(
+                  <>
+                    <div className="msgMenuBackdrop" role="presentation" aria-hidden onClick={() => setMsgMenu(null)} />
+                    <div
+                      className="msgMenu"
+                      style={{ top: msgMenu.y, left: msgMenu.x }}
+                      role="menu"
+                      onClick={(e) => e.stopPropagation()}
+                      onContextMenu={(e) => e.preventDefault()}
+                    >
+                      <button
+                        type="button"
+                        className="msgMenuItem"
+                        onClick={() => {
+                          setReplyTo({ id: mm.id, preview: (mm.content || "").slice(0, 80) || mm.type || "" });
+                          setMsgMenu(null);
+                        }}
+                      >
+                        Ответить
+                      </button>
+                      <button
+                        type="button"
+                        className="msgMenuItem"
+                        onClick={() => {
+                          startForwardSelect(mm.id);
+                          setMsgMenu(null);
+                        }}
+                      >
+                        Переслать
+                      </button>
+                      <button
+                        type="button"
+                        className="msgMenuItem"
+                        onClick={() => {
+                          void toggleSave(mm.id, savedIds.has(mm.id));
+                          setMsgMenu(null);
+                        }}
+                      >
+                        {savedIds.has(mm.id) ? "Убрать из сохранённых" : "Сохранить"}
+                      </button>
+                      <button
+                        type="button"
+                        className="msgMenuItem"
+                        onClick={() => {
+                          setMsgMenu(null);
+                          const popH = 56;
+                          const popW = 300;
+                          let top = msgMenu.y + 6;
+                          if (top + popH > window.innerHeight - 8) top = Math.max(8, msgMenu.y - popH - 6);
+                          let left = Math.min(msgMenu.x, window.innerWidth - popW - 8);
+                          left = Math.max(8, left);
+                          setReactionPopover({ messageId: mm.id, top, left });
+                        }}
+                      >
+                        Реакция
+                      </button>
+                      {!threadRootId ? (
+                        <button
+                          type="button"
+                          className="msgMenuItem"
+                          onClick={() => {
+                            void openThread(mm.id);
+                            setMsgMenu(null);
+                          }}
+                        >
+                          Открыть тред
+                        </button>
+                      ) : null}
+                      <div className="msgMenuSep" />
+                      <button
+                        type="button"
+                        className="msgMenuItem"
+                        onClick={() => {
+                          void pinMessage(mm.id);
+                          setMsgMenu(null);
+                        }}
+                        disabled={!token}
+                      >
+                        Закрепить
+                      </button>
+                      <button
+                        type="button"
+                        className="msgMenuItem"
+                        onClick={() => {
+                          void unpinMessage(mm.id);
+                          setMsgMenu(null);
+                        }}
+                        disabled={!token}
+                      >
+                        Открепить
+                      </button>
+                      <div className="msgMenuSep" />
+                      <button
+                        type="button"
+                        className="msgMenuItem"
+                        onClick={() => {
+                          void editMessageInChat(mm.id);
+                          setMsgMenu(null);
+                        }}
+                        disabled={!isMyMessageEmail(mm.author?.email)}
+                      >
+                        Редактировать
+                      </button>
+                      <button
+                        type="button"
+                        className="msgMenuItem danger"
+                        onClick={() => {
+                          void deleteMessageInChat(mm.id);
+                          setMsgMenu(null);
+                        }}
+                        disabled={!isMyMessageEmail(mm.author?.email)}
+                      >
+                        Удалить
+                      </button>
+                    </div>
+                  </>,
+                  document.body,
+                );
+              })()
+            : null}
           <div ref={messagesEndRef} />
           {messages.length === 0 ? <div className="empty">Сообщений пока нет</div> : null}
           {showScrollToBottom ? (
