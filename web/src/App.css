@@ -2342,19 +2342,66 @@ button.active {
   clip: rect(0, 0, 0, 0);
   border: 0;
 }
-.composerAttachBar {
-  display: flex;
-  flex-direction: row;
-  flex-wrap: nowrap;
-  align-items: center;
-  gap: 2px;
+.composerAttachWrap {
+  position: relative;
   align-self: end;
 }
-.composerAttachIconBtn {
-  flex: 0 0 auto;
+.composerAttachBtn--open {
+  outline: 2px solid rgba(110, 170, 255, 0.45);
 }
-.composerAttachIconBtn svg {
+.composerAttachMenu {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  z-index: 40;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  padding: 10px;
+  min-width: 200px;
+  border-radius: 14px;
+  border: 1px solid var(--tg-border-subtle);
+  background: var(--tg-bg-elevated);
+  box-shadow: 0 10px 36px rgba(0, 0, 0, 0.42);
+}
+.composerAttachMenuTile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 76px;
+  padding: 10px 8px;
+  border-radius: 12px;
+  border: 1px solid var(--tg-border-subtle);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--tg-text);
+  font-size: 12px;
+  cursor: pointer;
+  line-height: 1.2;
+}
+.composerAttachMenuTile:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+:root[data-theme="light"] .composerAttachMenuTile:hover {
+  background: rgba(0, 0, 0, 0.05);
+}
+.composerAttachMenuTile svg {
   display: block;
+  opacity: 0.95;
+}
+
+.chatVideoWrap {
+  max-width: 100%;
+}
+.chatVideo {
+  display: block;
+  width: 100%;
+  max-width: min(100%, 420px);
+  max-height: min(70vh, 480px);
+  border-radius: 12px;
+  background: #000;
+  vertical-align: middle;
 }
 .composerInput {
   min-height: 40px;

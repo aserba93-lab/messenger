@@ -486,6 +486,13 @@ function looksLikeImageAttachment(originalName: string | null | undefined, mimeT
   return IMAGE_FILENAME_RE.test(originalName || "");
 }
 
+const VIDEO_FILENAME_RE = /\.(mp4|m4v|mov|webm|mkv|ogv|3gp)$/i;
+
+function looksLikeVideoAttachment(originalName: string | null | undefined, mimeType: string | null | undefined): boolean {
+  if ((mimeType || "").startsWith("video/")) return true;
+  return VIDEO_FILENAME_RE.test(originalName || "");
+}
+
 /** В каналах/группах имя файла часто дублируется в content; в ЛС при сокете content пустой — добираем после hydrate. */
 function attachmentOriginalNameHint(m: Message): string | null | undefined {
   if (m.file?.originalName) return m.file.originalName;
@@ -765,6 +772,30 @@ function ChatAttachmentAudio(props: {
   );
 }
 
+/** Видео в чате: blob URL после fetch + Bearer; на iPhone нужен playsInline. */
+function ChatAttachmentVideo(props: {
+  downloadUrl: string | null | undefined;
+  token: string | null;
+  className?: string;
+  fileId?: string;
+  onNeedsUrlRefresh?: (fileId: string) => void;
+}) {
+  const src = useAuthenticatedBlobMediaUrl(props.downloadUrl, props.token);
+  return (
+    <video
+      className={props.className}
+      controls
+      playsInline
+      preload="metadata"
+      key={src ? "vready" : "vpending"}
+      src={src || undefined}
+      onError={() => {
+        if (props.fileId && props.onNeedsUrlRefresh) props.onNeedsUrlRefresh(props.fileId);
+      }}
+    />
+  );
+}
+
 export default function App() {
   const [organizationId, setOrganizationId] = useState(() => initialSession?.organizationId ?? "");
   const [organizationCode, setOrganizationCode] = useState("");
@@ -805,11 +836,14 @@ export default function App() {
   const [chatListFilterOpen, setChatListFilterOpen] = useState(false);
   const chatListFilterAnchorRef = useRef<HTMLDivElement | null>(null);
   const clientDownloadsJsonRef = useRef<{ windows?: string; android?: string } | null | undefined>(undefined);
-  /** На экране входа: есть ли URL для кнопок скачивания (без лишних ошибок в интерфейсе). */
-  const [loginDlAvailable, setLoginDlAvailable] = useState(() => ({
-    win: Boolean(import.meta.env.VITE_DOWNLOAD_WINDOWS_URL?.trim()),
-    and: Boolean(import.meta.env.VITE_DOWNLOAD_ANDROID_URL?.trim()),
-  }));
+  /** Ссылка сброса пароля из письма (?reset=...) */
+  const [passwordResetTokenFromUrl, setPasswordResetTokenFromUrl] = useState<string | null>(null);
+  const [resetNewPassword, setResetNewPassword] = useState("");
+  const [resetNewPassword2, setResetNewPassword2] = useState("");
+  const [resetPasswordBusy, setResetPasswordBusy] = useState(false);
+  const [forgotEmail, setForgotEmail] = useState("");
+  const [forgotBusy, setForgotBusy] = useState(false);
+  const [forgotSentHint, setForgotSentHint] = useState(false);
   const [channels, setChannels] = useState<Channel[]>([]);
   const [activeChannelId, setActiveChannelId] = useState("");
   const [groupChats, setGroupChats] = useState<GroupChat[]>([]);
@@ -883,6 +917,7 @@ export default function App() {
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [viewportW, setViewportW] = useState(() => (typeof window !== "undefined" ? window.innerWidth : 1280));
   const [authError, setAuthError] = useState("");
+  const [authSuccessMsg, setAuthSuccessMsg] = useState("");
   const [showForgotPassword, setShowForgotPassword] = useState(false);
   /** Экран входа: подсказка для iOS (PWA на экран «Домой»). */
   const [authScreen, setAuthScreen] = useState<"login" | "ios">("login");
@@ -941,28 +976,19 @@ export default function App() {
   }, [browserNotify]);
 
   useEffect(() => {
-    if (token) return;
-    void (async () => {
-      let j: { windows?: unknown; android?: unknown } = {};
+    if (typeof window === "undefined") return;
+    const raw = new URLSearchParams(window.location.search).get("reset");
+    if (raw && raw.length >= 16) {
+      setPasswordResetTokenFromUrl(raw);
       try {
-        const r = await fetch("/client-downloads.json", { cache: "no-store" });
-        if (r.ok) {
-          try {
-            j = await r.json();
-          } catch {
-            j = {};
-          }
-        }
+        const u = new URL(window.location.href);
+        u.searchParams.delete("reset");
+        window.history.replaceState({}, "", `${u.pathname}${u.search}${u.hash}`);
       } catch {
-        j = {};
+        /* ignore */
       }
-      const win =
-        ((typeof j.windows === "string" ? j.windows : "").trim() || import.meta.env.VITE_DOWNLOAD_WINDOWS_URL?.trim() || "") !== "";
-      const and =
-        ((typeof j.android === "string" ? j.android : "").trim() || import.meta.env.VITE_DOWNLOAD_ANDROID_URL?.trim() || "") !== "";
-      setLoginDlAvailable({ win, and });
-    })();
-  }, [token]);
+    }
+  }, []);
 
   const playMessagePingSound = useCallback(() => {
     if (!audioUnlockedRef.current) return;
@@ -1279,6 +1305,8 @@ export default function App() {
   const attachInputFileRef = useRef<HTMLInputElement | null>(null);
   const attachInputAudioRef = useRef<HTMLInputElement | null>(null);
   const attachInputVideoRef = useRef<HTMLInputElement | null>(null);
+  const [composerAttachOpen, setComposerAttachOpen] = useState(false);
+  const composerAttachWrapRef = useRef<HTMLDivElement | null>(null);
   /** В группе: сначала список участников, затем выбор аудио/видео */
   const [chatMetaPopoverOpen, setChatMetaPopoverOpen] = useState(false);
   const callMenuWrapRef = useRef<HTMLDivElement | null>(null);
@@ -2984,6 +3012,7 @@ export default function App() {
           /* ignore */
         }
       }
+      setAuthSuccessMsg("");
       const ident = loginIdentifier.trim();
       if (!ident || !password) throw new Error("Укажите почту или телефон и пароль.");
       const loginBody: Record<string, string> = { identifier: ident, password };
@@ -6279,7 +6308,20 @@ export default function App() {
     e.target.value = "";
     if (!f) return;
     void uploadAndSend("file", f, f.name);
+    setComposerAttachOpen(false);
   }
+
+  useEffect(() => {
+    if (!composerAttachOpen) return;
+    const onDown = (ev: globalThis.MouseEvent) => {
+      const el = composerAttachWrapRef.current;
+      const t = ev.target as Node | null;
+      if (el && t && el.contains(t)) return;
+      setComposerAttachOpen(false);
+    };
+    document.addEventListener("mousedown", onDown, true);
+    return () => document.removeEventListener("mousedown", onDown, true);
+  }, [composerAttachOpen]);
 
   useEffect(() => {
     if (!mediaPageViewer) return;
@@ -6571,7 +6613,100 @@ export default function App() {
     openDownloadUrlInBrowser(url);
   }
 
+  async function requestForgotPasswordEmail(e?: FormEvent) {
+    e?.preventDefault();
+    setAuthError("");
+    const em = forgotEmail.trim();
+    if (!em.includes("@")) {
+      setAuthError("Укажите email.");
+      return;
+    }
+    setForgotBusy(true);
+    setForgotSentHint(false);
+    try {
+      await fetch(`${API_BASE}/auth/forgot-password`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ email: em }),
+      });
+      setForgotSentHint(true);
+    } catch {
+      setForgotSentHint(true);
+    } finally {
+      setForgotBusy(false);
+    }
+  }
+
+  async function submitPasswordResetFromUrl(e?: FormEvent) {
+    e?.preventDefault();
+    setAuthError("");
+    if (resetNewPassword.length < 8) {
+      setAuthError("Пароль не менее 8 символов.");
+      return;
+    }
+    if (resetNewPassword !== resetNewPassword2) {
+      setAuthError("Пароли не совпадают.");
+      return;
+    }
+    if (!passwordResetTokenFromUrl) return;
+    setResetPasswordBusy(true);
+    try {
+      const res = await fetch(`${API_BASE}/auth/reset-password`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ token: passwordResetTokenFromUrl, newPassword: resetNewPassword }),
+      });
+      const data = (await res.json()) as { error?: string };
+      if (!res.ok) throw new Error(data.error || "Не удалось сменить пароль");
+      setPasswordResetTokenFromUrl(null);
+      setResetNewPassword("");
+      setResetNewPassword2("");
+      setAuthSuccessMsg("Пароль обновлён. Войдите с новым паролём.");
+    } catch (err: any) {
+      setAuthError(String(err?.message ?? err ?? "Ошибка"));
+    } finally {
+      setResetPasswordBusy(false);
+    }
+  }
+
   if (!isAuthed) {
+    if (passwordResetTokenFromUrl) {
+      return (
+        <div className="authPage">
+          <div className="authCard">
+            <div className="authLogoRow" aria-hidden>
+              <img className="authLogoImg" src="/pwa-icon-192.png" width={48} height={48} alt="" />
+            </div>
+            <div className="authTitle">Новый пароль</div>
+            <p className="authSub" style={{ fontSize: 13, lineHeight: 1.45, opacity: 0.9 }}>
+              Задайте пароль для входа. После сохранения откроется форма входа.
+            </p>
+            <label>Новый пароль</label>
+            <input
+              type="password"
+              value={resetNewPassword}
+              onChange={(e) => setResetNewPassword(e.target.value)}
+              autoComplete="new-password"
+              placeholder="Не менее 8 символов"
+            />
+            <label>Повтор пароля</label>
+            <input
+              type="password"
+              value={resetNewPassword2}
+              onChange={(e) => setResetNewPassword2(e.target.value)}
+              autoComplete="new-password"
+              placeholder="Повторите пароль"
+            />
+            {authError ? <div style={{ color: "#ff9ea6", fontSize: 12, marginTop: 6 }}>{authError}</div> : null}
+            <div className="authRow" style={{ marginTop: 10 }}>
+              <button type="button" disabled={resetPasswordBusy} onClick={(e) => void submitPasswordResetFromUrl(e as any)}>
+                {resetPasswordBusy ? "Сохранение…" : "Сохранить пароль"}
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    }
     if (authScreen === "ios") {
       return (
         <div className="authPage">
@@ -6582,12 +6717,12 @@ export default function App() {
             <div className="authTitle">iPhone и iPad</div>
             <p className="authGuideLead">Чтобы приложение вело себя как отдельная программа и могли заработать уведомления:</p>
             <ol className="authIosSteps">
-              <li>Откройте сайт в браузере <strong>Safari</strong> (не внутри других приложений).</li>
-              <li>Нажмите кнопку «Поделиться» <span aria-hidden>□↑</span> внизу панели Safari.</li>
+              <li>Откройте сайт в <strong>браузере</strong> на устройстве (не внутри других приложений). На iPhone/iPad удобнее встроенный Safari или Chrome.</li>
+              <li>Нажмите кнопку «Поделиться» <span aria-hidden>□↑</span> внизу панели браузера.</li>
               <li>Выберите <strong>«На экран «Домой»</strong> / Add to Home Screen.</li>
               <li>Подтвердите добавление. На экране появится иконка SF.</li>
               <li>Запускайте мессенджер <strong>только с этой иконки</strong> — так доступны веб-уведомления (iOS 16.4+).</li>
-              <li>При первом запуске с ярлыка Safari может спросить разрешение на уведомления — нажмите «Разрешить».</li>
+              <li>При первом запуске с ярлыка браузер может спросить разрешение на уведомления — нажмите «Разрешить».</li>
             </ol>
             <p className="authGuideUpdate">
               <strong>Что нужно обновлять:</strong> после выхода новой версии сайта откройте мессенджер с ярлыка; при странном поведении
@@ -6606,6 +6741,9 @@ export default function App() {
           </div>
           <div className="authTitle">sf-communication</div>
           <div className="authSub">Вход</div>
+          {authSuccessMsg ? (
+            <div style={{ color: "#8fd9a8", fontSize: 13, marginBottom: 8, lineHeight: 1.4 }}>{authSuccessMsg}</div>
+          ) : null}
 
           <label>Почта или телефон</label>
           <input
@@ -6652,7 +6790,12 @@ export default function App() {
               <button
                 type="button"
                 className="authLinkBtn"
-                onClick={() => setShowForgotPassword(true)}
+                onClick={() => {
+                  setShowForgotPassword(true);
+                  setForgotEmail(loginIdentifier.includes("@") ? loginIdentifier.trim() : "");
+                  setForgotSentHint(false);
+                  setAuthError("");
+                }}
               >
                 Забыли пароль?
               </button>
@@ -6660,12 +6803,7 @@ export default function App() {
                 <button
                   type="button"
                   className="authPlatformIcon"
-                  disabled={!loginDlAvailable.win}
-                  title={
-                    loginDlAvailable.win
-                      ? "Скачать для Windows"
-                      : "Установщик Windows не настроен (client-downloads.json или VITE_DOWNLOAD_WINDOWS_URL)"
-                  }
+                  title="Скачать для Windows"
                   onClick={() => void openClientDownload("windows")}
                 >
                   <svg width="28" height="28" viewBox="0 0 24 24" aria-hidden>
@@ -6675,12 +6813,7 @@ export default function App() {
                 <button
                   type="button"
                   className="authPlatformIcon"
-                  disabled={!loginDlAvailable.and}
-                  title={
-                    loginDlAvailable.and
-                      ? "Скачать для Android"
-                      : "Ссылка на Android не настроена (client-downloads.json или VITE_DOWNLOAD_ANDROID_URL)"
-                  }
+                  title="Скачать для Android"
                   onClick={() => void openClientDownload("android")}
                 >
                   <svg width="28" height="28" viewBox="0 0 24 24" aria-hidden>
@@ -6706,18 +6839,45 @@ export default function App() {
           {showForgotPassword ? (
             <div className="modalBackdrop" role="presentation" onClick={() => setShowForgotPassword(false)}>
               <div className="modalPanel" role="dialog" onClick={(e) => e.stopPropagation()}>
-                <div style={{ fontWeight: 700, marginBottom: 8 }}>Восстановление доступа</div>
+                <div style={{ fontWeight: 700, marginBottom: 8 }}>Восстановление пароля</div>
                 <p style={{ fontSize: 13, lineHeight: 1.4, marginTop: 0 }}>
-                  Обратитесь к администратору вашей организации, чтобы сбросить пароль.
+                  Укажите email аккаунта — пришлём ссылку для установки нового пароля. Если письма нет, проверьте «Спам» и настройки SMTP
+                  на сервере.
                 </p>
-                <button
-                  type="button"
-                  className="chip"
-                  style={{ marginTop: 10 }}
-                  onClick={() => setShowForgotPassword(false)}
-                >
-                  Понятно
-                </button>
+                <label style={{ display: "block", marginTop: 8 }}>Email</label>
+                <input
+                  type="email"
+                  value={forgotEmail}
+                  onChange={(e) => setForgotEmail(e.target.value)}
+                  placeholder="you@company.ru"
+                  autoComplete="email"
+                  style={{ width: "100%", boxSizing: "border-box", marginTop: 4 }}
+                />
+                {forgotSentHint ? (
+                  <p style={{ fontSize: 13, color: "#8fd9a8", marginTop: 10, marginBottom: 0 }}>
+                    Если этот адрес зарегистрирован, письмо со ссылкой отправлено. Проверьте почту.
+                  </p>
+                ) : null}
+                <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
+                  <button
+                    type="button"
+                    className="chip"
+                    disabled={forgotBusy || !forgotEmail.trim().includes("@")}
+                    onClick={(e) => void requestForgotPasswordEmail(e as any)}
+                  >
+                    {forgotBusy ? "Отправка…" : "Отправить ссылку"}
+                  </button>
+                  <button
+                    type="button"
+                    className="chip"
+                    onClick={() => {
+                      setShowForgotPassword(false);
+                      setForgotSentHint(false);
+                    }}
+                  >
+                    Закрыть
+                  </button>
+                </div>
               </div>
             </div>
           ) : null}
@@ -8501,9 +8661,9 @@ export default function App() {
                     return;
                   }
                   const el = e.target as HTMLElement;
-                  if (
+                    if (
                     el.closest(
-                      "audio, video, a, button, input, textarea, select, label, .voiceMsgBlock, .chatImageWrap, .fileAttachmentRow",
+                      "audio, video, a, button, input, textarea, select, label, .voiceMsgBlock, .chatImageWrap, .chatVideoWrap, .fileAttachmentRow",
                     )
                   ) {
                     return;
@@ -8602,6 +8762,20 @@ export default function App() {
                               onNeedsUrlRefresh={(fid) => void hydrateDownloadUrl(fid)}
                             />
                           </a>
+                        </div>
+                      ) : looksLikeVideoAttachment(attachmentOriginalNameHint(m), m.file.mimeType) ? (
+                        <div className="chatVideoWrap" onClick={(e) => e.stopPropagation()} onPointerDown={(e) => e.stopPropagation()}>
+                          <div className="fileLineWithBadge">
+                            <span className="fileFormatBadge">{fileFormatLabel(attachmentOriginalNameHint(m), m.file.mimeType)}</span>
+                            <span style={{ fontSize: 12, opacity: 0.9 }}>Видео</span>
+                          </div>
+                          <ChatAttachmentVideo
+                            downloadUrl={m.file.downloadUrl}
+                            token={token}
+                            className="chatVideo"
+                            fileId={m.file.id}
+                            onNeedsUrlRefresh={(fid) => void hydrateDownloadUrl(fid)}
+                          />
                         </div>
                       ) : (
                         <div
@@ -8937,64 +9111,83 @@ export default function App() {
             <input ref={attachInputAudioRef} type="file" accept="audio/*" tabIndex={-1} onChange={onComposerAttachmentChange} />
             <input ref={attachInputVideoRef} type="file" accept="video/*" tabIndex={-1} onChange={onComposerAttachmentChange} />
           </div>
-          <div className="composerAttachBar" aria-label="Вложения">
+          <div className="composerAttachWrap" ref={composerAttachWrapRef}>
             <button
               type="button"
-              className="composerAttachIconBtn"
+              className={`composerAttachBtn ${composerAttachOpen ? "composerAttachBtn--open" : ""}`}
+              onClick={() => setComposerAttachOpen((v) => !v)}
               disabled={uploadDisabled}
-              title="Фото"
-              aria-label="Фото"
-              onClick={() => attachInputPhotoRef.current?.click()}
+              aria-expanded={composerAttachOpen}
+              aria-haspopup="menu"
+              title="Вложение"
             >
-              <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden>
-                <path
-                  fill="currentColor"
-                  d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"
-                />
-              </svg>
+              📎
             </button>
-            <button
-              type="button"
-              className="composerAttachIconBtn"
-              disabled={uploadDisabled}
-              title="Файл"
-              aria-label="Файл"
-              onClick={() => attachInputFileRef.current?.click()}
-            >
-              <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden>
-                <path
-                  fill="currentColor"
-                  d="M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z"
-                />
-              </svg>
-            </button>
-            <button
-              type="button"
-              className="composerAttachIconBtn"
-              disabled={uploadDisabled}
-              title="Аудио"
-              aria-label="Аудио"
-              onClick={() => attachInputAudioRef.current?.click()}
-            >
-              <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden>
-                <path
-                  fill="currentColor"
-                  d="M12 3v9.28c-.47-.17-.97-.28-1.5-.28C8.01 12 6 14.01 6 16.5S8.01 21 10.5 21c2.31 0 4.2-1.75 4.45-4H15V6h4V3h-7z"
-                />
-              </svg>
-            </button>
-            <button
-              type="button"
-              className="composerAttachIconBtn"
-              disabled={uploadDisabled}
-              title="Видео"
-              aria-label="Видео"
-              onClick={() => attachInputVideoRef.current?.click()}
-            >
-              <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden>
-                <path fill="currentColor" d="M17 10.5V7c0-.55-.45-1-1-1H4c-.55 0-1 .45-1 1v10c0 .55.45 1 1 1h12c.55 0 1-.45 1-1v-3.5l4 4v-11l-4 4z" />
-              </svg>
-            </button>
+            {composerAttachOpen ? (
+              <div className="composerAttachMenu" role="menu" aria-label="Тип вложения">
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="composerAttachMenuTile"
+                  onClick={() => {
+                    attachInputPhotoRef.current?.click();
+                  }}
+                >
+                  <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden>
+                    <path
+                      fill="currentColor"
+                      d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"
+                    />
+                  </svg>
+                  <span>Фото</span>
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="composerAttachMenuTile"
+                  onClick={() => {
+                    attachInputFileRef.current?.click();
+                  }}
+                >
+                  <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden>
+                    <path
+                      fill="currentColor"
+                      d="M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z"
+                    />
+                  </svg>
+                  <span>Файл</span>
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="composerAttachMenuTile"
+                  onClick={() => {
+                    attachInputAudioRef.current?.click();
+                  }}
+                >
+                  <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden>
+                    <path
+                      fill="currentColor"
+                      d="M12 3v9.28c-.47-.17-.97-.28-1.5-.28C8.01 12 6 14.01 6 16.5S8.01 21 10.5 21c2.31 0 4.2-1.75 4.45-4H15V6h4V3h-7z"
+                    />
+                  </svg>
+                  <span>Аудио</span>
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="composerAttachMenuTile"
+                  onClick={() => {
+                    attachInputVideoRef.current?.click();
+                  }}
+                >
+                  <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden>
+                    <path fill="currentColor" d="M17 10.5V7c0-.55-.45-1-1-1H4c-.55 0-1 .45-1 1v10c0 .55.45 1 1 1h12c.55 0 1-.45 1-1v-3.5l4 4v-11l-4 4z" />
+                  </svg>
+                  <span>Видео</span>
+                </button>
+              </div>
+            ) : null}
           </div>
           <button
             type="button"

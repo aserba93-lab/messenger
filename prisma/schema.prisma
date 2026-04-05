@@ -94,6 +94,7 @@ model User {
   backupCodes         TwoFactorBackupCode[]
   emailVerifyTokens   EmailVerificationToken[]
   loginEmailOtpChallenges LoginEmailOtpChallenge[]
+  passwordResetTokens PasswordResetToken[]
 
   createdWorkspaces   Workspace[] @relation("WorkspaceCreatedBy")
   createdChannels     Channel[] @relation("ChannelCreatedBy")
@@ -450,6 +451,20 @@ model LoginEmailOtpChallenge {
 
   @@index([userId, createdAt])
   @@index([organizationId, createdAt])
+}
+
+/// Одноразовая ссылка сброса пароля (письмо на email).
+model PasswordResetToken {
+  id        String   @id @default(cuid())
+  userId    String
+  tokenHash String   @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
 }
 
 model Invite {

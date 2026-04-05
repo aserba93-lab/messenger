@@ -59,5 +59,7 @@ const EnvSchema = z.object({
     /** off — только пароль (+ TOTP если включён); on — после пароля код на email (если нет TOTP). */
     LOGIN_EMAIL_OTP: z.enum(["off", "on"]).default("off"),
     LOGIN_EMAIL_OTP_TTL_SECONDS: z.coerce.number().int().positive().default(600),
+    /** Ссылка «сброс пароля» из письма, действует ограниченное время */
+    PASSWORD_RESET_TTL_SECONDS: z.coerce.number().int().positive().default(60 * 60),
 });
 export const env = EnvSchema.parse(process.env);

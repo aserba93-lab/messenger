@@ -632,4 +632,36 @@ export class AuthRepository {
         await prisma.loginEmailOtpChallenge.update({ where: { id: row.id }, data: { usedAt: new Date() } });
         return row;
     }
+    async deletePasswordResetTokensForUser(userId) {
+        return prisma.passwordResetToken.deleteMany({ where: { userId } });
+    }
+    async createPasswordResetToken(params) {
+        return prisma.passwordResetToken.create({
+            data: {
+                userId: params.userId,
+                tokenHash: params.tokenHash,
+                expiresAt: params.expiresAt,
+            },
+        });
+    }
+    async findPasswordResetTokenByHash(tokenHash) {
+        return prisma.passwordResetToken.findUnique({ where: { tokenHash } });
+    }
+    async applyPasswordResetAndRevokeSessions(params) {
+        return prisma.$transaction(async (tx) => {
+            await tx.passwordResetToken.update({
+                where: { id: params.tokenId },
+                data: { usedAt: new Date() },
+            });
+            await tx.user.update({
+                where: { id: params.userId },
+                data: {
+                    passwordHash: params.passwordHash,
+                    failedLoginAttempts: 0,
+                    lockedUntil: null,
+                },
+            });
+            await tx.refreshSession.deleteMany({ where: { userId: params.userId } });
+        });
+    }
 }

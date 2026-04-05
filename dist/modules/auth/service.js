@@ -5,7 +5,7 @@ import { decryptTotpSecret, encryptTotpSecret, buildOtpAuthUrl, verifyTotpCode, 
 import { hashPassword, verifyPassword } from "../../security/password.js";
 import { issueAccessToken, issueRefreshToken, verifyRefreshToken } from "../../security/jwt.js";
 import { setRefreshCookie } from "../../web/cookies.js";
-import { maskEmail, sendLoginOtpEmail } from "../../lib/mail.js";
+import { maskEmail, sendLoginOtpEmail, sendPasswordResetEmail } from "../../lib/mail.js";
 import { prisma } from "../../db/prisma.js";
 export class AuthService {
     repo;
@@ -522,6 +522,45 @@ export class AuthService {
         await this.repo.setTwoFactorSecret({ userId: params.viewer.userId, encryptedSecret: encrypted });
         // The frontend needs the otpauth URL; we return it and let it build QR.
         return { otpAuthUrl, qrDataUri };
+    }
+    async requestPasswordReset(params) {
+        const emailLower = String(params.email ?? "").trim().toLowerCase();
+        if (!emailLower || !emailLower.includes("@"))
+            return { ok: true };
+        const user = await this.repo.findUserByEmail(emailLower);
+        if (!user)
+            return { ok: true };
+        await this.repo.deletePasswordResetTokensForUser(user.id);
+        const rawToken = crypto.randomBytes(32).toString("hex");
+        const tokenHash = sha256Hex(rawToken);
+        const expiresAt = new Date(Date.now() + env.PASSWORD_RESET_TTL_SECONDS * 1000);
+        await this.repo.createPasswordResetToken({ userId: user.id, tokenHash, expiresAt });
+        const base = String(env.CLIENT_URL || "")
+            .split(",")
+            .map((s) => s.trim())
+            .filter(Boolean)[0] || "http://localhost:5173";
+        const resetUrl = `${base.replace(/\/$/, "")}/?reset=${encodeURIComponent(rawToken)}`;
+        await sendPasswordResetEmail(user.email, resetUrl);
+        return { ok: true };
+    }
+    async resetPasswordWithToken(params) {
+        const raw = String(params.token ?? "").trim();
+        const newPassword = String(params.newPassword ?? "");
+        if (raw.length < 16)
+            throw new Error("Недействительная или устаревшая ссылка");
+        if (newPassword.length < 8)
+            throw new Error("Пароль не менее 8 символов");
+        const tokenHash = sha256Hex(raw);
+        const row = await this.repo.findPasswordResetTokenByHash(tokenHash);
+        if (!row || row.usedAt || row.expiresAt.getTime() < Date.now())
+            throw new Error("Недействительная или устаревшая ссылка");
+        const passwordHash = await hashPassword(newPassword);
+        await this.repo.applyPasswordResetAndRevokeSessions({
+            tokenId: row.id,
+            userId: row.userId,
+            passwordHash,
+        });
+        return { ok: true };
     }
     async twoFaVerify(params) {
         const twoFactor = await this.repo.getTwoFactorByUserId(params.viewer.userId);

@@ -23,6 +23,13 @@ const ConfirmEmailBodySchema = z.object({
 const RefreshBodySchema = z.object({
     organizationId: z.string().min(1),
 });
+const ForgotPasswordBodySchema = z.object({
+    email: z.string().min(3).max(200),
+});
+const ResetPasswordBodySchema = z.object({
+    token: z.string().min(16).max(500),
+    newPassword: z.string().min(8).max(200),
+});
 export function createAuthRoutes(authService) {
     const router = Router();
     router.post("/login", async (req, res) => {
@@ -116,6 +123,31 @@ export function createAuthRoutes(authService) {
         }
         catch {
             return res.status(200).json({ ok: true });
+        }
+    });
+    /** Запрос письма со ссылкой сброса пароля (всегда 200, без утечки «есть ли email»). */
+    router.post("/forgot-password", async (req, res) => {
+        try {
+            const body = ForgotPasswordBodySchema.safeParse(req.body);
+            if (body.success) {
+                await authService.requestPasswordReset({ email: body.data.email }).catch(() => { });
+            }
+        }
+        catch {
+            /* ignore */
+        }
+        return res.status(200).json({ ok: true });
+    });
+    router.post("/reset-password", async (req, res) => {
+        try {
+            const body = ResetPasswordBodySchema.parse(req.body);
+            await authService.resetPasswordWithToken({ token: body.token, newPassword: body.newPassword });
+            return res.status(200).json({ ok: true });
+        }
+        catch (e) {
+            return res.status(400).json({
+                error: e?.message ?? "Bad request",
+            });
         }
     });
     return router;
