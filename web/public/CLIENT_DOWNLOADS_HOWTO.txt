@@ -1,0 +1,20 @@
+Как включить кнопки «Скачать для Windows» и «Android» на экране входа
+=======================================================================
+
+1) Файл client-downloads.json (рядом с index.html на сервере после сборки)
+   Путь в проекте: web/public/client-downloads.json
+   После «npm run build» он копируется в web/dist/client-downloads.json — заливайте на хост вместе с сайтом.
+
+2) Откройте client-downloads.json и вставьте ПОЛНЫЕ адреса (https://...), например:
+   "windows": "https://files.example.com/messenger/SalesFactory-Setup.exe"
+   "android": "https://files.example.com/messenger/app-release.apk"
+   Или ссылку на Google Play:
+   "android": "https://play.google.com/store/apps/details?id=..."
+
+3) Сохраните файл на сервере. Кнопки станут активными после обновления страницы (кэш: Ctrl+F5).
+
+Альтернатива без правки JSON на сервере: при сборке фронта задать переменные окружения
+   VITE_DOWNLOAD_WINDOWS_URL=https://...
+   VITE_DOWNLOAD_ANDROID_URL=https://...
+
+Ничего «нажимать» в интерфейсе не нужно — только заполнить URL в файле или в .env и пересобрать/обновить сайт.

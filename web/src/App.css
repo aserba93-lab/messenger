@@ -525,6 +525,8 @@ button.authPlatformIcon:disabled {
   html.tg-app-session,
   body.tg-app-session {
     height: 100%;
+    min-height: 100%;
+    min-height: -webkit-fill-available;
     overflow: hidden;
     overscroll-behavior: none;
     touch-action: manipulation;
@@ -532,6 +534,7 @@ button.authPlatformIcon:disabled {
   body.tg-app-session #root {
     height: 100%;
     min-height: 0;
+    min-height: -webkit-fill-available;
     overflow: hidden;
     display: flex;
     flex-direction: column;
@@ -543,6 +546,7 @@ button.authPlatformIcon:disabled {
     max-height: 100%;
     min-height: 100svh;
     min-height: 100dvh;
+    min-height: -webkit-fill-available;
   }
   html.tg-pwa-standalone body.tg-app-session .layout {
     min-height: 100dvh;
@@ -1164,6 +1168,14 @@ button.authPlatformIcon:disabled {
   background: rgba(255, 255, 255, 0.08);
   border-left: 3px solid var(--tg-accent);
   padding-left: 7px;
+}
+:root[data-theme="light"] .tgChatRow:hover {
+  background: rgba(0, 0, 0, 0.07);
+}
+:root[data-theme="light"] .tgChatRow.active {
+  background: rgba(0, 0, 0, 0.11);
+  border-left-color: var(--tg-accent);
+  box-shadow: inset 0 0 0 1px rgba(22, 100, 160, 0.18);
 }
 .tgChatRow.dragging {
   opacity: 0.55;
@@ -2178,6 +2190,10 @@ button.active {
 .msg.selected .bubble {
   background: rgba(110, 170, 255, 0.16);
   border-color: rgba(110, 170, 255, 0.35);
+}
+:root[data-theme="light"] .msg.selected .bubble {
+  background: rgba(22, 100, 160, 0.2);
+  border-color: rgba(18, 90, 140, 0.42);
 }
 .msg.selecting .bubble {
   cursor: pointer;

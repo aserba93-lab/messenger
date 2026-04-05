@@ -1,4 +1,5 @@
 {
-  "windows": "",
-  "android": ""
+   "windows": "https://example.com/SalesFactory-Setup.exe",
+  "android": "https://example.com/app-release.apk"
+  "_comment": "Полные URL https://... См. CLIENT_DOWNLOADS_HOWTO.txt в этой же папке."
 }
