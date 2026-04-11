@@ -3,6 +3,8 @@ import { DirectChatsRepository } from "./repository.js";
 import { prisma } from "../../db/prisma.js";
 import { NotificationsService } from "../notifications/service.js";
 import { env } from "../../config/env.js";
+import { loadMembersMap, managerCanReachPeer, isDeptRestrictedRole } from "../../lib/departmentAccess.js";
+import { sendPushToUsers } from "../../lib/pushNotify.js";
 function mapReactionsForViewer(reactions, viewerId) {
     const byEmoji = new Map();
     for (const r of reactions ?? []) {
@@ -73,12 +75,85 @@ export class DirectChatsService {
     }
     async listDirectChats(viewer) {
         const chats = await this.repo.listDirectChatsForUser({ organizationId: viewer.organizationId, userId: viewer.userId });
-        return chats.map((c) => ({ id: c.id, userIds: c.members.map((m) => m.userId) }));
+        const me = await prisma.organizationMember.findUnique({
+            where: { organizationId_userId: { organizationId: viewer.organizationId, userId: viewer.userId } },
+            select: { department: true, role: true },
+        });
+        const restricted = me && isDeptRestrictedRole(me.role);
+        const out = [];
+        for (const c of chats) {
+            const uids = c.members.map((m) => m.userId);
+            if (!restricted) {
+                out.push({ id: c.id, userIds: uids });
+                continue;
+            }
+            const others = uids.filter((id) => id !== viewer.userId);
+            if (others.length === 0) {
+                out.push({ id: c.id, userIds: uids });
+                continue;
+            }
+            const mmap = await loadMembersMap(viewer.organizationId, [...uids]);
+            let ok = true;
+            for (const oid of others) {
+                const peer = mmap.get(oid);
+                if (!peer) {
+                    ok = false;
+                    break;
+                }
+                const pass = await managerCanReachPeer({
+                    organizationId: viewer.organizationId,
+                    managerId: viewer.userId,
+                    managerDept: me.department,
+                    managerRole: me.role,
+                    peerId: oid,
+                    peerDept: peer.department,
+                    peerRole: peer.role,
+                });
+                if (!pass) {
+                    ok = false;
+                    break;
+                }
+            }
+            if (ok)
+                out.push({ id: c.id, userIds: uids });
+        }
+        return out;
     }
     async listMessages(viewer, input) {
         const isMember = await this.repo.isMember({ directChatId: input.directChatId, userId: viewer.userId });
         if (!isMember)
             throw new Error("Forbidden");
+        const chatRow = await prisma.directChat.findUnique({
+            where: { id: input.directChatId },
+            include: { members: true },
+        });
+        if (!chatRow || chatRow.organizationId !== viewer.organizationId)
+            throw new Error("Not found");
+        const me = await prisma.organizationMember.findUnique({
+            where: { organizationId_userId: { organizationId: viewer.organizationId, userId: viewer.userId } },
+            select: { department: true, role: true },
+        });
+        if (me && isDeptRestrictedRole(me.role)) {
+            const mmap = await loadMembersMap(viewer.organizationId, chatRow.members.map((m) => m.userId));
+            for (const oid of chatRow.members.map((m) => m.userId)) {
+                if (oid === viewer.userId)
+                    continue;
+                const peer = mmap.get(oid);
+                if (!peer)
+                    continue;
+                const ok = await managerCanReachPeer({
+                    organizationId: viewer.organizationId,
+                    managerId: viewer.userId,
+                    managerDept: me.department,
+                    managerRole: me.role,
+                    peerId: oid,
+                    peerDept: peer.department,
+                    peerRole: peer.role,
+                });
+                if (!ok)
+                    throw new Error("Forbidden");
+            }
+        }
         const rows = await this.repo.listMessages({ organizationId: viewer.organizationId, directChatId: input.directChatId, limit: input.limit });
         return rows.map((r) => mapMessage(r, viewer.userId));
     }
@@ -89,11 +164,59 @@ export class DirectChatsService {
             const chat = await this.repo.upsertSelfDirectChat({ organizationId: viewer.organizationId, userId: viewer.userId });
             return { id: chat.id, userIds: chat.members.map((m) => m.userId) };
         }
+        const me = await prisma.organizationMember.findUnique({
+            where: { organizationId_userId: { organizationId: viewer.organizationId, userId: viewer.userId } },
+            select: { department: true, role: true },
+        });
+        const peer = await prisma.organizationMember.findUnique({
+            where: { organizationId_userId: { organizationId: viewer.organizationId, userId: input.userId } },
+            select: { department: true, role: true },
+        });
+        if (!peer)
+            throw new Error("Пользователь не в организации");
+        if (me && isDeptRestrictedRole(me.role)) {
+            const ok = await managerCanReachPeer({
+                organizationId: viewer.organizationId,
+                managerId: viewer.userId,
+                managerDept: me.department,
+                managerRole: me.role,
+                peerId: input.userId,
+                peerDept: peer.department,
+                peerRole: peer.role,
+            });
+            if (!ok)
+                throw new Error("Менеджер может переписываться только внутри своего отдела или по доступу от администратора");
+        }
         const chat = await this.repo.upsertDirectChat({ organizationId: viewer.organizationId, userA: viewer.userId, userB: input.userId });
         return { id: chat.id, userIds: chat.members.map((m) => m.userId) };
     }
     async sendDirectMessage(viewer, input) {
         requireVerified(viewer);
+        if (input.userId !== viewer.userId) {
+            const me = await prisma.organizationMember.findUnique({
+                where: { organizationId_userId: { organizationId: viewer.organizationId, userId: viewer.userId } },
+                select: { department: true, role: true },
+            });
+            const peer = await prisma.organizationMember.findUnique({
+                where: { organizationId_userId: { organizationId: viewer.organizationId, userId: input.userId } },
+                select: { department: true, role: true },
+            });
+            if (!peer)
+                throw new Error("Пользователь не в организации");
+            if (me && isDeptRestrictedRole(me.role)) {
+                const ok = await managerCanReachPeer({
+                    organizationId: viewer.organizationId,
+                    managerId: viewer.userId,
+                    managerDept: me.department,
+                    managerRole: me.role,
+                    peerId: input.userId,
+                    peerDept: peer.department,
+                    peerRole: peer.role,
+                });
+                if (!ok)
+                    throw new Error("Менеджер может переписываться только внутри своего отдела или по доступу от администратора");
+            }
+        }
         const chat = input.userId === viewer.userId
             ? await this.repo.upsertSelfDirectChat({ organizationId: viewer.organizationId, userId: viewer.userId })
             : await this.repo.upsertDirectChat({ organizationId: viewer.organizationId, userA: viewer.userId, userB: input.userId });
@@ -114,6 +237,14 @@ export class DirectChatsService {
         });
         const msg = mapMessage(row, viewer.userId);
         await emitDmToMemberUsers(chat.id, "message:new", msg);
+        const peerIds = chat.members.map((m) => m.userId).filter((id) => id !== viewer.userId);
+        if (peerIds.length)
+            await sendPushToUsers({
+                userIds: peerIds,
+                title: msg.author?.firstName ? `${msg.author.firstName}` : "Сообщение",
+                body: (input.content ?? "").slice(0, 120) || "Новое сообщение",
+                data: { kind: "dm", directChatId: chat.id },
+            });
         const mentioned = this.extractMentionedEmails(input.content);
         if (mentioned.length) {
             const users = await prisma.user.findMany({ where: { email: { in: mentioned } }, select: { id: true } });
@@ -148,6 +279,37 @@ export class DirectChatsService {
         const isMember = await this.repo.isMember({ directChatId: input.directChatId, userId: viewer.userId });
         if (!isMember)
             throw new Error("Forbidden");
+        const chatRow = await prisma.directChat.findUnique({
+            where: { id: input.directChatId },
+            include: { members: true },
+        });
+        if (!chatRow || chatRow.organizationId !== viewer.organizationId)
+            throw new Error("Not found");
+        const me = await prisma.organizationMember.findUnique({
+            where: { organizationId_userId: { organizationId: viewer.organizationId, userId: viewer.userId } },
+            select: { department: true, role: true },
+        });
+        if (me && isDeptRestrictedRole(me.role)) {
+            const mmap = await loadMembersMap(viewer.organizationId, chatRow.members.map((m) => m.userId));
+            for (const oid of chatRow.members.map((m) => m.userId)) {
+                if (oid === viewer.userId)
+                    continue;
+                const peer = mmap.get(oid);
+                if (!peer)
+                    continue;
+                const ok = await managerCanReachPeer({
+                    organizationId: viewer.organizationId,
+                    managerId: viewer.userId,
+                    managerDept: me.department,
+                    managerRole: me.role,
+                    peerId: oid,
+                    peerDept: peer.department,
+                    peerRole: peer.role,
+                });
+                if (!ok)
+                    throw new Error("Менеджер может переписываться только внутри своего отдела или по доступу от администратора");
+            }
+        }
         const file = await prisma.file.findUnique({ where: { id: input.fileId } });
         if (!file || file.organizationId !== viewer.organizationId)
             throw new Error("Not found");
@@ -163,6 +325,14 @@ export class DirectChatsService {
         });
         const msg = mapMessage(row, viewer.userId);
         await emitDmToMemberUsers(input.directChatId, "message:new", msg);
+        const peerIds = chatRow.members.map((m) => m.userId).filter((id) => id !== viewer.userId);
+        if (peerIds.length)
+            await sendPushToUsers({
+                userIds: peerIds,
+                title: "Файл",
+                body: file.originalName ?? "Вложение",
+                data: { kind: "dm", directChatId: input.directChatId },
+            });
         return msg;
     }
 

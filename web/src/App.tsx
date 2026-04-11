@@ -956,6 +956,11 @@ export default function App() {
   const [adminCreatePhone, setAdminCreatePhone] = useState("");
   const [adminCreateDepartment, setAdminCreateDepartment] = useState("");
   const [adminCreateRole, setAdminCreateRole] = useState<"owner" | "admin" | "manager" | "employee" | "guest">("employee");
+  const [departmentGrants, setDepartmentGrants] = useState<
+    { id: string; userAId: string; userBId: string; grantedByUserId: string; createdAt: string }[]
+  >([]);
+  const [deptGrantUserA, setDeptGrantUserA] = useState("");
+  const [deptGrantUserB, setDeptGrantUserB] = useState("");
   const [chatPreviewByKey, setChatPreviewByKey] = useState<Record<string, { text: string; at: string }>>({});
   const [chatError, setChatError] = useState("");
   const [pendingCallDeepLink, setPendingCallDeepLink] = useState(false);
@@ -4617,6 +4622,109 @@ export default function App() {
   }
   loadUsersRef.current = loadUsers;
 
+  async function loadDepartmentGrants() {
+    if (!token) return;
+    if (viewerRole !== "owner" && viewerRole !== "admin") return;
+    try {
+      const data = await gql<{
+        departmentChatGrants: {
+          id: string;
+          userAId: string;
+          userBId: string;
+          grantedByUserId: string;
+          createdAt: string;
+        }[];
+      }>(`query { departmentChatGrants { id userAId userBId grantedByUserId createdAt } }`, {}, token);
+      setDepartmentGrants(data.departmentChatGrants ?? []);
+    } catch {
+      /* ignore */
+    }
+  }
+
+  async function grantDepartmentPair() {
+    if (!token || !deptGrantUserA || !deptGrantUserB || deptGrantUserA === deptGrantUserB) {
+      setCompanyActionMsg("Выберите двух разных сотрудников.");
+      return;
+    }
+    setCompanyActionMsg("");
+    try {
+      await gql(
+        `mutation($a: ID!, $b: ID!) { grantDepartmentChatPair(userAId: $a, userBId: $b) }`,
+        { a: deptGrantUserA, b: deptGrantUserB },
+        token,
+      );
+      await loadDepartmentGrants();
+      setCompanyActionMsg("Доступ между отделами выдан.");
+    } catch (e: unknown) {
+      setCompanyActionMsg((e as Error)?.message ?? "Ошибка");
+    }
+  }
+
+  async function revokeDepartmentPair(a: string, b: string) {
+    if (!token) return;
+    try {
+      await gql(`mutation($a: ID!, $b: ID!) { revokeDepartmentChatPair(userAId: $a, userBId: $b) }`, { a, b }, token);
+      await loadDepartmentGrants();
+    } catch {
+      /* ignore */
+    }
+  }
+
+  useEffect(() => {
+    if (!showCompanyCabinet || !token) return;
+    if (viewerRole !== "owner" && viewerRole !== "admin") return;
+    void loadDepartmentGrants();
+  }, [showCompanyCabinet, token, viewerRole]);
+
+  useEffect(() => {
+    if (!token) return;
+    let remove: (() => void) | undefined;
+    void import("@capacitor/app")
+      .then(({ App }) =>
+        App.addListener("appStateChange", ({ isActive }) => {
+          if (isActive) void refreshChatsAndPresenceRef.current?.();
+        }),
+      )
+      .then((handle) => {
+        remove = () => void handle.remove();
+      })
+      .catch(() => {});
+    return () => {
+      remove?.();
+    };
+  }, [token]);
+
+  useEffect(() => {
+    if (!token) return;
+    let regListener: { remove: () => void } | undefined;
+    void import("@capacitor/push-notifications")
+      .then(async ({ PushNotifications }) => {
+        const { Capacitor } = await import("@capacitor/core");
+        if (!Capacitor.isNativePlatform()) return;
+        const perm = await PushNotifications.requestPermissions();
+        if (perm.receive !== "granted") return;
+        await PushNotifications.register();
+        const h = await PushNotifications.addListener("registration", async (ev) => {
+          const t = (ev as { value?: string }).value;
+          if (!t || !token) return;
+          try {
+            await gql(
+              `mutation($t: String!, $p: String!) { registerPushDevice(token: $t, platform: $p) }`,
+              { t, p: Capacitor.getPlatform() },
+              token,
+            );
+          } catch {
+            /* ignore */
+          }
+        });
+        regListener = h;
+      })
+      .catch(() => {});
+    return () => {
+      void regListener?.remove();
+    };
+  }, [token]);
+
   useEffect(() => {
     if (!token || !organizationId) return;
     const el = sidebarChatsScrollRef.current;
@@ -4744,6 +4852,13 @@ export default function App() {
           if (savedChatKey) await openChatFromList(savedChatKey);
         } catch {
           /* ignore */
+        }
+        if (!cancelled) {
+          try {
+            await refreshChatsAndPresenceRef.current?.();
+          } catch {
+            /* ignore */
+          }
         }
       } catch (e) {
         console.error(e);
@@ -8231,6 +8346,74 @@ export default function App() {
                         e.currentTarget.value = "";
                       }}
                     />
+
+                    <div className="companyModalSubhead" style={{ marginTop: 16 }}>
+                      Доступ между отделами (для роли «Менеджер»)
+                    </div>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center", marginBottom: 8 }}>
+                      <select
+                        value={deptGrantUserA}
+                        onChange={(e) => setDeptGrantUserA(e.target.value)}
+                        className="companyTableSelect"
+                        style={{ minWidth: 200 }}
+                      >
+                        <option value="">Сотрудник 1</option>
+                        {companyUsersFiltered.map((u) => (
+                          <option key={`dga-${u.id}`} value={u.id}>
+                            {(u.lastName || u.firstName || u.email || u.id).slice(0, 40)} — {u.department?.trim() || "без отдела"}
+                          </option>
+                        ))}
+                      </select>
+                      <select
+                        value={deptGrantUserB}
+                        onChange={(e) => setDeptGrantUserB(e.target.value)}
+                        className="companyTableSelect"
+                        style={{ minWidth: 200 }}
+                      >
+                        <option value="">Сотрудник 2</option>
+                        {companyUsersFiltered.map((u) => (
+                          <option key={`dgb-${u.id}`} value={u.id}>
+                            {(u.lastName || u.firstName || u.email || u.id).slice(0, 40)} — {u.department?.trim() || "без отдела"}
+                          </option>
+                        ))}
+                      </select>
+                      <button type="button" onClick={() => void grantDepartmentPair()} disabled={!token}>
+                        Выдать доступ к переписке
+                      </button>
+                    </div>
+                    <div className="companyTableWrap" style={{ marginBottom: 8 }}>
+                      <table className="companyTable">
+                        <thead>
+                          <tr>
+                            <th>Участник A</th>
+                            <th>Участник B</th>
+                            <th></th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {departmentGrants.map((g) => (
+                            <tr key={g.id}>
+                              <td className="companyTableCellMono">{g.userAId}</td>
+                              <td className="companyTableCellMono">{g.userBId}</td>
+                              <td>
+                                <button
+                                  type="button"
+                                  className="chip"
+                                  onClick={() => void revokeDepartmentPair(g.userAId, g.userBId)}
+                                >
+                                  Отозвать
+                                </button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                      {departmentGrants.length === 0 ? (
+                        <div className="empty" style={{ fontSize: 12 }}>
+                          Нет выданных исключений. Без них менеджеры видят только свой отдел.
+                        </div>
+                      ) : null}
+                    </div>
                   </>
                 ) : null}
                 <div className="row">

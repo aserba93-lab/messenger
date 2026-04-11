@@ -61,5 +61,7 @@ const EnvSchema = z.object({
     LOGIN_EMAIL_OTP_TTL_SECONDS: z.coerce.number().int().positive().default(600),
     /** Ссылка «сброс пароля» из письма, действует ограниченное время */
     PASSWORD_RESET_TTL_SECONDS: z.coerce.number().int().positive().default(60 * 60),
+    /** Legacy FCM server key (Firebase Console → Cloud Messaging) для push на iOS/Android вне приложения */
+    FCM_SERVER_KEY: z.string().min(1).optional(),
 });
 export const env = EnvSchema.parse(process.env);

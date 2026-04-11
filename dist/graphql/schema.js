@@ -88,6 +88,8 @@ export const typeDefs = /* GraphQL */ `
     globalSearch(query: String!): GlobalSearchResult!
 
     file(id: ID!): File!
+
+    departmentChatGrants: [DepartmentChatGrant!]!
   }
 
   type Mutation {
@@ -166,6 +168,10 @@ export const typeDefs = /* GraphQL */ `
     uploadFileBase64(fileId: ID!, base64: String!, mimeType: String): Boolean!
     confirmFileUploaded(fileId: ID!): Boolean!
     markFileScanned(input: MarkFileScannedInput!): Boolean!
+
+    grantDepartmentChatPair(userAId: ID!, userBId: ID!): Boolean!
+    revokeDepartmentChatPair(userAId: ID!, userBId: ID!): Boolean!
+    registerPushDevice(token: String!, platform: String!): Boolean!
   }
 
   input RegisterOrganizationInput {
@@ -206,6 +212,15 @@ export const typeDefs = /* GraphQL */ `
   type ThreadReadStateEntry {
     userId: ID!
     lastReadAt: DateTime!
+  }
+
+  """Доступ между отделами (пара userAId < userBId), выданный администратором."""
+  type DepartmentChatGrant {
+    id: ID!
+    userAId: ID!
+    userBId: ID!
+    grantedByUserId: ID!
+    createdAt: DateTime!
   }
 
   input MarkThreadReadInput {

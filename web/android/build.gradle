@@ -27,3 +27,17 @@ allprojects {
 task clean(type: Delete) {
     delete rootProject.buildDir
 }
+
+// Capacitor задаёт Java 21 в подмодулях; при JDK 17 сборка падает с "invalid source release: 21".
+// Сводим к 17 — достаточно для AGP 8.x и типичной установки Android Studio.
+subprojects { subproject ->
+    subproject.afterEvaluate {
+        def androidExt = subproject.extensions.findByName("android")
+        if (androidExt != null) {
+            androidExt.compileOptions {
+                sourceCompatibility JavaVersion.VERSION_17
+                targetCompatibility JavaVersion.VERSION_17
+            }
+        }
+    }
+}

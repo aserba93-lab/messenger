@@ -112,6 +112,11 @@ model User {
 
   /// JSON строка состояния папок чатов (tg:chatFolders:v1) для синхронизации между устройствами
   chatFoldersJson       String?
+
+  departmentGrantsAsA   DepartmentChatGrant[] @relation("DeptGrantUserA")
+  departmentGrantsAsB   DepartmentChatGrant[] @relation("DeptGrantUserB")
+  departmentGrantsMade  DepartmentChatGrant[] @relation("DeptGrantBy")
+  pushDevices           PushDevice[]
 }
 
 /// Последняя отметка «прочитано до» по ключу треда: c:{channelId} | g:{groupChatId} | d:{directChatId}
@@ -128,6 +133,20 @@ model ThreadReadState {
   @@unique([userId, threadKey])
   @@index([threadKey])
   @@index([organizationId])
+}
+
+/// FCM/APNs токен устройства для push вне браузера (iOS/Android).
+model PushDevice {
+  id        String   @id @default(cuid())
+  userId    String
+  token     String   @unique
+  platform  String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
 }
 
 model Organization {
@@ -152,6 +171,26 @@ model Organization {
   notificationPreferences NotificationPreference[]
   emailVerificationTokens EmailVerificationToken[]
   auditLogs AuditLog[]
+  departmentChatGrants DepartmentChatGrant[]
+}
+
+/// Разрешение общения между сотрудниками разных отделов (выдаётся owner/admin).
+/// Пара хранится канонически: userAId < userBId лексикографически.
+model DepartmentChatGrant {
+  id              String   @id @default(cuid())
+  organizationId  String
+  userAId         String
+  userBId         String
+  grantedByUserId String
+  createdAt       DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  userA        User         @relation("DeptGrantUserA", fields: [userAId], references: [id], onDelete: Cascade)
+  userB        User         @relation("DeptGrantUserB", fields: [userBId], references: [id], onDelete: Cascade)
+  grantedBy    User         @relation("DeptGrantBy", fields: [grantedByUserId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, userAId, userBId])
+  @@index([organizationId])
 }
 
 model OrganizationMember {

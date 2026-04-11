@@ -3,6 +3,8 @@ import { GroupChatsRepository } from "./repository.js";
 import { prisma } from "../../db/prisma.js";
 import { NotificationsService } from "../notifications/service.js";
 import { env } from "../../config/env.js";
+import { loadMembersMap, managerCanReachPeer, isDeptRestrictedRole, validateGroupMembersDepartmentRules } from "../../lib/departmentAccess.js";
+import { sendPushToUsers } from "../../lib/pushNotify.js";
 function mapReactionsForViewer(reactions, viewerId) {
     const byEmoji = new Map();
     for (const r of reactions ?? []) {
@@ -69,17 +71,65 @@ export class GroupChatsService {
     }
     async listGroupChats(viewer) {
         const groups = await this.repo.listGroupChatsForUser({ organizationId: viewer.organizationId, userId: viewer.userId });
-        return groups.map((g) => ({
-            id: g.id,
-            name: g.name,
-            memberIds: g.members.map((m) => m.userId),
-            createdByUserId: g.createdByUserId,
-            avatarUrl: g.avatarUrl ?? null,
-        }));
+        const me = await prisma.organizationMember.findUnique({
+            where: { organizationId_userId: { organizationId: viewer.organizationId, userId: viewer.userId } },
+            select: { department: true, role: true },
+        });
+        const restricted = me && isDeptRestrictedRole(me.role);
+        const out = [];
+        for (const g of groups) {
+            const mids = g.members.map((m) => m.userId);
+            if (!restricted) {
+                out.push({
+                    id: g.id,
+                    name: g.name,
+                    memberIds: mids,
+                    createdByUserId: g.createdByUserId,
+                    avatarUrl: g.avatarUrl ?? null,
+                });
+                continue;
+            }
+            const mmap = await loadMembersMap(viewer.organizationId, mids);
+            let ok = true;
+            for (const oid of mids) {
+                if (oid === viewer.userId)
+                    continue;
+                const peer = mmap.get(oid);
+                if (!peer) {
+                    ok = false;
+                    break;
+                }
+                const pass = await managerCanReachPeer({
+                    organizationId: viewer.organizationId,
+                    managerId: viewer.userId,
+                    managerDept: me.department,
+                    managerRole: me.role,
+                    peerId: oid,
+                    peerDept: peer.department,
+                    peerRole: peer.role,
+                });
+                if (!pass) {
+                    ok = false;
+                    break;
+                }
+            }
+            if (ok)
+                out.push({
+                    id: g.id,
+                    name: g.name,
+                    memberIds: mids,
+                    createdByUserId: g.createdByUserId,
+                    avatarUrl: g.avatarUrl ?? null,
+                });
+        }
+        return out;
     }
     async createGroupChat(viewer, input) {
         if (!viewer.emailVerified)
             throw new Error("Email not verified");
+        const memberIds = Array.isArray(input.memberIds) ? input.memberIds.map((x) => String(x)) : [];
+        const allIds = Array.from(new Set([viewer.userId, ...memberIds]));
+        await validateGroupMembersDepartmentRules(viewer.organizationId, allIds);
         const group = await this.repo.createGroupChat({
             organizationId: viewer.organizationId,
             createdByUserId: viewer.userId,
@@ -148,6 +198,8 @@ export class GroupChatsService {
         const ids = Array.isArray(input.userIds) ? input.userIds.map((x) => String(x)).filter(Boolean) : [];
         if (!ids.length)
             throw new Error("userIds required");
+        const merged = Array.from(new Set([...g.members.map((m) => m.userId), ...ids]));
+        await validateGroupMembersDepartmentRules(viewer.organizationId, merged);
         const beforeIds = new Set(g.members.map((m) => m.userId));
         const updated = await this.repo.addGroupChatMembers({
             organizationId: viewer.organizationId,
@@ -178,6 +230,35 @@ export class GroupChatsService {
         const member = await this.repo.isGroupMember({ groupChatId: input.groupChatId, userId: viewer.userId });
         if (!member)
             throw new Error("Forbidden");
+        const g = await this.repo.getGroupChatById(input.groupChatId);
+        if (!g || g.organizationId !== viewer.organizationId)
+            throw new Error("Not found");
+        const me = await prisma.organizationMember.findUnique({
+            where: { organizationId_userId: { organizationId: viewer.organizationId, userId: viewer.userId } },
+            select: { department: true, role: true },
+        });
+        if (me && isDeptRestrictedRole(me.role)) {
+            const mids = g.members.map((m) => m.userId);
+            const mmap = await loadMembersMap(viewer.organizationId, mids);
+            for (const oid of mids) {
+                if (oid === viewer.userId)
+                    continue;
+                const peer = mmap.get(oid);
+                if (!peer)
+                    continue;
+                const ok = await managerCanReachPeer({
+                    organizationId: viewer.organizationId,
+                    managerId: viewer.userId,
+                    managerDept: me.department,
+                    managerRole: me.role,
+                    peerId: oid,
+                    peerDept: peer.department,
+                    peerRole: peer.role,
+                });
+                if (!ok)
+                    throw new Error("Forbidden");
+            }
+        }
         const rows = await this.repo.listGroupMessages({
             organizationId: viewer.organizationId,
             groupChatId: input.groupChatId,
@@ -206,6 +287,18 @@ export class GroupChatsService {
         });
         const msg = mapMessage(row, viewer.userId);
         emitToRoom(`group:${input.groupChatId}`, "message:new", { ...msg, groupChatId: input.groupChatId });
+        const gm = await prisma.groupChatMember.findMany({
+            where: { groupChatId: input.groupChatId },
+            select: { userId: true },
+        });
+        const peerIds = gm.map((x) => x.userId).filter((id) => id !== viewer.userId);
+        if (peerIds.length)
+            await sendPushToUsers({
+                userIds: peerIds,
+                title: "Группа",
+                body: (input.content ?? "").slice(0, 120) || "Новое сообщение",
+                data: { kind: "group", groupChatId: input.groupChatId },
+            });
         const mentioned = this.extractMentionedEmails(input.content);
         if (mentioned.length) {
             const users = await prisma.user.findMany({ where: { email: { in: mentioned } }, select: { id: true } });
@@ -258,6 +351,18 @@ export class GroupChatsService {
         });
         const msg = mapMessage(row, viewer.userId);
         emitToRoom(`group:${input.groupChatId}`, "message:new", { ...msg, groupChatId: input.groupChatId });
+        const gm = await prisma.groupChatMember.findMany({
+            where: { groupChatId: input.groupChatId },
+            select: { userId: true },
+        });
+        const peerIds = gm.map((x) => x.userId).filter((id) => id !== viewer.userId);
+        if (peerIds.length)
+            await sendPushToUsers({
+                userIds: peerIds,
+                title: "Группа",
+                body: file.originalName ?? "Файл",
+                data: { kind: "group", groupChatId: input.groupChatId },
+            });
         return { ...msg, groupChatId: input.groupChatId };
     }
 

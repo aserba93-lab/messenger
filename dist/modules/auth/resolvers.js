@@ -86,6 +86,17 @@ export const authResolvers = {
                 return { ...u, chatFoldersJson: null };
             return u;
         },
+        departmentChatGrants: async (_p, _a, ctx) => {
+            const viewer = requireViewer(ctx);
+            const rows = await ctx.authService.listDepartmentChatGrants(viewer);
+            return rows.map((r) => ({
+                id: r.id,
+                userAId: r.userAId,
+                userBId: r.userBId,
+                grantedByUserId: r.grantedByUserId,
+                createdAt: r.createdAt,
+            }));
+        },
     },
     Mutation: {
         registerOrganization: async (_p, args, ctx) => {
@@ -276,6 +287,18 @@ export const authResolvers = {
                 logoUrl: input.logoUrl,
                 settings: input.settings ?? undefined,
             });
+        },
+        grantDepartmentChatPair: async (_p, args, ctx) => {
+            const viewer = requireViewer(ctx);
+            return ctx.authService.grantDepartmentChatPair(viewer, { userAId: args.userAId, userBId: args.userBId });
+        },
+        revokeDepartmentChatPair: async (_p, args, ctx) => {
+            const viewer = requireViewer(ctx);
+            return ctx.authService.revokeDepartmentChatPair(viewer, { userAId: args.userAId, userBId: args.userBId });
+        },
+        registerPushDevice: async (_p, args, ctx) => {
+            const viewer = requireViewer(ctx);
+            return ctx.authService.registerPushDevice(viewer, { token: args.token, platform: args.platform });
         },
     },
 };

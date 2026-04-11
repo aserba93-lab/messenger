@@ -7,6 +7,7 @@ import { issueAccessToken, issueRefreshToken, verifyRefreshToken } from "../../s
 import { setRefreshCookie } from "../../web/cookies.js";
 import { maskEmail, sendLoginOtpEmail, sendPasswordResetEmail } from "../../lib/mail.js";
 import { prisma } from "../../db/prisma.js";
+import { hasDepartmentGrant, normDept, orderedPair } from "../../lib/departmentAccess.js";
 export class AuthService {
     repo;
     constructor(repo = new AuthRepository()) {
@@ -56,12 +57,41 @@ export class AuthService {
     async listUsers(params) {
         if (!params.viewer)
             throw new Error("Unauthorized");
-        return this.repo.listUsers({
+        const rows = await this.repo.listUsers({
             organizationId: params.viewer.organizationId,
             role: params.role,
             department: params.department,
             status: params.status,
         });
+        if (params.viewer.role !== "manager")
+            return rows;
+        const me = await prisma.organizationMember.findUnique({
+            where: {
+                organizationId_userId: { organizationId: params.viewer.organizationId, userId: params.viewer.userId },
+            },
+            select: { department: true },
+        });
+        if (!me)
+            return rows;
+        const vd = normDept(me.department);
+        const out = [];
+        for (const u of rows) {
+            if (u.id === params.viewer.userId) {
+                out.push(u);
+                continue;
+            }
+            if (u.role === "owner" || u.role === "admin") {
+                out.push(u);
+                continue;
+            }
+            if (normDept(u.department) === vd) {
+                out.push(u);
+                continue;
+            }
+            if (await hasDepartmentGrant(params.viewer.organizationId, params.viewer.userId, u.id))
+                out.push(u);
+        }
+        return out;
     }
     async getOrganization(viewer, organizationId) {
         if (viewer.organizationId !== organizationId)
@@ -584,5 +614,77 @@ export class AuthService {
             entityId: params.viewer.userId,
         });
         return { ok: true, backupCodes: env.NODE_ENV === "development" ? backupCodes : [] };
+    }
+    async grantDepartmentChatPair(viewer, input) {
+        if (viewer.role !== "owner" && viewer.role !== "admin")
+            throw new Error("Forbidden");
+        const a = String(input.userAId ?? "").trim();
+        const b = String(input.userBId ?? "").trim();
+        if (!a || !b || a === b)
+            throw new Error("Укажите двух разных пользователей");
+        const m1 = await prisma.organizationMember.findUnique({
+            where: { organizationId_userId: { organizationId: viewer.organizationId, userId: a } },
+        });
+        const m2 = await prisma.organizationMember.findUnique({
+            where: { organizationId_userId: { organizationId: viewer.organizationId, userId: b } },
+        });
+        if (!m1 || !m2 || m1.deactivatedAt || m2.deactivatedAt)
+            throw new Error("Пользователи должны быть активными участниками организации");
+        const [ua, ub] = orderedPair(a, b);
+        await prisma.departmentChatGrant.upsert({
+            where: {
+                organizationId_userAId_userBId: { organizationId: viewer.organizationId, userAId: ua, userBId: ub },
+            },
+            create: {
+                organizationId: viewer.organizationId,
+                userAId: ua,
+                userBId: ub,
+                grantedByUserId: viewer.userId,
+            },
+            update: { grantedByUserId: viewer.userId },
+        });
+        await this.repo.audit({
+            organizationId: viewer.organizationId,
+            actorUserId: viewer.userId,
+            action: "DEPARTMENT_CHAT_GRANT",
+            entityType: "DepartmentChatGrant",
+            entityId: `${ua}:${ub}`,
+            metadata: { userAId: ua, userBId: ub },
+        });
+        return true;
+    }
+    async revokeDepartmentChatPair(viewer, input) {
+        if (viewer.role !== "owner" && viewer.role !== "admin")
+            throw new Error("Forbidden");
+        const a = String(input.userAId ?? "").trim();
+        const b = String(input.userBId ?? "").trim();
+        if (!a || !b)
+            throw new Error("userAId and userBId required");
+        const [ua, ub] = orderedPair(a, b);
+        await prisma.departmentChatGrant.deleteMany({
+            where: { organizationId: viewer.organizationId, userAId: ua, userBId: ub },
+        });
+        return true;
+    }
+    async listDepartmentChatGrants(viewer) {
+        if (viewer.role !== "owner" && viewer.role !== "admin")
+            throw new Error("Forbidden");
+        return prisma.departmentChatGrant.findMany({
+            where: { organizationId: viewer.organizationId },
+            orderBy: { createdAt: "desc" },
+            take: 500,
+        });
+    }
+    async registerPushDevice(viewer, input) {
+        const token = String(input.token ?? "").trim();
+        if (!token)
+            throw new Error("token required");
+        const platform = String(input.platform ?? "unknown").slice(0, 48);
+        await prisma.pushDevice.upsert({
+            where: { token },
+            create: { userId: viewer.userId, token, platform },
+            update: { userId: viewer.userId, platform, updatedAt: new Date() },
+        });
+        return true;
     }
 }
