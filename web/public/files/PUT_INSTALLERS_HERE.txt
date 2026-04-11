@@ -1,0 +1,6 @@
+Положите сюда установщики с именами:
+  Messenger-Setup.exe
+  app-release.apk
+
+Затем выполните npm run build и задеплойте папку dist на сервер.
+Ссылки в client-downloads.json уже указывают на /files/...

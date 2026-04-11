@@ -9,3 +9,14 @@ web/release/
 
 # Локальные загрузки (не хранить в Git)
 .local_uploads/
+
+# Установщики для сайта — большие; кладите на сервер вручную, не в GitHub
+web/public/files/*.exe
+web/public/files/*.apk
+web/public/files/*.apk.*
+
+# Секреты фронта (Vite): только локально
+web/.env
+web/.env.local
+web/.env.*.local
+web/.env.txt

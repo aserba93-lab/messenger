@@ -1,0 +1,244 @@
+================================================================================
+Остальные блоки настройки сервера (мессенджер: фронт + API + БД + почта + push)
+================================================================================
+Файл дополняет web/public/CLIENT_DOWNLOADS_HOWTO.txt (там — в основном кнопки
+скачивания и папка files). Здесь — что сделать на VPS/сервере по шагам.
+
+Условные имена (подставьте свои):
+  ДОМЕН     = sf-communication.ru
+  КАТАЛОГ   = /var/www/messenger
+  ПОРТ_API  = 3000
+
+
+--------------------------------------------------------------------------------
+Блок 1. PostgreSQL
+--------------------------------------------------------------------------------
+1) Установить PostgreSQL (если ещё нет).
+2) Создать базу и пользователя (пример — команды под Linux):
+
+   sudo -u postgres psql
+   CREATE USER messenger_user WITH PASSWORD 'СЛОЖНЫЙ_ПАРОЛЬ';
+   CREATE DATABASE messenger OWNER messenger_user;
+   \q
+
+3) Строка подключения для .env (одна строка):
+
+   DATABASE_URL="postgresql://messenger_user:СЛОЖНЫЙ_ПАРОЛЬ@127.0.0.1:5432/messenger"
+
+
+--------------------------------------------------------------------------------
+Блок 2. Redis
+--------------------------------------------------------------------------------
+Нужен для очередей/сокет-адаптера при ENABLE_SOCKET_REDIS_ADAPTER.
+
+В .env:
+   REDIS_URL="redis://127.0.0.1:6379"
+
+Установка Redis (Debian/Ubuntu):
+   sudo apt update && sudo apt install -y redis-server
+   sudo systemctl enable redis-server && sudo systemctl start redis-server
+
+
+--------------------------------------------------------------------------------
+Блок 3. MinIO (S3-совместимое хранилище файлов)
+--------------------------------------------------------------------------------
+Бэкенд ждёт MINIO_* в .env. Можно поднять MinIO локально или использовать
+облачный S3 с совместимым endpoint.
+
+Минимально в .env (пример для локального MinIO на том же сервере):
+   MINIO_ENDPOINT="http://127.0.0.1:9000"
+   MINIO_ACCESS_KEY="minio"
+   MINIO_SECRET_KEY="минимум-8-символов"
+   MINIO_BUCKET="sf-attachments"
+   MINIO_FORCE_PATH_STYLE="true"
+
+Создайте bucket с именем как в MINIO_BUCKET (в консоли MinIO или mc).
+
+
+--------------------------------------------------------------------------------
+Блок 4. Секреты JWT и TOTP в .env
+--------------------------------------------------------------------------------
+Сгенерируйте длинные случайные строки (не копируйте примеры):
+
+   Linux:   openssl rand -hex 32
+   Windows PowerShell:
+            [Convert]::ToBase64String((1..48 | ForEach-Object { Get-Random -Maximum 256 }))
+
+В .env должны быть уникальные значения (минимум 32 символа, как в схеме env):
+   JWT_ACCESS_SECRET
+   JWT_REFRESH_SECRET
+   TOTP_ENCRYPTION_KEY
+
+
+--------------------------------------------------------------------------------
+Блок 5. Почта (SMTP) и ссылка сброса пароля
+--------------------------------------------------------------------------------
+Без SMTP_HOST письма не уходят — ссылка только в логах процесса Node.
+
+Обязательно:
+   SMTP_HOST=smtp.beget.com
+   SMTP_PORT=2525          (или 465 — см. письмо от Beget / справку)
+   SMTP_SECURE=false       (для 2525 обычно false; для 465 — true)
+   SMTP_USER=полный@email.ящика
+   SMTP_PASS=пароль_ящика
+   SMTP_FROM="Название <тот_же@email>"
+   CLIENT_URL=https://ДОМЕН
+
+CLIENT_URL — один публичный https-адрес сайта (без слэша в конце), откуда
+открывают мессенджер. Именно он попадает в письмо сброса пароля.
+
+Полный шаблон см. файл .env.example в корне репозитория.
+
+
+--------------------------------------------------------------------------------
+Блок 6. Миграции базы (Prisma)
+--------------------------------------------------------------------------------
+На сервере, в каталоге проекта, где лежат prisma/ и .env:
+
+   cd КАТАЛОГ_ПРОЕКТА
+   npx prisma migrate deploy
+
+Нужен рабочий DATABASE_URL. Ошибки прав — проверьте пользователя БД.
+
+
+--------------------------------------------------------------------------------
+Блок 7. Запуск бэкенда (Node)
+--------------------------------------------------------------------------------
+Из корня проекта (где dist/server.js после сборки или исходники):
+
+   npm install
+   npm run build          # если у вас так собирается бэкенд
+   NODE_ENV=production node dist/server.js
+
+Удобно через PM2:
+
+   npm install -g pm2
+   cd КАТАЛОГ_ПРОЕКТА
+   pm2 start dist/server.js --name messenger-api
+   pm2 save
+   pm2 startup
+
+Порт по умолчанию из env: PORT=3000 (или свой — тот же укажите в nginx).
+
+
+--------------------------------------------------------------------------------
+Блок 8. Nginx: статика (Vite) + прокси на API (обязательно)
+--------------------------------------------------------------------------------
+Без прокси на /graphql, /socket.io/, /files/, /auth/ не будут работать чаты,
+звонки, вложения, сброс пароля из приложения.
+
+Структура каталогов (пример):
+   КАТАЛОГ/web/dist/     — содержимое после npm run build в папке web
+   (опционально) КАТАЛОГ/files/ — установщики для прямых ссылок /files/*.exe
+
+Фрагмент server { } для HTTPS (подставьте ssl_certificate, ДОМЕН, ПОРТ_API):
+
+   root КАТАЛОГ/web/dist;
+   index index.html;
+
+   # API GraphQL
+   location ^~ /graphql {
+       proxy_pass http://127.0.0.1:ПОРТ_API;
+       proxy_http_version 1.1;
+       proxy_set_header Host $host;
+       proxy_set_header X-Real-IP $remote_addr;
+       proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+       proxy_set_header X-Forwarded-Proto $scheme;
+   }
+
+   # WebSocket (чаты, онлайн)
+   location ^~ /socket.io/ {
+       proxy_pass http://127.0.0.1:ПОРТ_API;
+       proxy_http_version 1.1;
+       proxy_set_header Upgrade $http_upgrade;
+       proxy_set_header Connection "upgrade";
+       proxy_set_header Host $host;
+       proxy_read_timeout 86400;
+   }
+
+   # Загрузка/скачивание файлов через бэкенд
+   location ^~ /files/ {
+       proxy_pass http://127.0.0.1:ПОРТ_API;
+       proxy_http_version 1.1;
+       proxy_set_header Host $host;
+       proxy_set_header X-Real-IP $remote_addr;
+       proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+       proxy_set_header X-Forwarded-Proto $scheme;
+       proxy_request_buffering off;
+       client_max_body_size 200m;
+   }
+
+   # Сброс пароля и прочая auth
+   location ^~ /auth/ {
+       proxy_pass http://127.0.0.1:ПОРТ_API;
+       proxy_http_version 1.1;
+       proxy_set_header Host $host;
+       proxy_set_header X-Real-IP $remote_addr;
+       proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+       proxy_set_header X-Forwarded-Proto $scheme;
+   }
+
+   # Не кешировать точку входа SPA
+   location = /index.html {
+       add_header Cache-Control "no-store, no-cache, must-revalidate" always;
+   }
+
+   # Остальное — SPA
+   location / {
+       try_files $uri $uri/ /index.html;
+   }
+
+Проверка и перезагрузка:
+   sudo nginx -t && sudo systemctl reload nginx
+
+Дополнительно про кеш assets: см. scripts/nginx-spa-cache.example.conf
+
+
+--------------------------------------------------------------------------------
+Блок 9. CORS / CLIENT_URL
+--------------------------------------------------------------------------------
+В .env бэкенда CLIENT_URL может быть списком через запятую разрешённых origin
+для браузера, например:
+   CLIENT_URL=https://ДОМЕН,https://www.ДОМЕН
+
+Первая запись используется для ссылки в письме сброса пароля.
+
+
+--------------------------------------------------------------------------------
+Блок 10. Push (Firebase / FCM)
+--------------------------------------------------------------------------------
+1) console.firebase.google.com — создать проект, добавить Android-приложение
+   (package id как в web/capacitor.config.ts).
+2) Скачать google-services.json в web/android/app/
+3) В Firebase → Project settings → Cloud Messaging — взять Server key (legacy),
+   если ваш бэкенд использует FCM_SERVER_KEY в .env:
+   FCM_SERVER_KEY="ключ"
+4) Перезапустить бэкенд. Без ключа устройства регистрируются, но сервер не шлёт push.
+
+iOS: отдельно APNs + приложение в Firebase для iOS.
+
+
+--------------------------------------------------------------------------------
+Блок 11. Скачивание установщиков с экрана входа
+--------------------------------------------------------------------------------
+См. полностью: web/public/CLIENT_DOWNLOADS_HOWTO.txt
+
+Кратко: положить .exe и .apk, прописать пути в web/public/client-downloads.json,
+выполнить npm run build в web/, залить dist на сервер.
+
+
+--------------------------------------------------------------------------------
+Блок 12. Контрольный список «всё ли работает»
+--------------------------------------------------------------------------------
+[ ] https://ДОМЕН открывается мессенджер (форма входа)
+[ ] Вход пользователя успешен
+[ ] Список чатов грузится
+[ ] Сообщение отправляется и приходит второму пользователю (сокет)
+[ ] Забыли пароль → письмо приходит (или в логах нет ошибки SMTP)
+[ ] Прямая ссылка https://ДОМЕН/files/имя.exe качает файл
+[ ] Кнопки Windows/Android на экране входа открывают загрузку
+[ ] pm2 status / логи без постоянных ошибок Redis/MinIO/PostgreSQL
+
+================================================================================
+Конец файла SERVER_SETUP_BLOCKS.txt
+================================================================================

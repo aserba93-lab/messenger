@@ -6709,9 +6709,11 @@ export default function App() {
   function openDownloadUrlInBrowser(url: string) {
     const u = String(url || "").trim();
     if (!u) return;
+    const resolved =
+      u.startsWith("/") && typeof window !== "undefined" ? `${window.location.origin}${u}` : u;
     try {
-      if (typeof window !== "undefined" && window.electronShell?.openExternal && /^https?:\/\//i.test(u)) {
-        window.electronShell.openExternal(u);
+      if (typeof window !== "undefined" && window.electronShell?.openExternal && /^https?:\/\//i.test(resolved)) {
+        window.electronShell.openExternal(resolved);
         return;
       }
     } catch {
@@ -6719,7 +6721,7 @@ export default function App() {
     }
     try {
       const a = document.createElement("a");
-      a.href = u;
+      a.href = resolved;
       a.target = "_blank";
       a.rel = "noopener noreferrer";
       a.style.display = "none";
@@ -6728,9 +6730,9 @@ export default function App() {
       a.remove();
     } catch {
       try {
-        window.open(u, "_blank", "noopener,noreferrer");
+        window.open(resolved, "_blank", "noopener,noreferrer");
       } catch {
-        window.location.href = u;
+        window.location.href = resolved;
       }
     }
   }

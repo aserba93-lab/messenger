@@ -32,15 +32,22 @@ export async function sendLoginOtpEmail(to, code) {
             : undefined,
     });
     const from = process.env.SMTP_FROM || process.env.SMTP_USER || "noreply@localhost";
-    await transporter.sendMail({ from, to, subject, text });
+    try {
+        await transporter.sendMail({ from, to, subject, text });
+    }
+    catch (e) {
+        console.error(`[mail] sendLoginOtpEmail failed for ${to}:`, e?.message ?? e);
+    }
 }
 /** Письмо со ссылкой сброса пароля. Без SMTP — URL в лог (как код входа). */
 export async function sendPasswordResetEmail(to, resetUrl) {
     const subject = `${env.APP_NAME}: сброс пароля`;
     const text = `Чтобы задать новый пароль, откройте ссылку в браузере (один раз, срок действия ограничен):\n\n${resetUrl}\n\nЕсли вы не запрашивали сброс, проигнорируйте это письмо.`;
+    const hrefSafe = String(resetUrl).replace(/&/g, "&amp;").replace(/"/g, "&quot;");
+    const html = `<p>Чтобы задать новый пароль, нажмите:</p><p><a href="${hrefSafe}">Сбросить пароль</a></p><p>Ссылка одноразовая, срок ограничен. Если вы не запрашивали сброс — проигнорируйте письмо.</p>`;
     const host = process.env.SMTP_HOST;
     if (!host) {
-        console.warn(`[mail] SMTP_HOST не задан — ссылка сброса пароля для ${to}:\n${resetUrl}`);
+        console.warn(`[mail] SMTP_HOST не задан — письмо не отправлено. Ссылка сброса для ${to}:\n${resetUrl}`);
         return;
     }
     const nodemailer = await import("nodemailer");
@@ -55,5 +62,10 @@ export async function sendPasswordResetEmail(to, resetUrl) {
             : undefined,
     });
     const from = process.env.SMTP_FROM || process.env.SMTP_USER || "noreply@localhost";
-    await transporter.sendMail({ from, to, subject, text });
+    try {
+        await transporter.sendMail({ from, to, subject, text, html });
+    }
+    catch (e) {
+        console.error(`[mail] sendPasswordResetEmail failed for ${to}:`, e?.message ?? e);
+    }
 }

@@ -1,5 +1,5 @@
 {
-  "windows": "",
-  "android": "",
-  "_comment": "Вставьте РЕАЛЬНЫЕ полные URL https://... где лежат .exe и .apk (или Google Play). Пустые поля — кнопки откроют подсказку. Не используйте вымышленные домены — браузер выдаст DNS_PROBE_FINISHED_NXDOMAIN."
+  "windows": "/files/Messenger-Setup.exe",
+  "android": "/files/app-release.apk",
+  "_comment": "Положите файлы в web/public/files/ (после сборки они попадут в dist/files/). Либо укажите полные https://ваш-домен.ru/files/.... Не используйте вымышленные домены."
 }
