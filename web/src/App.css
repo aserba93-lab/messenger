@@ -3305,8 +3305,8 @@ pre {
   padding: 6px;
 }
 .chatMenu--wide {
-  min-width: 280px;
-  max-width: min(320px, calc(100vw - 24px));
+  min-width: 420px;
+  max-width: min(520px, calc(100vw - 24px));
 }
 .msgMenuSub {
   font-size: 11px;
@@ -3388,6 +3388,69 @@ pre {
   min-height: 0;
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
+}
+
+/* Кабинет компании: широкое окно, прокрутка только у списка сотрудников */
+.companyModal--companyCabinet {
+  width: min(920px, calc(100vw - 32px));
+  max-height: min(92vh, 900px);
+  overflow: hidden;
+}
+
+.companyAddForm {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 14px;
+  margin-top: 8px;
+  align-items: start;
+}
+.companyAddFormField {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.companyAddFormField--full {
+  grid-column: 1 / -1;
+}
+.companyAddFormLabel {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--tg-muted);
+}
+.companyAddForm input,
+.companyAddForm select {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--tg-border-subtle);
+  background: var(--tg-bg-elevated);
+  color: inherit;
+  font: inherit;
+}
+.companyAddFormActions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+  /* строка без подписи: выровнять кнопку по полю ввода соседа */
+  padding-top: calc(1em + 4px);
+  box-sizing: border-box;
+}
+@media (max-width: 560px) {
+  .companyAddForm {
+    grid-template-columns: 1fr;
+  }
+  .companyAddFormActions {
+    padding-top: 0;
+    justify-content: stretch;
+  }
+  .companyAddFormActions button {
+    width: 100%;
+  }
 }
 
 @media (max-width: 720px) {

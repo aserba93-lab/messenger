@@ -1169,7 +1169,7 @@ export default function App() {
       const msg = String((e as Error)?.message ?? e);
       if (/transcribeVoiceMessage|Cannot query field/i.test(msg)) {
         setChatError(
-          "Расшифровка голоса на сервере недоступна: обновите API до сборки с мутацией transcribeVoiceMessage и задайте OPENAI_API_KEY на бэкенде.",
+          "Голос в текст недоступен: на сервере нужна актуальная сборка API и переменная OPENAI_API_KEY.",
         );
       } else {
         setChatError(msg);
@@ -8835,7 +8835,7 @@ export default function App() {
 
         {showCompanyCabinet ? (
           <div className="companyModalBackdrop" onClick={() => setShowCompanyCabinet(false)}>
-            <section className="companyModal" onClick={(e) => e.stopPropagation()}>
+            <section className="companyModal companyModal--companyCabinet" onClick={(e) => e.stopPropagation()}>
               <div className="companyModalHeader">
                 <div style={{ fontWeight: 700 }}>Компания</div>
                 <button className="chip" onClick={() => setShowCompanyCabinet(false)}>
@@ -8851,74 +8851,62 @@ export default function App() {
                     <div className="companyModalSubhead" style={{ marginTop: 8 }}>
                       Добавить сотрудника
                     </div>
-                    <div className="companyTableWrap">
-                      <table className="companyTable">
-                        <thead>
-                          <tr>
-                            <th>Фамилия</th>
-                            <th>Имя</th>
-                            <th>Отчество</th>
-                            <th>Email</th>
-                            <th>Телефон</th>
-                            <th>Роль</th>
-                            <th>Отдел</th>
-                            <th>Пароль</th>
-                            <th></th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          <tr>
-                            <td>
-                              <input value={adminCreateLastName} onChange={(e) => setAdminCreateLastName(e.target.value)} placeholder="Фамилия" />
-                            </td>
-                            <td>
-                              <input value={adminCreateFirstName} onChange={(e) => setAdminCreateFirstName(e.target.value)} placeholder="Имя" />
-                            </td>
-                            <td>
-                              <input value={adminCreateMiddleName} onChange={(e) => setAdminCreateMiddleName(e.target.value)} placeholder="Отчество" />
-                            </td>
-                            <td>
-                              <input value={adminCreateEmail} onChange={(e) => setAdminCreateEmail(e.target.value)} placeholder="Email" />
-                            </td>
-                            <td>
-                              <input value={adminCreatePhone} onChange={(e) => setAdminCreatePhone(e.target.value)} placeholder="+7…" />
-                            </td>
-                            <td>
-                              <select
-                                value={adminCreateRole}
-                                onChange={(e) => setAdminCreateRole(e.target.value as "owner" | "admin" | "manager" | "employee" | "guest")}
-                                className="companyTableSelect"
-                              >
-                                <option value="owner">Владелец</option>
-                                <option value="admin">Администратор</option>
-                                <option value="manager">Менеджер</option>
-                                <option value="employee">Сотрудник</option>
-                                <option value="guest">Гость</option>
-                              </select>
-                            </td>
-                            <td>
-                              <input
-                              value={adminCreateDepartment}
-                              onChange={(e) => setAdminCreateDepartment(e.target.value)}
-                              placeholder="Отдел (несколько — через запятую)"
-                            />
-                            </td>
-                            <td>
-                              <input
-                                value={adminCreatePassword}
-                                onChange={(e) => setAdminCreatePassword(e.target.value)}
-                                placeholder="Временный пароль"
-                                type="password"
-                              />
-                            </td>
-                            <td>
-                              <button onClick={() => void createCompanyUserSingle()} disabled={!token || !organizationId}>
-                                Добавить
-                              </button>
-                            </td>
-                          </tr>
-                        </tbody>
-                      </table>
+                    <div className="companyAddForm">
+                      <label className="companyAddFormField">
+                        <span className="companyAddFormLabel">Фамилия</span>
+                        <input value={adminCreateLastName} onChange={(e) => setAdminCreateLastName(e.target.value)} placeholder="Фамилия" />
+                      </label>
+                      <label className="companyAddFormField">
+                        <span className="companyAddFormLabel">Имя</span>
+                        <input value={adminCreateFirstName} onChange={(e) => setAdminCreateFirstName(e.target.value)} placeholder="Имя" />
+                      </label>
+                      <label className="companyAddFormField">
+                        <span className="companyAddFormLabel">Отчество</span>
+                        <input value={adminCreateMiddleName} onChange={(e) => setAdminCreateMiddleName(e.target.value)} placeholder="Отчество" />
+                      </label>
+                      <label className="companyAddFormField">
+                        <span className="companyAddFormLabel">Email</span>
+                        <input value={adminCreateEmail} onChange={(e) => setAdminCreateEmail(e.target.value)} placeholder="Email" type="email" />
+                      </label>
+                      <label className="companyAddFormField">
+                        <span className="companyAddFormLabel">Телефон</span>
+                        <input value={adminCreatePhone} onChange={(e) => setAdminCreatePhone(e.target.value)} placeholder="+7…" />
+                      </label>
+                      <label className="companyAddFormField">
+                        <span className="companyAddFormLabel">Роль</span>
+                        <select
+                          value={adminCreateRole}
+                          onChange={(e) => setAdminCreateRole(e.target.value as "owner" | "admin" | "manager" | "employee" | "guest")}
+                        >
+                          <option value="owner">Владелец</option>
+                          <option value="admin">Администратор</option>
+                          <option value="manager">Менеджер</option>
+                          <option value="employee">Сотрудник</option>
+                          <option value="guest">Гость</option>
+                        </select>
+                      </label>
+                      <label className="companyAddFormField companyAddFormField--full">
+                        <span className="companyAddFormLabel">Отдел</span>
+                        <input
+                          value={adminCreateDepartment}
+                          onChange={(e) => setAdminCreateDepartment(e.target.value)}
+                          placeholder="Несколько отделов — через запятую"
+                        />
+                      </label>
+                      <label className="companyAddFormField">
+                        <span className="companyAddFormLabel">Временный пароль</span>
+                        <input
+                          value={adminCreatePassword}
+                          onChange={(e) => setAdminCreatePassword(e.target.value)}
+                          placeholder="Пароль для первого входа"
+                          type="password"
+                        />
+                      </label>
+                      <div className="companyAddFormField companyAddFormActions">
+                        <button type="button" onClick={() => void createCompanyUserSingle()} disabled={!token || !organizationId}>
+                          Добавить
+                        </button>
+                      </div>
                     </div>
 
                     <div className="companyModalSubhead" style={{ marginTop: 12 }}>
