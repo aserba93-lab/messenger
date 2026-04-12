@@ -265,6 +265,19 @@ function readRuntimeApiBaseFromMeta(): string | null {
   return c.replace(/\/$/, "");
 }
 
+/** Capacitor: WebView с origin https://localhost — API на телефоне нет, нужен VITE_API_URL / meta. */
+function isCapacitorNative(): boolean {
+  try {
+    const C = (typeof window !== "undefined" &&
+      (window as unknown as { Capacitor?: { isNativePlatform?: () => boolean } }).Capacitor) as
+      | { isNativePlatform?: () => boolean }
+      | undefined;
+    return !!C?.isNativePlatform?.();
+  } catch {
+    return false;
+  }
+}
+
 /** В проде без VITE_API_URL используем origin сайта (тот же хост, что и UI), иначе fetch уйдёт не туда. */
 function getApiBase(): string {
   const env = (import.meta as any).env?.VITE_API_URL as string | undefined;
@@ -285,7 +298,15 @@ function getApiBase(): string {
     return "";
   }
   const h = window.location.hostname;
-  if (h === "localhost" || h === "127.0.0.1") return "http://localhost:3000";
+  if (h === "localhost" || h === "127.0.0.1") {
+    if (isCapacitorNative()) {
+      console.warn(
+        "[Messenger] Capacitor: задайте VITE_API_URL при сборке APK или <meta name=\"tg-api-base\" content=\"https://ваш-домен\" /> в web/index.html (на телефоне нет localhost:3000).",
+      );
+      return "";
+    }
+    return "http://localhost:3000";
+  }
   return window.location.origin;
 }
 const API_BASE = getApiBase();
@@ -3084,10 +3105,16 @@ export default function App() {
     } catch (e: any) {
       let msg = String(e?.message ?? e ?? "Login failed");
       if (msg === "Failed to fetch") {
-        msg =
-          typeof window !== "undefined" && window.electronShell?.isElectron
-            ? "Нет связи с сервером: задайте VITE_API_URL при сборке. На backend в .env добавьте CORS_EXTRA_ORIGINS=app://root (или обновите код сервера — origin настольного приложения уже разрешён)."
-            : "Нет связи с сервером: проверьте адрес API, VPN и что backend доступен. В .env сервера CLIENT_URL должен включать точный URL страницы входа.";
+        if (typeof window !== "undefined" && window.electronShell?.isElectron) {
+          msg =
+            "Нет связи с сервером: задайте VITE_API_URL при сборке. На backend в .env добавьте CORS_EXTRA_ORIGINS=app://root (или обновите код сервера — origin настольного приложения уже разрешён).";
+        } else if (typeof window !== "undefined" && isCapacitorNative()) {
+          msg =
+            "Нет связи с сервером: в Android/iOS задайте VITE_API_URL=https://ваш-домен при сборке (capacitor sync) или meta tg-api-base; на сервере в .env добавьте CORS_EXTRA_ORIGINS=https://localhost,capacitor://localhost";
+        } else {
+          msg =
+            "Нет связи с сервером: проверьте адрес API, VPN и что backend доступен. Для сайта в браузере откройте тот же домен, что в nginx; для APK — VITE_API_URL при сборке.";
+        }
       }
       setAuthError(`Ошибка входа: ${msg}`);
     }
@@ -3121,10 +3148,14 @@ export default function App() {
     } catch (e: any) {
       let msg = String(e?.message ?? e ?? "Ошибка");
       if (msg === "Failed to fetch") {
-        msg =
-          typeof window !== "undefined" && window.electronShell?.isElectron
-            ? "Нет связи с сервером (проверьте VITE_API_URL и CORS app://root на backend)."
-            : "Нет связи с сервером (сеть и CORS / CLIENT_URL на backend).";
+        if (typeof window !== "undefined" && window.electronShell?.isElectron) {
+          msg = "Нет связи с сервером (проверьте VITE_API_URL и CORS app://root на backend).";
+        } else if (typeof window !== "undefined" && isCapacitorNative()) {
+          msg =
+            "Нет связи с сервером (VITE_API_URL / tg-api-base для APK; CORS: https://localhost, capacitor://localhost на backend).";
+        } else {
+          msg = "Нет связи с сервером (сеть, HTTPS, CORS для вашего домена на backend).";
+        }
       }
       setAuthError(`Подтверждение: ${msg}`);
     }

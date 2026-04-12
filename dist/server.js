@@ -42,6 +42,10 @@ function buildCorsOriginSet() {
         .forEach((u) => set.add(u));
     set.add("app://root");
     set.add("app://.");
+    /** Capacitor Android/iOS WebView (обёртка над тем же API, что и сайт) */
+    set.add("https://localhost");
+    set.add("http://localhost");
+    set.add("capacitor://localhost");
     if (env.NODE_ENV !== "production") {
         ["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:4173", "http://127.0.0.1:4173"].forEach((u) => set.add(u));
     }
