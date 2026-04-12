@@ -4,6 +4,26 @@ export function normDept(s) {
     return (s ?? "").trim().toLowerCase();
 }
 
+/** Токены отделов из строки: «Продажи, Маркетинг» или один отдел без запятой. */
+export function parseDeptTokens(s) {
+    return (s ?? "")
+        .split(/[,;]+/)
+        .map((x) => x.trim().toLowerCase())
+        .filter(Boolean);
+}
+
+/** Есть ли пересечение отделов у двух сотрудников (для менеджеров и DM/групп). */
+export function departmentsOverlap(deptA, deptB) {
+    const a = parseDeptTokens(deptA);
+    const b = parseDeptTokens(deptB);
+    if (!a.length && !b.length)
+        return true;
+    if (!a.length || !b.length)
+        return false;
+    const setB = new Set(b);
+    return a.some((x) => setB.has(x));
+}
+
 export function isElevatedOrgRole(role) {
     return role === "owner" || role === "admin";
 }
@@ -30,17 +50,17 @@ export async function hasDepartmentGrant(organizationId, userIdA, userIdB) {
 }
 
 /**
- * Менеджер может общаться с peer: тот же отдел, или грант, или peer — owner/admin компании.
+ * Менеджер может общаться с peer: пересечение по отделам (несколько отделов через запятую), или peer — owner/admin.
  */
 export async function managerCanReachPeer(params) {
-    const { organizationId, managerId, managerDept, managerRole, peerId, peerDept, peerRole } = params;
+    const { managerDept, managerRole, peerDept, peerRole } = params;
     if (!isDeptRestrictedRole(managerRole))
         return true;
     if (isElevatedOrgRole(peerRole))
         return true;
-    if (normDept(managerDept) === normDept(peerDept))
+    if (departmentsOverlap(managerDept, peerDept))
         return true;
-    return hasDepartmentGrant(organizationId, managerId, peerId);
+    return false;
 }
 
 export async function loadMembersMap(organizationId, userIds) {
@@ -83,7 +103,7 @@ export async function validateGroupMembersDepartmentRules(organizationId, member
                 peerRole: peer.role,
             });
             if (!ok)
-                throw new Error("Менеджер может общаться только внутри отдела или по выданному администратором доступу между отделами");
+                throw new Error("Менеджер может добавлять в группу только коллег из своих отделов (пересечение списков отделов)");
         }
     }
 }

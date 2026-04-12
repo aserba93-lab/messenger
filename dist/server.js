@@ -29,17 +29,44 @@ import { NotificationsService } from "./modules/notifications/service.js";
 import { createReadStream } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
+/** http(s): берём только origin (схема+хост+порт), путь в CLIENT_URL не нужен — CORS сравнивает Origin, не URL страницы. */
+function normalizeCorsOriginEntry(raw) {
+    const s = String(raw ?? "").trim();
+    if (!s)
+        return null;
+    if (/^(app|capacitor):\/\//i.test(s))
+        return s;
+    try {
+        const u = new URL(/:\/\//.test(s) ? s : `https://${s}`);
+        if (u.protocol === "http:" || u.protocol === "https:")
+            return u.origin;
+    }
+    catch {
+        /* ignore */
+    }
+    return s;
+}
 /** Несколько origin из CLIENT_URL + dev-порты Vite + Electron (app://) */
 function buildCorsOriginSet() {
-    const set = new Set(String(env.CLIENT_URL || "")
+    const set = new Set();
+    String(env.CLIENT_URL || "")
         .split(",")
         .map((s) => s.trim())
-        .filter(Boolean));
+        .filter(Boolean)
+        .forEach((raw) => {
+        const n = normalizeCorsOriginEntry(raw);
+        if (n)
+            set.add(n);
+    });
     String(process.env.CORS_EXTRA_ORIGINS || "")
         .split(",")
         .map((s) => s.trim())
         .filter(Boolean)
-        .forEach((u) => set.add(u));
+        .forEach((raw) => {
+        const n = normalizeCorsOriginEntry(raw);
+        if (n)
+            set.add(n);
+    });
     set.add("app://root");
     set.add("app://.");
     /** Capacitor Android/iOS WebView (обёртка над тем же API, что и сайт) */

@@ -12,6 +12,18 @@ import {
   saveChatFolders,
   type ChatFolderState as UserChatFolderLayout,
 } from "./chatFolders";
+import { messageCacheClearAll, messageCacheGet, messageCachePut } from "./messageCache";
+import {
+  TgIconChevronLeft,
+  TgIconInfo,
+  TgIconMic,
+  TgIconPaperclip,
+  TgIconPhone,
+  TgIconPlus,
+  TgIconSearch,
+  TgIconSend,
+  TgIconSmile,
+} from "./tgIcons";
 import "./App.css";
 
 /** Актуальный access token для fetch GraphQL, если замыкание передало undefined */
@@ -242,6 +254,41 @@ type Message = {
   _localError?: string;
   _sendState?: "sending" | "failed";
 };
+
+function stripMessagesForCache(list: Message[]): unknown[] {
+  return list.map((m) => {
+    const { _localFileState: _lf, _sendState: _ss, _localError: _le, ...rest } = m;
+    return rest;
+  });
+}
+
+function pinnedMessageChipLabel(pm: Message): string {
+  const t = (pm.content || "").replace(/\s+/g, " ").trim();
+  if (t) return t.slice(0, 72);
+  if (pm.type === "voice") return "Голосовое сообщение";
+  if (pm.type === "file") {
+    const name = pm.file?.originalName?.trim();
+    if (name) return name.slice(0, 72);
+    return "Файл";
+  }
+  return "Закреплённое сообщение";
+}
+
+function formatDepartmentsDisplay(raw: string | null | undefined): string {
+  if (!raw?.trim()) return "—";
+  return raw
+    .split(/[,;]+/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .join(", ");
+}
+
+function normDeptList(raw: string | null | undefined): string[] {
+  return (raw ?? "")
+    .split(/[,;]+/)
+    .map((x) => x.trim().toLowerCase())
+    .filter(Boolean);
+}
 
 type DirectChatMessage = {
   id: string;
@@ -1036,6 +1083,7 @@ export default function App() {
   // Админ-страница "Пользователи организации" отключена по требованию
   const [showUserCabinet, setShowUserCabinet] = useState(false);
   const [companyUserQuery, setCompanyUserQuery] = useState("");
+  const [companyDepartmentFilter, setCompanyDepartmentFilter] = useState<string>("all");
   const [companyRoleFilter, setCompanyRoleFilter] = useState<"all" | "owner" | "admin" | "manager" | "employee" | "guest">("all");
   const [companyActionMsg, setCompanyActionMsg] = useState("");
   const [adminCreateEmail, setAdminCreateEmail] = useState("");
@@ -1046,11 +1094,6 @@ export default function App() {
   const [adminCreatePhone, setAdminCreatePhone] = useState("");
   const [adminCreateDepartment, setAdminCreateDepartment] = useState("");
   const [adminCreateRole, setAdminCreateRole] = useState<"owner" | "admin" | "manager" | "employee" | "guest">("employee");
-  const [departmentGrants, setDepartmentGrants] = useState<
-    { id: string; userAId: string; userBId: string; grantedByUserId: string; createdAt: string }[]
-  >([]);
-  const [deptGrantUserA, setDeptGrantUserA] = useState("");
-  const [deptGrantUserB, setDeptGrantUserB] = useState("");
   const [chatPreviewByKey, setChatPreviewByKey] = useState<Record<string, { text: string; at: string }>>({});
   const [chatError, setChatError] = useState("");
   const [pendingCallDeepLink, setPendingCallDeepLink] = useState(false);
@@ -1294,6 +1337,30 @@ export default function App() {
     document.body.classList.toggle("tg-app-session", !!token);
     document.documentElement.classList.toggle("tg-app-session", !!token);
   }, [token]);
+
+  /** Высота видимой области (клавиатура): уменьшаем shell, шапка чата остаётся вверху колонки. */
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.visualViewport) return;
+    const vv = window.visualViewport;
+    const sync = () => {
+      try {
+        document.documentElement.style.setProperty("--tg-vv-height", `${Math.round(vv.height)}px`);
+        document.documentElement.style.setProperty("--tg-vv-offset-top", `${Math.round(vv.offsetTop)}px`);
+      } catch {
+        /* ignore */
+      }
+    };
+    sync();
+    vv.addEventListener("resize", sync);
+    vv.addEventListener("scroll", sync);
+    return () => {
+      vv.removeEventListener("resize", sync);
+      vv.removeEventListener("scroll", sync);
+      document.documentElement.style.removeProperty("--tg-vv-height");
+      document.documentElement.style.removeProperty("--tg-vv-offset-top");
+    };
+  }, []);
+
   const [profileFirstName, setProfileFirstName] = useState("");
   const [profileLastName, setProfileLastName] = useState("");
   const [profileMiddleName, setProfileMiddleName] = useState("");
@@ -1688,16 +1755,27 @@ export default function App() {
   useEffect(() => {
     usersRef.current = users;
   }, [users]);
+  const companyDepartmentOptions = useMemo(() => {
+    const set = new Set<string>();
+    for (const u of users) {
+      for (const t of normDeptList(u.department)) set.add(t);
+    }
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  }, [users]);
+
   const companyUsersFiltered = useMemo(() => {
     const q = companyUserQuery.trim().toLowerCase();
+    const df = companyDepartmentFilter.trim().toLowerCase();
     return users.filter((u) => {
       const roleOk = companyRoleFilter === "all" ? true : (u.role ?? "employee") === companyRoleFilter;
       const textOk = !q
         ? true
         : `${u.email} ${u.phone ?? ""} ${u.firstName ?? ""} ${u.lastName ?? ""} ${u.department ?? ""}`.toLowerCase().includes(q);
-      return roleOk && textOk;
+      const deptOk =
+        companyDepartmentFilter === "all" ? true : normDeptList(u.department).includes(df);
+      return roleOk && textOk && deptOk;
     });
-  }, [users, companyUserQuery, companyRoleFilter]);
+  }, [users, companyUserQuery, companyRoleFilter, companyDepartmentFilter]);
 
   const newThingWizardUsers = useMemo(() => {
     const q = wizardUserQuery.trim().toLowerCase();
@@ -1776,6 +1854,14 @@ export default function App() {
 
   const messagesRef = useRef<Message[]>([]);
   messagesRef.current = messages;
+
+  const activeChatKeyRef = useRef("");
+  useEffect(() => {
+    if (mode === "channels" && activeChannelId) activeChatKeyRef.current = `c:${activeChannelId}`;
+    else if (mode === "groups" && activeGroupChatId) activeChatKeyRef.current = `g:${activeGroupChatId}`;
+    else if (mode === "dms" && activeDirectChatId) activeChatKeyRef.current = `d:${activeDirectChatId}`;
+    else activeChatKeyRef.current = "";
+  }, [mode, activeChannelId, activeGroupChatId, activeDirectChatId]);
 
   const pendingFileHydrateCount = useMemo(
     () =>
@@ -1918,6 +2004,35 @@ export default function App() {
   function chatKeyFor(kind: "c" | "g" | "d", id: string) {
     return `${kind}:${id}`;
   }
+
+  const messageCachePersistTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(() => {
+    if (!token || !organizationId) return;
+    if (threadRootId || showPins || showSaved) return;
+    let cacheKey: string | null = null;
+    if (mode === "channels" && activeChannelId) cacheKey = chatKeyFor("c", activeChannelId);
+    else if (mode === "groups" && activeGroupChatId) cacheKey = chatKeyFor("g", activeGroupChatId);
+    else if (mode === "dms" && activeDirectChatId) cacheKey = chatKeyFor("d", activeDirectChatId);
+    if (!cacheKey) return;
+    window.clearTimeout(messageCachePersistTimerRef.current);
+    messageCachePersistTimerRef.current = window.setTimeout(() => {
+      void messageCachePut(organizationId, cacheKey!, stripMessagesForCache(messagesRef.current));
+    }, 700);
+    return () => {
+      window.clearTimeout(messageCachePersistTimerRef.current);
+    };
+  }, [
+    messages,
+    token,
+    organizationId,
+    mode,
+    activeChannelId,
+    activeGroupChatId,
+    activeDirectChatId,
+    threadRootId,
+    showPins,
+    showSaved,
+  ]);
 
   useEffect(() => {
     userIdRef.current = userId;
@@ -3170,7 +3285,7 @@ export default function App() {
             "Нет связи с сервером: в Android/iOS задайте VITE_API_URL=https://ваш-домен при сборке (capacitor sync) или meta tg-api-base; на сервере в .env добавьте CORS_EXTRA_ORIGINS=https://localhost,capacitor://localhost";
         } else {
           msg =
-            "Нет связи с сервером: проверьте адрес API, VPN и что backend доступен. Для сайта в браузере откройте тот же домен, что в nginx; для APK — VITE_API_URL при сборке.";
+            "Нет связи с сервером (часто блокировка CORS или сеть). Проверьте VITE_API_URL и доступность API. В .env бэкенда CLIENT_URL должен перечислять origin страницы (схема + хост + порт, без пути), через запятую, если открываете сайт с www или другого порта — добавьте и его. Nginx должен проксировать /auth и /graphql на Node.";
         }
       }
       setAuthError(`Ошибка входа: ${msg}`);
@@ -3212,7 +3327,8 @@ export default function App() {
           msg =
             "Нет связи с сервером (VITE_API_URL / tg-api-base для APK; CORS: https://localhost, capacitor://localhost на backend).";
         } else {
-          msg = "Нет связи с сервером (сеть, HTTPS, CORS для вашего домена на backend).";
+          msg =
+            "Нет связи с сервером (сеть, HTTPS, CORS). На бэкенде в CLIENT_URL укажите origin фронта (без пути к странице), через запятую для нескольких доменов/портов.";
         }
       }
       setAuthError(`Подтверждение: ${msg}`);
@@ -3245,6 +3361,7 @@ export default function App() {
     } catch {
       /* ignore */
     }
+    void messageCacheClearAll();
     setMessages([]);
     setChannels([]);
     setGroupChats([]);
@@ -4026,8 +4143,9 @@ export default function App() {
     if (!id) return;
     if (kind === "c") {
       setChatListScope("all");
-      setMode("dms");
-      setActiveChannelId("");
+      setMode("channels");
+      setActiveChannelId(id);
+      setUnreadByKey((prev) => ({ ...prev, [chatKeyFor("c", id)]: 0 }));
       return;
     }
     if (kind === "g") {
@@ -4729,60 +4847,6 @@ export default function App() {
   }
   loadUsersRef.current = loadUsers;
 
-  async function loadDepartmentGrants() {
-    if (!token) return;
-    if (viewerRole !== "owner" && viewerRole !== "admin") return;
-    try {
-      const data = await gql<{
-        departmentChatGrants: {
-          id: string;
-          userAId: string;
-          userBId: string;
-          grantedByUserId: string;
-          createdAt: string;
-        }[];
-      }>(`query { departmentChatGrants { id userAId userBId grantedByUserId createdAt } }`, {}, token);
-      setDepartmentGrants(data.departmentChatGrants ?? []);
-    } catch {
-      /* ignore */
-    }
-  }
-
-  async function grantDepartmentPair() {
-    if (!token || !deptGrantUserA || !deptGrantUserB || deptGrantUserA === deptGrantUserB) {
-      setCompanyActionMsg("Выберите двух разных сотрудников.");
-      return;
-    }
-    setCompanyActionMsg("");
-    try {
-      await gql(
-        `mutation($a: ID!, $b: ID!) { grantDepartmentChatPair(userAId: $a, userBId: $b) }`,
-        { a: deptGrantUserA, b: deptGrantUserB },
-        token,
-      );
-      await loadDepartmentGrants();
-      setCompanyActionMsg("Доступ между отделами выдан.");
-    } catch (e: unknown) {
-      setCompanyActionMsg((e as Error)?.message ?? "Ошибка");
-    }
-  }
-
-  async function revokeDepartmentPair(a: string, b: string) {
-    if (!token) return;
-    try {
-      await gql(`mutation($a: ID!, $b: ID!) { revokeDepartmentChatPair(userAId: $a, userBId: $b) }`, { a, b }, token);
-      await loadDepartmentGrants();
-    } catch {
-      /* ignore */
-    }
-  }
-
-  useEffect(() => {
-    if (!showCompanyCabinet || !token) return;
-    if (viewerRole !== "owner" && viewerRole !== "admin") return;
-    void loadDepartmentGrants();
-  }, [showCompanyCabinet, token, viewerRole]);
-
   useEffect(() => {
     if (!token) return;
     let remove: (() => void) | undefined;
@@ -4956,9 +5020,13 @@ export default function App() {
           chatFoldersHydratedRef.current = true;
         }
         try {
-          if (savedChatKey) await openChatFromList(savedChatKey);
-          else if (typeof window !== "undefined" && window.innerWidth < 800) {
+          const mobileLike =
+            typeof window !== "undefined" && (window.innerWidth < 800 || isCapacitorNative());
+          /** На телефоне при старте — список чатов; на широком экране — восстановление последнего чата. */
+          if (mobileLike) {
             setMobileSidebarOpen(true);
+          } else if (savedChatKey) {
+            await openChatFromList(savedChatKey);
           }
         } catch {
           /* ignore */
@@ -5797,6 +5865,15 @@ export default function App() {
   async function loadMessages(channelId: string) {
     if (!token || !channelId) return;
     const gen = ++messagesLoadGenRef.current;
+    const cacheKey = chatKeyFor("c", channelId);
+    if (organizationId) {
+      try {
+        const cached = await messageCacheGet(organizationId, cacheKey);
+        if (gen === messagesLoadGenRef.current && cached?.length) setMessages(cached as Message[]);
+      } catch {
+        /* ignore */
+      }
+    }
     const data = await gql<{ messages: { items: Message[] } }>(
       `query($channelId: ID!, $limit: Int!) {
         messages(channelId: $channelId, limit: $limit) {
@@ -5808,6 +5885,8 @@ export default function App() {
     );
     if (gen !== messagesLoadGenRef.current) return;
     setMessages(data.messages.items);
+    if (organizationId)
+      void messageCachePut(organizationId, cacheKey, stripMessagesForCache(data.messages.items));
     const p = previewForMessages(data.messages.items);
     setChatPreviewByKey((prev) => ({ ...prev, [chatKeyFor("c", channelId)]: p }));
     socket?.emit("channel:join", { channelId });
@@ -5819,6 +5898,15 @@ export default function App() {
   async function loadGroupMessages(groupChatId: string) {
     if (!token || !groupChatId) return;
     const gen = ++messagesLoadGenRef.current;
+    const cacheKey = chatKeyFor("g", groupChatId);
+    if (organizationId) {
+      try {
+        const cached = await messageCacheGet(organizationId, cacheKey);
+        if (gen === messagesLoadGenRef.current && cached?.length) setMessages(cached as Message[]);
+      } catch {
+        /* ignore */
+      }
+    }
     const data = await gql<{ groupChatMessages: Message[] }>(
       `query($groupChatId: ID!, $limit: Int!) {
         groupChatMessages(groupChatId: $groupChatId, limit: $limit) {
@@ -5830,6 +5918,8 @@ export default function App() {
     );
     if (gen !== messagesLoadGenRef.current) return;
     setMessages(data.groupChatMessages);
+    if (organizationId)
+      void messageCachePut(organizationId, cacheKey, stripMessagesForCache(data.groupChatMessages));
     const p = previewForMessages(data.groupChatMessages);
     setChatPreviewByKey((prev) => ({ ...prev, [chatKeyFor("g", groupChatId)]: p }));
     socket?.emit("group:join", { groupChatId });
@@ -5841,6 +5931,15 @@ export default function App() {
   async function loadDirectMessages(directChatId: string) {
     if (!token || !directChatId) return;
     const gen = ++messagesLoadGenRef.current;
+    const cacheKey = chatKeyFor("d", directChatId);
+    if (organizationId) {
+      try {
+        const cached = await messageCacheGet(organizationId, cacheKey);
+        if (gen === messagesLoadGenRef.current && cached?.length) setMessages(cached as Message[]);
+      } catch {
+        /* ignore */
+      }
+    }
     const data = await gql<{ directChatMessages: DirectChatMessage[] }>(
       `query($directChatId: ID!, $limit: Int!) {
         directChatMessages(directChatId: $directChatId, limit: $limit) {
@@ -5878,6 +5977,7 @@ export default function App() {
       }));
     if (gen !== messagesLoadGenRef.current) return;
     setMessages(mapped);
+    if (organizationId) void messageCachePut(organizationId, cacheKey, stripMessagesForCache(mapped));
     const p = previewForMessages(mapped);
     setChatPreviewByKey((prev) => ({ ...prev, [chatKeyFor("d", directChatId)]: p }));
     socket?.emit("dm:join", { directChatId });
@@ -6125,6 +6225,32 @@ export default function App() {
       pushLog(`sendMessage error: ${msg}`);
       setMessages((prev) => prev.map((m) => (m.id === tempId ? { ...m, _sendState: "failed" } : m)));
     }
+  }
+
+  function onComposerSendContextMenu(ev: MouseEvent) {
+    ev.preventDefault();
+    if (composerDisabled || !newMessage.trim()) return;
+    const raw = window.prompt("Отложенная отправка: через сколько минут? (1–1440)", "5");
+    if (raw == null) return;
+    const n = parseInt(String(raw).trim(), 10);
+    if (!Number.isFinite(n) || n < 1 || n > 1440) {
+      setChatError("Укажите число минут от 1 до 1440.");
+      return;
+    }
+    const text = newMessage.trim();
+    const key = activeChatKeyRef.current;
+    if (!key) return;
+    setNewMessage("");
+    setReplyTo(null);
+    setChatError("");
+    pushLog(`Сообщение будет отправлено примерно через ${n} мин.`);
+    window.setTimeout(() => {
+      if (activeChatKeyRef.current !== key) {
+        pushLog("Отложенная отправка отменена (сменили чат).");
+        return;
+      }
+      void sendMessage(undefined, text);
+    }, n * 60_000);
   }
 
   async function editMessageInChat(messageId: string) {
@@ -6650,7 +6776,7 @@ export default function App() {
       setVoiceHoldMs(0);
       pushLog("Запись голосового... нажмите 🎤 или «Готово» для отправки");
     } catch (e: any) {
-      const msg = String(e?.message ?? e ?? "Не удалось начать запись");
+      const msg = formatWebRtcMediaError(e) || String(e?.message ?? e ?? "Не удалось начать запись");
       setChatError(msg);
       pushLog(`voice start error: ${msg}`);
       mediaStreamRef.current?.getTracks().forEach((t) => t.stop());
@@ -7493,14 +7619,14 @@ export default function App() {
             <div className="tgMenuAnchor">
               <button
                 type="button"
-                className="tgCircleBtn"
+                className="tgCircleBtn tgCircleBtn--icon"
                 title="Создать чат или группу"
                 onClick={() => {
                   setNewChatMenuOpen((v) => !v);
                   setMoreMenuOpen(false);
                 }}
               >
-                +
+                <TgIconPlus />
               </button>
               {newChatMenuOpen ? (
                 <div className="tgPopoverMenu">
@@ -7510,7 +7636,7 @@ export default function App() {
                     onClick={() => void openNewThingWizard("dm")}
                     disabled={!token || !organizationId || !canReadChats}
                   >
-                    ✉ Личный чат (1 на 1)
+                    Личный чат
                   </button>
                   <button
                     type="button"
@@ -7518,7 +7644,7 @@ export default function App() {
                     onClick={() => void openNewThingWizard("group")}
                     disabled={!token || !organizationId || !canCreateChannelsAndGroups}
                   >
-                    👥 Группа (несколько человек)
+                    Группа
                   </button>
                 </div>
               ) : null}
@@ -7538,7 +7664,7 @@ export default function App() {
         </div>
         <div className="tgSearchWrap">
           <span className="tgSearchIcon" aria-hidden>
-            ⌕
+            <TgIconSearch />
           </span>
           <input
             className="tgSearch tgSearch--inWrap"
@@ -7882,6 +8008,9 @@ export default function App() {
                             </span>
                             <span className="moreMenuUserLabel">
                               <span className="moreMenuUserName">{displayUserNameForSidebar(u, u.id)}</span>
+                              {formatDepartmentsDisplay(u.department) !== "—" ? (
+                                <span className="moreMenuUserDept">{formatDepartmentsDisplay(u.department)}</span>
+                              ) : null}
                             </span>
                           </button>
                         );
@@ -8168,13 +8297,13 @@ export default function App() {
                         key={pm.id}
                         type="button"
                         className="tgChatHeaderPinChip"
-                        title={(pm.content || "").slice(0, 500) || "Закреплённое сообщение"}
+                        title={pinnedMessageChipLabel(pm)}
                         onClick={() => scrollToMessageInChat(pm.id)}
                       >
                         <span className="tgChatHeaderPinIcon" aria-hidden>
                           📌
                         </span>
-                        <span className="tgChatHeaderPinText">{(pm.content || "").replace(/\s+/g, " ").trim().slice(0, 72) || "…"}</span>
+                        <span className="tgChatHeaderPinText">{pinnedMessageChipLabel(pm) || "…"}</span>
                       </button>
                     ))}
                     <button
@@ -8193,18 +8322,18 @@ export default function App() {
             <div className="tgChatHeaderRight" ref={callMenuWrapRef}>
               <button
                 type="button"
-                className="tgCircleBtn"
+                className="tgCircleBtn tgCircleBtn--icon"
                 title="Фокус: поиск в этом чате (Ctrl/Cmd+K — поиск в списке слева)"
                 onClick={() => {
                   threadSearchInputRef.current?.focus();
                 }}
               >
-                🔍
+                <TgIconSearch />
               </button>
               <div className="tgCallMenuAnchor">
                 <button
                   type="button"
-                  className="tgCircleBtn tgCircleBtn--call"
+                  className="tgCircleBtn tgCircleBtn--call tgCircleBtn--icon"
                   title={mode === "dms" ? "Звонок в личном чате" : "Групповой созвон"}
                   disabled={
                     !canStartCalls ||
@@ -8229,11 +8358,16 @@ export default function App() {
                     }
                   }}
                 >
-                  📞
+                  <TgIconPhone />
                 </button>
               </div>
-              <button type="button" className="tgCircleBtn" onClick={() => setShowRightPanel((v) => !v)} title="Сведения о чате">
-                ℹ️
+              <button
+                type="button"
+                className="tgCircleBtn tgCircleBtn--icon"
+                onClick={() => setShowRightPanel((v) => !v)}
+                title="Сведения о чате"
+              >
+                <TgIconInfo />
               </button>
             </div>
           </div>
@@ -8482,7 +8616,11 @@ export default function App() {
                               </select>
                             </td>
                             <td>
-                              <input value={adminCreateDepartment} onChange={(e) => setAdminCreateDepartment(e.target.value)} placeholder="Отдел" />
+                              <input
+                              value={adminCreateDepartment}
+                              onChange={(e) => setAdminCreateDepartment(e.target.value)}
+                              placeholder="Отдел (несколько — через запятую)"
+                            />
                             </td>
                             <td>
                               <input
@@ -8515,73 +8653,6 @@ export default function App() {
                       }}
                     />
 
-                    <div className="companyModalSubhead" style={{ marginTop: 16 }}>
-                      Доступ между отделами (для роли «Менеджер»)
-                    </div>
-                    <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center", marginBottom: 8 }}>
-                      <select
-                        value={deptGrantUserA}
-                        onChange={(e) => setDeptGrantUserA(e.target.value)}
-                        className="companyTableSelect"
-                        style={{ minWidth: 200 }}
-                      >
-                        <option value="">Сотрудник 1</option>
-                        {companyUsersFiltered.map((u) => (
-                          <option key={`dga-${u.id}`} value={u.id}>
-                            {(u.lastName || u.firstName || u.email || u.id).slice(0, 40)} — {u.department?.trim() || "без отдела"}
-                          </option>
-                        ))}
-                      </select>
-                      <select
-                        value={deptGrantUserB}
-                        onChange={(e) => setDeptGrantUserB(e.target.value)}
-                        className="companyTableSelect"
-                        style={{ minWidth: 200 }}
-                      >
-                        <option value="">Сотрудник 2</option>
-                        {companyUsersFiltered.map((u) => (
-                          <option key={`dgb-${u.id}`} value={u.id}>
-                            {(u.lastName || u.firstName || u.email || u.id).slice(0, 40)} — {u.department?.trim() || "без отдела"}
-                          </option>
-                        ))}
-                      </select>
-                      <button type="button" onClick={() => void grantDepartmentPair()} disabled={!token}>
-                        Выдать доступ к переписке
-                      </button>
-                    </div>
-                    <div className="companyTableWrap" style={{ marginBottom: 8 }}>
-                      <table className="companyTable">
-                        <thead>
-                          <tr>
-                            <th>Участник A</th>
-                            <th>Участник B</th>
-                            <th></th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {departmentGrants.map((g) => (
-                            <tr key={g.id}>
-                              <td className="companyTableCellMono">{g.userAId}</td>
-                              <td className="companyTableCellMono">{g.userBId}</td>
-                              <td>
-                                <button
-                                  type="button"
-                                  className="chip"
-                                  onClick={() => void revokeDepartmentPair(g.userAId, g.userBId)}
-                                >
-                                  Отозвать
-                                </button>
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                      {departmentGrants.length === 0 ? (
-                        <div className="empty" style={{ fontSize: 12 }}>
-                          Нет выданных исключений. Без них менеджеры видят только свой отдел.
-                        </div>
-                      ) : null}
-                    </div>
                   </>
                 ) : null}
                 <div className="row">
@@ -8590,6 +8661,19 @@ export default function App() {
                     onChange={(e) => setCompanyUserQuery(e.target.value)}
                     placeholder="Поиск сотрудника"
                   />
+                  <select
+                    value={companyDepartmentFilter}
+                    onChange={(e) => setCompanyDepartmentFilter(e.target.value)}
+                    className="companyFilterSelect"
+                    title="Фильтр по отделу"
+                  >
+                    <option value="all">Все отделы</option>
+                    {companyDepartmentOptions.map((d) => (
+                      <option key={d} value={d}>
+                        {d}
+                      </option>
+                    ))}
+                  </select>
                   <select
                     value={companyRoleFilter}
                     onChange={(e) => setCompanyRoleFilter(e.target.value as "all" | "owner" | "admin" | "manager" | "employee" | "guest")}
@@ -8630,7 +8714,7 @@ export default function App() {
                           <td className="companyTableCellMono">{u.email}</td>
                           <td>{u.phone?.trim() || "—"}</td>
                           <td>{orgRoleLabelRu(u.role)}</td>
-                          <td>{u.department?.trim() || "—"}</td>
+                          <td>{formatDepartmentsDisplay(u.department)}</td>
                           <td>{u.status ?? "—"}</td>
                           <td>
                             <div className="companyTableActions">
@@ -8673,6 +8757,17 @@ export default function App() {
           <div className="companyModalBackdrop userCabinetBackdrop" onClick={() => setShowUserCabinet(false)}>
             <section className="companyModal userCabinetModal" onClick={(e) => e.stopPropagation()}>
               <div className="companyModalHeader userCabinetModalHeader">
+                {viewportW < 800 ? (
+                  <button
+                    type="button"
+                    className="userCabinetBackBtn"
+                    onClick={() => setShowUserCabinet(false)}
+                    aria-label="Назад"
+                    title="Назад"
+                  >
+                    <TgIconChevronLeft />
+                  </button>
+                ) : null}
                 <div className="userCabinetTitle">Личный кабинет</div>
                 <button type="button" className="chip userCabinetCloseBtn" onClick={() => setShowUserCabinet(false)}>
                   Закрыть
@@ -9485,14 +9580,14 @@ export default function App() {
           <div className="composerAttachWrap" ref={composerAttachWrapRef}>
             <button
               type="button"
-              className={`composerAttachBtn ${composerAttachOpen ? "composerAttachBtn--open" : ""}`}
+              className={`composerAttachBtn composerAttachBtn--icon ${composerAttachOpen ? "composerAttachBtn--open" : ""}`}
               onClick={() => setComposerAttachOpen((v) => !v)}
               disabled={uploadDisabled}
               aria-expanded={composerAttachOpen}
               aria-haspopup="menu"
               title="Вложение"
             >
-              📎
+              <TgIconPaperclip />
             </button>
             {composerAttachOpen ? (
               <div className="composerAttachMenu" role="menu" aria-label="Тип вложения">
@@ -9566,20 +9661,22 @@ export default function App() {
           </div>
           <button
             type="button"
+            className="composerIconBtn"
             style={{ touchAction: "manipulation" }}
             onClick={onVoiceMicClick}
             disabled={uploadDisabled}
             title={isRecordingVoice ? "Нажмите ещё раз, чтобы отправить" : "Нажмите для записи голосового"}
           >
-            🎤
+            <TgIconMic />
           </button>
           <button
             type="button"
+            className="composerIconBtn"
             onClick={() => setShowStickerPicker((v) => !v)}
             disabled={composerDisabled}
             title="Стикеры"
           >
-            🙂
+            <TgIconSmile />
           </button>
           <textarea
             className="composerInput"
@@ -9596,8 +9693,14 @@ export default function App() {
             disabled={composerDisabled}
             rows={1}
           />
-          <button type="submit" disabled={composerDisabled || !canSendText} title="Отправить">
-            ✈️
+          <button
+            type="submit"
+            className="composerSendBtn"
+            disabled={composerDisabled || !canSendText}
+            title="Отправить (правая кнопка мыши — отложить)"
+            onContextMenu={onComposerSendContextMenu}
+          >
+            <TgIconSend />
           </button>
           {showStickerPicker ? (
             <div className="stickerPicker" style={{ gridColumn: "1 / -1" }}>
@@ -10511,7 +10614,10 @@ export default function App() {
                           : "☐"}
                     </span>
                     <span className="newChatWizardEmail">{displayUserNameForSidebar(u, u.id)}</span>
-                    {u.department ? <span className="newChatWizardMeta">{u.department}</span> : null}
+                    {(() => {
+                      const fd = formatDepartmentsDisplay(u.department);
+                      return fd !== "—" ? <span className="newChatWizardMeta">{fd}</span> : null;
+                    })()}
                   </button>
                 ))
               )}

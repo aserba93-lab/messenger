@@ -7,7 +7,7 @@ import { issueAccessToken, issueRefreshToken, verifyRefreshToken } from "../../s
 import { setRefreshCookie } from "../../web/cookies.js";
 import { maskEmail, sendLoginOtpEmail, sendPasswordResetEmail } from "../../lib/mail.js";
 import { prisma } from "../../db/prisma.js";
-import { hasDepartmentGrant, normDept, orderedPair } from "../../lib/departmentAccess.js";
+import { departmentsOverlap, orderedPair } from "../../lib/departmentAccess.js";
 export class AuthService {
     repo;
     constructor(repo = new AuthRepository()) {
@@ -73,7 +73,6 @@ export class AuthService {
         });
         if (!me)
             return rows;
-        const vd = normDept(me.department);
         const out = [];
         for (const u of rows) {
             if (u.id === params.viewer.userId) {
@@ -84,11 +83,7 @@ export class AuthService {
                 out.push(u);
                 continue;
             }
-            if (normDept(u.department) === vd) {
-                out.push(u);
-                continue;
-            }
-            if (await hasDepartmentGrant(params.viewer.organizationId, params.viewer.userId, u.id))
+            if (departmentsOverlap(me.department, u.department))
                 out.push(u);
         }
         return out;
@@ -565,11 +560,20 @@ export class AuthService {
         const tokenHash = sha256Hex(rawToken);
         const expiresAt = new Date(Date.now() + env.PASSWORD_RESET_TTL_SECONDS * 1000);
         await this.repo.createPasswordResetToken({ userId: user.id, tokenHash, expiresAt });
-        const base = String(env.CLIENT_URL || "")
+        const first = String(env.CLIENT_URL || "")
             .split(",")
             .map((s) => s.trim())
             .filter(Boolean)[0] || "http://localhost:5173";
-        const resetUrl = `${base.replace(/\/$/, "")}/?reset=${encodeURIComponent(rawToken)}`;
+        let base = first.replace(/\/$/, "");
+        try {
+            const u = new URL(/:\/\//.test(base) ? base : `https://${base}`);
+            if (u.protocol === "http:" || u.protocol === "https:")
+                base = u.origin;
+        }
+        catch {
+            /* оставляем как есть */
+        }
+        const resetUrl = `${base}/?reset=${encodeURIComponent(rawToken)}`;
         await sendPasswordResetEmail(user.email, resetUrl);
         return { ok: true };
     }
