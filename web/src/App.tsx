@@ -329,6 +329,57 @@ async function readJsonAuthResponse<T>(res: Response): Promise<T> {
     );
   }
 }
+
+/** Необязательные ответы (seed-info): тело «Not Found» не должно ломать парсинг. */
+async function tryReadJsonResponse<T>(res: Response): Promise<T | null> {
+  const text = await res.text();
+  try {
+    return text ? (JSON.parse(text) as T) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * В Electron/Capacitor без VITE_API_URL `API_BASE` пустой — `fetch("/auth/…")` уходит на app:// и даёт «Not Found»,
+ * что при старом коде с `res.json()` выглядело как Unexpected token 'N'.
+ */
+function assertApiBaseConfigured(): void {
+  if (API_BASE) return;
+  if (typeof window === "undefined") return;
+  if (window.electronShell?.isElectron) {
+    throw new Error(
+      'Сборка без VITE_API_URL: создайте web/.env.production.local с VITE_API_URL=https://ваш-домен и пересоберите установщик (npm run electron:dist). На сервере в .env бэкенда: CORS_EXTRA_ORIGINS=app://root. Либо в dist/index.html добавьте <meta name="tg-api-base" content="https://ваш-домен" />.',
+    );
+  }
+  if (isCapacitorNative()) {
+    throw new Error(
+      "Сборка без VITE_API_URL: укажите VITE_API_URL=https://ваш-домен в web/.env.production.local и выполните cap sync. Либо meta tg-api-base в index.html. На сервере настройте CORS для Capacitor.",
+    );
+  }
+  if (window.location.protocol === "file:") {
+    throw new Error("Откройте приложение через HTTPS или задайте VITE_API_URL / meta tg-api-base.");
+  }
+  if (window.location.protocol === "app:") {
+    throw new Error("Задайте VITE_API_URL при сборке или meta tg-api-base в index.html.");
+  }
+  throw new Error("Не указан адрес API (VITE_API_URL или meta tg-api-base).");
+}
+
+function normalizeAuthFetchErrorMessage(msg: string): string {
+  const s = String(msg || "");
+  if (/not valid JSON|Unexpected token|JSON\.parse/i.test(s)) {
+    if (typeof window !== "undefined" && window.electronShell?.isElectron) {
+      return 'Ответ не JSON (часто «Not Found»): задайте VITE_API_URL при сборке EXE и CORS_EXTRA_ORIGINS=app://root на сервере. Либо meta tg-api-base в index.html.';
+    }
+    if (typeof window !== "undefined" && isCapacitorNative()) {
+      return "Ответ не JSON: задайте VITE_API_URL при сборке APK и CORS на сервере.";
+    }
+    return "Ответ сервера не JSON — проверьте адрес API и прокси /auth, /graphql.";
+  }
+  return s;
+}
+
 function getSocketUrl(): string {
   const env = (import.meta as any).env?.VITE_SOCKET_URL as string | undefined;
   if (env && String(env).trim()) return String(env).replace(/\/$/, "");
@@ -2773,7 +2824,7 @@ export default function App() {
     }
     try {
       const res = await fetch(`${API_BASE}/playground-ru/seed-info`);
-      const data = await res.json();
+      const data = await tryReadJsonResponse<{ organizationId?: string; workspaceId?: string }>(res);
       if (!res.ok || !data?.organizationId) return;
       const orgId = String(data.organizationId);
       setOrganizationId(orgId);
@@ -3065,13 +3116,14 @@ export default function App() {
     e?.preventDefault();
     try {
       setAuthError("");
+      assertApiBaseConfigured();
       setPendingEmailOtp(null);
       setOtpCode("");
       let orgId = organizationId.trim();
       if (!orgId) {
         try {
           const seedRes = await fetch(`${API_BASE}/playground-ru/seed-info`);
-          const seedData = await seedRes.json();
+          const seedData = await tryReadJsonResponse<{ organizationId?: string; workspaceId?: string }>(seedRes);
           if (seedRes.ok && seedData?.organizationId) {
             orgId = String(seedData.organizationId);
             setOrganizationId(orgId);
@@ -3108,7 +3160,7 @@ export default function App() {
       setSystemAccessLevel((data.viewer.systemAccessLevel as any) ?? "organization");
       pushLog("Успешный вход.");
     } catch (e: any) {
-      let msg = String(e?.message ?? e ?? "Login failed");
+      let msg = normalizeAuthFetchErrorMessage(String(e?.message ?? e ?? "Login failed"));
       if (msg === "Failed to fetch") {
         if (typeof window !== "undefined" && window.electronShell?.isElectron) {
           msg =
@@ -3129,6 +3181,7 @@ export default function App() {
     e?.preventDefault();
     try {
       setAuthError("");
+      assertApiBaseConfigured();
       if (!pendingEmailOtp) throw new Error("Сначала выполните вход с паролем.");
       const orgId = organizationId.trim();
       if (!orgId) throw new Error("Organization ID не указан");
@@ -3151,7 +3204,7 @@ export default function App() {
       setSystemAccessLevel((data.viewer.systemAccessLevel as any) ?? "organization");
       pushLog("Вход подтверждён по коду из письма.");
     } catch (e: any) {
-      let msg = String(e?.message ?? e ?? "Ошибка");
+      let msg = normalizeAuthFetchErrorMessage(String(e?.message ?? e ?? "Ошибка"));
       if (msg === "Failed to fetch") {
         if (typeof window !== "undefined" && window.electronShell?.isElectron) {
           msg = "Нет связи с сервером (проверьте VITE_API_URL и CORS app://root на backend).";
@@ -6810,6 +6863,12 @@ export default function App() {
   async function requestForgotPasswordEmail(e?: FormEvent) {
     e?.preventDefault();
     setAuthError("");
+    try {
+      assertApiBaseConfigured();
+    } catch (err: any) {
+      setAuthError(String(err?.message ?? err ?? "Ошибка"));
+      return;
+    }
     const em = forgotEmail.trim();
     if (!em.includes("@")) {
       setAuthError("Укажите email.");
@@ -6834,6 +6893,12 @@ export default function App() {
   async function submitPasswordResetFromUrl(e?: FormEvent) {
     e?.preventDefault();
     setAuthError("");
+    try {
+      assertApiBaseConfigured();
+    } catch (err: any) {
+      setAuthError(String(err?.message ?? err ?? "Ошибка"));
+      return;
+    }
     if (resetNewPassword.length < 8) {
       setAuthError("Пароль не менее 8 символов.");
       return;
@@ -6857,7 +6922,7 @@ export default function App() {
       setResetNewPassword2("");
       setAuthSuccessMsg("Пароль обновлён. Войдите с новым паролём.");
     } catch (err: any) {
-      setAuthError(String(err?.message ?? err ?? "Ошибка"));
+      setAuthError(normalizeAuthFetchErrorMessage(String(err?.message ?? err ?? "Ошибка")));
     } finally {
       setResetPasswordBusy(false);
     }
