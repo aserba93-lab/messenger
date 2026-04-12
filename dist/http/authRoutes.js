@@ -130,7 +130,9 @@ export function createAuthRoutes(authService) {
         try {
             const body = ForgotPasswordBodySchema.safeParse(req.body);
             if (body.success) {
-                await authService.requestPasswordReset({ email: body.data.email }).catch(() => { });
+                await authService.requestPasswordReset({ email: body.data.email }).catch((e) => {
+                    console.error("[auth] requestPasswordReset failed:", e?.message ?? e);
+                });
             }
         }
         catch {

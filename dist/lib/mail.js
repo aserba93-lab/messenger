@@ -27,6 +27,7 @@ export async function sendLoginOtpEmail(to, code) {
         host,
         port,
         secure,
+        ...(port !== 465 && !secure ? { requireTLS: true } : {}),
         auth: process.env.SMTP_USER
             ? { user: String(process.env.SMTP_USER), pass: String(process.env.SMTP_PASS ?? "") }
             : undefined,
@@ -57,6 +58,8 @@ export async function sendPasswordResetEmail(to, resetUrl) {
         host,
         port,
         secure,
+        /** Порт 2525 у Beget и др. — STARTTLS, не implicit SSL */
+        ...(port !== 465 && !secure ? { requireTLS: true } : {}),
         auth: process.env.SMTP_USER
             ? { user: String(process.env.SMTP_USER), pass: String(process.env.SMTP_PASS ?? "") }
             : undefined,
@@ -64,6 +67,7 @@ export async function sendPasswordResetEmail(to, resetUrl) {
     const from = process.env.SMTP_FROM || process.env.SMTP_USER || "noreply@localhost";
     try {
         await transporter.sendMail({ from, to, subject, text, html });
+        console.log(`[mail] password reset mail accepted by SMTP for ${to}`);
     }
     catch (e) {
         console.error(`[mail] sendPasswordResetEmail failed for ${to}:`, e?.message ?? e);
