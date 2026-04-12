@@ -26,6 +26,7 @@ import { GroupChatsService } from "./modules/groupChats/service.js";
 import { FilesService, inferMimeFromName } from "./modules/files/service.js";
 import { DirectChatsService } from "./modules/directChats/service.js";
 import { NotificationsService } from "./modules/notifications/service.js";
+import { createReadStream } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 /** Несколько origin из CLIENT_URL + dev-порты Vite + Electron (app://) */
@@ -235,6 +236,45 @@ app.put("/files/upload/:fileId", express.raw({ type: "*/*", limit: "200mb" }), a
     catch (e) {
         return res.status(500).json({ error: e?.message ?? "Upload failed" });
     }
+});
+const INSTALLER_NAMES = new Set(String(env.PUBLIC_INSTALLER_FILES || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean));
+function publicInstallersDir() {
+    const d = env.PUBLIC_INSTALLERS_DIR;
+    if (d && String(d).trim())
+        return path.resolve(String(d).trim());
+    return path.join(process.cwd(), "public", "files");
+}
+app.get("/files/:filename", async (req, res, next) => {
+    const filename = String(req.params.filename ?? "");
+    if (!INSTALLER_NAMES.has(filename))
+        return next();
+    const dir = path.resolve(publicInstallersDir());
+    const fp = path.resolve(dir, filename);
+    const rel = path.relative(dir, fp);
+    if (rel.startsWith("..") || path.isAbsolute(rel))
+        return res.status(403).end();
+    try {
+        const st = await fs.stat(fp);
+        if (!st.isFile())
+            return res.status(404).end();
+    }
+    catch {
+        return res.status(404).end();
+    }
+    res.setHeader("Content-Disposition", `attachment; filename="${filename.replace(/"/g, "")}"`);
+    res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
+    const mime = inferMimeFromName(filename);
+    if (mime)
+        res.setHeader("Content-Type", mime);
+    const stream = createReadStream(fp);
+    stream.on("error", () => {
+        if (!res.headersSent)
+            res.status(500).end();
+    });
+    stream.pipe(res);
 });
 const yoga = createYoga({
     schema: createSchema({ typeDefs, resolvers }),

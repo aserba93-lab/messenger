@@ -46,6 +46,10 @@ const EnvSchema = z.object({
      * а MINIO_ENDPOINT остаётся внутренним (http://127.0.0.1:9000). Нужен nginx proxy с основного домена на MinIO. */
     MINIO_PRESIGN_ENDPOINT: z.preprocess((v) => (v === "" || v === undefined || v === null ? undefined : v), z.string().url().optional()),
     // Files
+    /** Каталог с публичными установщиками (exe/apk), отдаётся по GET /files/<имя> из allowlist PUBLIC_INSTALLER_FILES */
+    PUBLIC_INSTALLERS_DIR: z.preprocess((v) => (v === "" || v === undefined || v === null ? undefined : v), z.string().min(1).optional()),
+    /** Список имён файлов через запятую (без path traversal) */
+    PUBLIC_INSTALLER_FILES: z.string().default("Messenger-Setup.exe,app-release.apk"),
     FILES_AUTO_MARK_CLEAN: envBool(false),
     FILES_SCAN_PROVIDER: z.enum(["none", "clamd"]).default("none"),
     CLAMD_HOST: z.string().min(1).default("127.0.0.1"),
