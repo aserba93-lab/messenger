@@ -10,6 +10,24 @@
 Важно: не вставляйте выдуманные домены вроде «ваш-домен.ru» — должен быть РЕАЛЬНЫЙ адрес вашего сайта или файлового хранилища.
 
 
+Ошибка HTTP 404 на https://sf-communication.ru/files/app-release.apk
+-------------------------------------------------------------------
+Это значит: по этому URL файл на сервере не отдаётся.
+
+  1) Убедитесь, что nginx для location /files/ проксирует на тот же Node, что и /graphql
+     (см. SERVER_SETUP_BLOCKS.txt, блок 8).
+  2) Положите файл на диск в каталог бэкенда:
+        /var/www/messenger/public/files/app-release.apk
+     (если проект в другом пути — подставьте свой корень репозитория + /public/files/).
+     Сборка web/dist НЕ копирует .apk с вашего ПК автоматически — файл нужно залить на VPS отдельно.
+  3) Имя файла должно совпадать с allowlist: по умолчанию в .env бэкенда
+     PUBLIC_INSTALLER_FILES=Messenger-Setup.exe,app-release.apk
+  4) После копирования: sudo systemctl restart messenger
+  5) Проверка: curl -I https://sf-communication.ru/files/app-release.apk → должен быть 200.
+
+Подробнее: web/public/files/PUT_INSTALLERS_HERE.txt
+
+
 Часть A. Откуда взять файлы установщиков
 ----------------------------------------
 

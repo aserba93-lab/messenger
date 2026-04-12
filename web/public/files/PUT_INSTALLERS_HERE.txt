@@ -4,3 +4,32 @@
 
 Затем выполните npm run build и задеплойте папку dist на сервер.
 Ссылки в client-downloads.json уже указывают на /files/...
+
+--------------------------------------------------------------------------------
+Если в браузере https://ВАШ-ДОМЕН/files/app-release.apk даёт 404
+--------------------------------------------------------------------------------
+Файлы .apk / .exe в Git не хранятся (.gitignore) — их нужно положить НА СЕРВЕР вручную.
+
+Вариант A (типично для sf-communication.ru, nginx проксирует /files/ на Node):
+  Рабочая папка процесса node — корень репозитория, например /var/www/messenger.
+  Тогда файл должен лежать ТАК:
+    /var/www/messenger/public/files/app-release.apk
+  Проверка по SSH:
+    sudo ls -la /var/www/messenger/public/files/app-release.apk
+    curl -I https://sf-communication.ru/files/app-release.apk
+  Ожидается HTTP 200 и Content-Type application/vnd.android.package-archive (или octet-stream).
+
+  Если каталога нет:
+    sudo mkdir -p /var/www/messenger/public/files
+    sudo chown -R ВАШ_ПОЛЬЗОВАТЕЛЬ:ВАШ_ГРУППА /var/www/messenger/public/files
+  Залейте app-release.apk (scp / WinSCP / панель хостинга), затем:
+    sudo systemctl restart messenger
+
+Вариант B (другой каталог в .env бэкенда):
+  PUBLIC_INSTALLERS_DIR=/абсолютный/путь/к/папке
+  В этой папке должны лежать ровно те имена, что в PUBLIC_INSTALLER_FILES
+  (по умолчанию: Messenger-Setup.exe,app-release.apk).
+
+Вариант C (только nginx, без Node для установщиков):
+  Отдельный location в nginx: alias на папку с .apk; тогда файл должен быть в этой папке.
+  См. web/public/CLIENT_DOWNLOADS_HOWTO.txt
