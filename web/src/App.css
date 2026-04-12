@@ -2312,6 +2312,21 @@ button.active {
   padding: 8px 12px;
   text-align: center;
 }
+@media (prefers-reduced-motion: no-preference) {
+  .bubble--stickerLarge {
+    animation: tgStickerBubbleIn 0.42s cubic-bezier(0.34, 1.56, 0.64, 1);
+  }
+}
+@keyframes tgStickerBubbleIn {
+  0% {
+    transform: scale(0.88);
+    opacity: 0.85;
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
 .bubble--stickerLarge .bubbleTime {
   font-size: 11px;
   vertical-align: middle;
@@ -2364,11 +2379,19 @@ button.active {
   top: 10px;
   width: 14px;
   height: 14px;
-  background: rgba(110, 170, 255, 0.16);
-  border-right: 1px solid rgba(110, 170, 255, 0.22);
-  border-bottom: 1px solid rgba(110, 170, 255, 0.22);
+  background: var(--tg-bubble-mine);
+  border-right: 1px solid rgba(176, 140, 100, 0.25);
+  border-bottom: 1px solid rgba(176, 140, 100, 0.25);
   transform: rotate(45deg);
   border-bottom-right-radius: 4px;
+}
+:root[data-theme="light"] .msg.mine:not(.compact) .bubble::before {
+  border-right-color: rgba(0, 0, 0, 0.12);
+  border-bottom-color: rgba(0, 0, 0, 0.12);
+}
+body.electron-app .msg.mine:not(.compact) .bubble::before {
+  border-right-color: var(--tg-accent-dim);
+  border-bottom-color: var(--tg-accent-dim);
 }
 .fileLine {
   font-size: 12px;
@@ -2908,8 +2931,17 @@ pre {
   font-size: 11px;
   margin-right: 2px;
 }
-.msgTick--read {
-  color: #7ecbff;
+.msgTick.msgTick--read {
+  display: inline-flex;
+  align-items: center;
+  color: var(--tg-accent);
+}
+.msgTickChev {
+  display: inline-block;
+  line-height: 1;
+}
+.msgTickChev--overlap {
+  margin-left: -0.42em;
 }
 .msgTick--pending {
   opacity: 0.65;
@@ -3477,6 +3509,32 @@ pre {
   flex-wrap: wrap;
   gap: 6px;
   align-items: center;
+}
+.companyTableDeptCell {
+  vertical-align: top;
+  min-width: 200px;
+}
+.companyDeptEditRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+  align-items: center;
+}
+.companyTableInputTiny {
+  width: 96px;
+  box-sizing: border-box;
+  font-size: 11px;
+  padding: 4px 6px;
+  border-radius: 8px;
+  border: 1px solid var(--tg-border-subtle);
+  background: var(--tg-bg-elevated);
+  color: inherit;
+}
+.companyTableSelect--narrow {
+  max-width: 118px;
+  font-size: 11px;
+  padding: 4px 6px;
 }
 .companyFilterSelect,
 .companyTableSelect {
@@ -4169,6 +4227,15 @@ pre {
   margin-bottom: 4px;
 }
 
+.infoPanelSearchHits {
+  margin-top: 12px;
+  max-height: min(42vh, 340px);
+  overflow: auto;
+  font-size: 12px;
+  border-top: 1px solid var(--tg-border-subtle);
+  padding-top: 8px;
+}
+
 .infoPanelSection {
   margin-top: 12px;
 }
@@ -4465,15 +4532,15 @@ pre {
 }
 
 .stickerBtn {
-  transition: transform 0.12s ease;
+  transition: transform 0.15s cubic-bezier(0.34, 1.4, 0.64, 1);
 }
 
 .stickerBtn:hover {
-  transform: scale(1.08);
+  transform: scale(1.14);
 }
 
 .stickerBtn:active {
-  transform: scale(0.96);
+  transform: scale(0.94);
 }
 
 .userCabinetBackBtn {

@@ -23,6 +23,7 @@ function mapUserWithMember(member) {
         department: member.department,
         role: member.role,
         lastSeen: member.user.lastSeen,
+        deactivatedAt: member.deactivatedAt ?? null,
         chatFoldersJson: member.user.chatFoldersJson ?? null,
     };
 }
@@ -260,6 +261,14 @@ export const authResolvers = {
             if (input.organizationId !== viewer.organizationId)
                 throw new Error("Forbidden");
             await ctx.authService.deactivateUser(viewer, { userId: input.userId });
+            return true;
+        },
+        activateUser: async (_p, args, ctx) => {
+            const viewer = requireViewer(ctx);
+            const input = DeactivateUserInput.parse(args.input);
+            if (input.organizationId !== viewer.organizationId)
+                throw new Error("Forbidden");
+            await ctx.authService.activateUser(viewer, { userId: input.userId });
             return true;
         },
         revokeInvite: async (_p, args, ctx) => {

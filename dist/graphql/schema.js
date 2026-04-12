@@ -111,6 +111,7 @@ export const typeDefs = /* GraphQL */ `
     setUserPassword(input: SetUserPasswordInput!): Boolean!
     revokeInvite(input: RevokeInviteInput!): Boolean!
     deactivateUser(input: DeactivateUserInput!): Boolean!
+    activateUser(input: DeactivateUserInput!): Boolean!
     setUserRole(input: SetUserRoleInput!): User!
 
     updateOrganizationSettings(input: UpdateOrganizationSettingsInput!): Organization!
@@ -245,6 +246,8 @@ export const typeDefs = /* GraphQL */ `
     department: String
     role: OrgRole
     lastSeen: DateTime
+    """Заблокирован в организации (деактивация без удаления записи)."""
+    deactivatedAt: DateTime
     """Состояние папок чатов (JSON), только у самого пользователя в me / при обновлении профиля."""
     chatFoldersJson: String
   }

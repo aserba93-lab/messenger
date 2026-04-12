@@ -277,15 +277,16 @@ export class AuthRepository {
         });
     }
     async listUsers(params) {
-        // Fetch memberships joined with user profile.
+        const where = {
+            organizationId: params.organizationId,
+            ...(params.role ? { role: params.role } : {}),
+            ...(params.department ? { department: params.department } : {}),
+            ...(params.status ? { status: params.status } : {}),
+        };
+        if (!params.includeDeactivated)
+            where.deactivatedAt = null;
         const memberships = await prisma.organizationMember.findMany({
-            where: {
-                organizationId: params.organizationId,
-                deactivatedAt: null,
-                ...(params.role ? { role: params.role } : {}),
-                ...(params.department ? { department: params.department } : {}),
-                ...(params.status ? { status: params.status } : {}),
-            },
+            where,
             include: { user: true },
             orderBy: { createdAt: "desc" },
         });
@@ -298,11 +299,12 @@ export class AuthRepository {
             birthDate: m.user.birthDate,
             avatarUrl: m.user.avatarUrl,
             phone: m.user.phone ?? null,
-            // Сокет обновляет User.status; OrganizationMember.status по умолчанию offline и не синхронизируется.
             status: m.user.status,
             department: m.department,
             title: m.title,
             role: m.role,
+            lastSeen: m.user.lastSeen,
+            deactivatedAt: m.deactivatedAt,
             chatFoldersJson: null,
         }));
     }
@@ -547,6 +549,12 @@ export class AuthRepository {
         return prisma.organizationMember.update({
             where: { organizationId_userId: { organizationId: params.organizationId, userId: params.userId } },
             data: { deactivatedAt: new Date(), status: "offline" },
+        });
+    }
+    async activateUser(params) {
+        return prisma.organizationMember.update({
+            where: { organizationId_userId: { organizationId: params.organizationId, userId: params.userId } },
+            data: { deactivatedAt: null },
         });
     }
     async setUserRole(params) {

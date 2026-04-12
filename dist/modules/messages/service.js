@@ -402,10 +402,7 @@ export class MessagesService {
         if (!msg)
             throw new Error("Not found");
         if (msg.channelId) {
-            const channel = await this.requireCanAccessChannel(viewer, msg.channelId);
-            const wsMember = await this.repo.isWorkspaceMember({ workspaceId: channel.workspaceId, userId: viewer.userId });
-            if (!wsMember || wsMember.role !== "admin")
-                throw new Error("Forbidden");
+            await this.requireCanAccessChannel(viewer, msg.channelId);
         }
         else if (msg.groupChatId) {
             const m = await prisma.groupChatMember.findUnique({
@@ -435,10 +432,7 @@ export class MessagesService {
         if (!msg)
             throw new Error("Not found");
         if (msg.channelId) {
-            const channel = await this.requireCanAccessChannel(viewer, msg.channelId);
-            const wsMember = await this.repo.isWorkspaceMember({ workspaceId: channel.workspaceId, userId: viewer.userId });
-            if (!wsMember || wsMember.role !== "admin")
-                throw new Error("Forbidden");
+            await this.requireCanAccessChannel(viewer, msg.channelId);
         }
         else if (msg.groupChatId) {
             const m = await prisma.groupChatMember.findUnique({

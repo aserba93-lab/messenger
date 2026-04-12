@@ -62,6 +62,7 @@ export class AuthService {
             role: params.role,
             department: params.department,
             status: params.status,
+            includeDeactivated: params.viewer.role === "owner" || params.viewer.role === "admin",
         });
         if (params.viewer.role !== "manager")
             return rows;
@@ -221,6 +222,12 @@ export class AuthService {
         if (viewer.role !== "owner" && viewer.role !== "admin")
             throw new Error("Forbidden");
         await this.repo.deactivateUser({ organizationId: viewer.organizationId, userId: input.userId });
+        return true;
+    }
+    async activateUser(viewer, input) {
+        if (viewer.role !== "owner" && viewer.role !== "admin")
+            throw new Error("Forbidden");
+        await this.repo.activateUser({ organizationId: viewer.organizationId, userId: input.userId });
         return true;
     }
     async setUserRole(viewer, input) {

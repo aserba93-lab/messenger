@@ -1069,7 +1069,7 @@ export default function App() {
   const [wizardError, setWizardError] = useState("");
   const [showRightPanel, setShowRightPanel] = useState(false);
   const [infoPanelSection, setInfoPanelSection] = useState<
-    "about" | "photos" | "files" | "voice" | "links" | "notify"
+    "about" | "search" | "photos" | "files" | "voice" | "links" | "notify"
   >("about");
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [viewportW, setViewportW] = useState(() => (typeof window !== "undefined" ? window.innerWidth : 1280));
@@ -1749,6 +1749,7 @@ export default function App() {
       status?: string | null;
       phone?: string | null;
       lastSeen?: string | null;
+      deactivatedAt?: string | null;
     }[]
   >([]);
   const usersRef = useRef(users);
@@ -1780,6 +1781,7 @@ export default function App() {
   const newThingWizardUsers = useMemo(() => {
     const q = wizardUserQuery.trim().toLowerCase();
     return users
+      .filter((u) => !u.deactivatedAt)
       .filter((u) => (newThingWizardKind === "dm" ? true : u.id !== userId))
       .filter(
         (u) =>
@@ -3016,6 +3018,12 @@ export default function App() {
   useEffect(() => {
     if (mode === "dms" && infoPanelSection === "about") setInfoPanelSection("photos");
   }, [mode, infoPanelSection]);
+
+  useEffect(() => {
+    if (!showRightPanel || infoPanelSection !== "search") return;
+    const t = window.setTimeout(() => threadSearchInputRef.current?.focus(), 80);
+    return () => window.clearTimeout(t);
+  }, [showRightPanel, infoPanelSection]);
 
   useEffect(() => {
     try {
@@ -4762,7 +4770,12 @@ export default function App() {
         setWebrtcScreenSharing(true);
       }
     } catch (e: any) {
-      setChatError(String(e?.message ?? e));
+      const msg = String(e?.message ?? e ?? "");
+      if (/permission|not allowed|denied|NotAllowedError/i.test(msg)) {
+        setChatError("Демонстрация экрана: доступ запрещён или окно выбора закрыто. Разрешите «Экран» в браузере и выберите источник.");
+      } else {
+        setChatError(msg || "Не удалось включить демонстрацию экрана");
+      }
     }
   }
 
@@ -4807,9 +4820,10 @@ export default function App() {
         department?: string | null;
         status?: string | null;
         lastSeen?: string | null;
+        deactivatedAt?: string | null;
       }[];
     }>(
-      `query($organizationId: ID!) { users(organizationId: $organizationId) { id email avatarUrl phone firstName middleName lastName birthDate role department status lastSeen } }`,
+      `query($organizationId: ID!) { users(organizationId: $organizationId) { id email avatarUrl phone firstName middleName lastName birthDate role department status lastSeen deactivatedAt } }`,
       { organizationId: orgId },
       t,
     );
@@ -5587,13 +5601,85 @@ export default function App() {
 
   async function deactivateCompanyUser(targetUserId: string) {
     if (!token || !organizationId || !targetUserId) return;
-    if (!window.confirm("Деактивировать пользователя?")) return;
+    if (
+      !window.confirm(
+        "Заблокировать пользователя? Он не сможет войти в систему, данные и история сохранятся. Продолжить?",
+      )
+    )
+      return;
     await gql<{ deactivateUser: boolean }>(
       `mutation($input: DeactivateUserInput!) { deactivateUser(input: $input) }`,
       { input: { organizationId, userId: targetUserId } },
       token,
     );
-    setCompanyActionMsg("Пользователь деактивирован");
+    setCompanyActionMsg("Пользователь заблокирован");
+    await loadUsers();
+  }
+
+  async function activateCompanyUser(targetUserId: string) {
+    if (!token || !organizationId || !targetUserId) return;
+    if (!window.confirm("Разблокировать пользователя? Он снова сможет войти.")) return;
+    await gql<{ activateUser: boolean }>(
+      `mutation($input: DeactivateUserInput!) { activateUser(input: $input) }`,
+      { input: { organizationId, userId: targetUserId } },
+      token,
+    );
+    setCompanyActionMsg("Пользователь разблокирован");
+    await loadUsers();
+  }
+
+  function deptPartsFromRaw(raw: string | null | undefined): string[] {
+    return (raw ?? "")
+      .split(/[,;]+/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+  }
+
+  function mergeDeptString(raw: string | null | undefined, add: string): string {
+    const a = add.trim();
+    if (!a) return deptPartsFromRaw(raw).join(", ");
+    const parts = deptPartsFromRaw(raw);
+    const lower = parts.map((p) => p.toLowerCase());
+    if (lower.includes(a.toLowerCase())) return parts.join(", ");
+    return [...parts, a].join(", ");
+  }
+
+  function removeDeptString(raw: string | null | undefined, rem: string): string {
+    const r = rem.trim().toLowerCase();
+    return deptPartsFromRaw(raw)
+      .filter((p) => p.toLowerCase() !== r)
+      .join(", ");
+  }
+
+  async function addCompanyUserDepartment(targetUserId: string, deptName: string) {
+    if (!token || !isCompanyAdmin) return;
+    const u = users.find((x) => x.id === targetUserId);
+    if (!u) return;
+    const next = mergeDeptString(u.department, deptName);
+    const before = deptPartsFromRaw(u.department).join(", ");
+    if (next === before) return;
+    await gql<{ updateUser: { id: string } }>(
+      `mutation($input: UpdateUserInput!) { updateUser(input: $input) { id } }`,
+      { input: { userId: targetUserId, department: next || null } },
+      token,
+    );
+    setCompanyActionMsg("Отдел добавлен");
+    await loadUsers();
+  }
+
+  async function removeCompanyUserDepartment(targetUserId: string, deptName: string) {
+    if (!token || !isCompanyAdmin) return;
+    const u = users.find((x) => x.id === targetUserId);
+    if (!u) return;
+    const next = removeDeptString(u.department, deptName);
+    const before = deptPartsFromRaw(u.department).join(", ");
+    if (next === before) return;
+    await gql<{ updateUser: { id: string } }>(
+      `mutation($input: UpdateUserInput!) { updateUser(input: $input) { id } }`,
+      { input: { userId: targetUserId, department: next || null } },
+      token,
+    );
+    setCompanyActionMsg("Отдел убран");
     await loadUsers();
   }
 
@@ -7561,7 +7647,14 @@ export default function App() {
                         else await s.startScreenShare();
                         setGroupMeshMediaTick((x) => x + 1);
                       } catch (e: unknown) {
-                        setChatError(String((e as Error)?.message ?? e ?? "Экран"));
+                        const msg = String((e as Error)?.message ?? e ?? "");
+                        if (/permission|not allowed|denied|NotAllowedError/i.test(msg)) {
+                          setChatError(
+                            "Демонстрация экрана: доступ запрещён или окно выбора закрыто. Разрешите «Экран» в браузере и выберите источник.",
+                          );
+                        } else {
+                          setChatError(msg || "Не удалось включить демонстрацию экрана");
+                        }
                       }
                     })();
                   }}
@@ -8320,16 +8413,6 @@ export default function App() {
               </div>
             </div>
             <div className="tgChatHeaderRight" ref={callMenuWrapRef}>
-              <button
-                type="button"
-                className="tgCircleBtn tgCircleBtn--icon"
-                title="Фокус: поиск в этом чате (Ctrl/Cmd+K — поиск в списке слева)"
-                onClick={() => {
-                  threadSearchInputRef.current?.focus();
-                }}
-              >
-                <TgIconSearch />
-              </button>
               <div className="tgCallMenuAnchor">
                 <button
                   type="button"
@@ -8406,55 +8489,6 @@ export default function App() {
                   Закрыть
                 </button>
               </div>
-            </div>
-          ) : null}
-          {!threadRootId && !showPins ? (
-            <div className="tgChatSearchRow" style={{ marginTop: 8, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-              <input
-                ref={threadSearchInputRef}
-                className="tgSearch"
-                style={{ flex: 1, minWidth: 160 }}
-                placeholder="Поиск в этом чате"
-                value={threadSearchQ}
-                onChange={(e) => setThreadSearchQ(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") void runThreadSearch();
-                }}
-              />
-              <button type="button" className="chip" onClick={() => void runThreadSearch()} disabled={!token || !threadSearchQ.trim()}>
-                Найти
-              </button>
-              {threadSearchOpen ? (
-                <button type="button" className="chip" onClick={() => setThreadSearchOpen(false)}>
-                  Скрыть
-                </button>
-              ) : null}
-            </div>
-          ) : null}
-          {threadSearchOpen && threadSearchHits.length ? (
-            <div
-              style={{
-                marginTop: 8,
-                maxHeight: 160,
-                overflow: "auto",
-                fontSize: 12,
-                borderTop: "1px solid rgba(255,255,255,0.08)",
-                paddingTop: 8,
-              }}
-            >
-              <div style={{ opacity: 0.85, marginBottom: 6 }}>Совпадений: {threadSearchHits.length}</div>
-              {threadSearchHits.map((hm) => (
-                <button
-                  key={hm.id}
-                  type="button"
-                  className="threadSearchHitBtn"
-                  onClick={() => scrollToMessageInChat(hm.id)}
-                >
-                  <span style={{ opacity: 0.75 }}>{new Date(hm.createdAt).toLocaleString()}</span> · {messageAuthorLabel(hm)} —{" "}
-                  {(hm.content || "").slice(0, 120)}
-                  {(hm.content || "").length > 120 ? "…" : ""}
-                </button>
-              ))}
             </div>
           ) : null}
           {forwardSelecting ? (
@@ -8714,14 +8748,65 @@ export default function App() {
                           <td className="companyTableCellMono">{u.email}</td>
                           <td>{u.phone?.trim() || "—"}</td>
                           <td>{orgRoleLabelRu(u.role)}</td>
-                          <td>{formatDepartmentsDisplay(u.department)}</td>
-                          <td>{u.status ?? "—"}</td>
+                          <td className="companyTableDeptCell">
+                            <div>{formatDepartmentsDisplay(u.department)}</div>
+                            {isCompanyAdmin ? (
+                              <div className="companyDeptEditRow">
+                                <select
+                                  className="companyTableSelect companyTableSelect--narrow"
+                                  aria-label="Добавить в отдел из списка"
+                                  defaultValue=""
+                                  onChange={(e) => {
+                                    const v = e.target.value;
+                                    e.currentTarget.value = "";
+                                    if (v) void addCompanyUserDepartment(u.id, v);
+                                  }}
+                                >
+                                  <option value="">+ Из списка…</option>
+                                  {companyDepartmentOptions.map((d) => (
+                                    <option key={d} value={d}>
+                                      {d}
+                                    </option>
+                                  ))}
+                                </select>
+                                <input
+                                  className="companyTableInputTiny"
+                                  placeholder="Новый отдел"
+                                  aria-label={`Новый отдел для ${u.email}`}
+                                  onKeyDown={(e) => {
+                                    if (e.key !== "Enter") return;
+                                    const v = e.currentTarget.value.trim();
+                                    e.currentTarget.value = "";
+                                    if (v) void addCompanyUserDepartment(u.id, v);
+                                  }}
+                                />
+                                <select
+                                  className="companyTableSelect companyTableSelect--narrow"
+                                  aria-label="Убрать из отдела"
+                                  defaultValue=""
+                                  onChange={(e) => {
+                                    const v = e.target.value;
+                                    e.currentTarget.value = "";
+                                    if (v) void removeCompanyUserDepartment(u.id, v);
+                                  }}
+                                >
+                                  <option value="">− Убрать…</option>
+                                  {deptPartsFromRaw(u.department).map((d) => (
+                                    <option key={d} value={d}>
+                                      {d}
+                                    </option>
+                                  ))}
+                                </select>
+                              </div>
+                            ) : null}
+                          </td>
+                          <td>{u.deactivatedAt ? "Заблокирован" : (u.status ?? "—")}</td>
                           <td>
                             <div className="companyTableActions">
                               <select
                                 value={u.role ?? "employee"}
                                 onChange={(e) => void setCompanyUserRole(u.id, e.target.value as "owner" | "admin" | "manager" | "employee" | "guest")}
-                                disabled={!token || !organizationId || u.id === userId}
+                                disabled={!token || !organizationId || u.id === userId || !!u.deactivatedAt}
                                 className="companyTableSelect"
                                 title={u.id === userId ? "Свою роль менять нельзя" : "Сменить роль"}
                               >
@@ -8731,14 +8816,27 @@ export default function App() {
                                 <option value="employee">Сотрудник</option>
                                 <option value="guest">Гость</option>
                               </select>
-                              <button
-                                className="chip"
-                                onClick={() => void deactivateCompanyUser(u.id)}
-                                disabled={!token || u.id === userId}
-                                title={u.id === userId ? "Себя деактивировать нельзя" : "Деактивировать"}
-                              >
-                                Удалить
-                              </button>
+                              {u.deactivatedAt ? (
+                                <button
+                                  className="chip"
+                                  type="button"
+                                  onClick={() => void activateCompanyUser(u.id)}
+                                  disabled={!token || u.id === userId}
+                                  title={u.id === userId ? "Нельзя" : "Разблокировать вход"}
+                                >
+                                  Разблокировать
+                                </button>
+                              ) : (
+                                <button
+                                  className="chip"
+                                  type="button"
+                                  onClick={() => void deactivateCompanyUser(u.id)}
+                                  disabled={!token || u.id === userId}
+                                  title={u.id === userId ? "Себя заблокировать нельзя" : "Заблокировать вход без удаления данных"}
+                                >
+                                  Заблокировать
+                                </button>
+                              )}
                             </div>
                           </td>
                         </tr>
@@ -9348,11 +9446,16 @@ export default function App() {
                         …
                       </span>
                     ) : messageReadByOthers(m, selfAuthorEmail || myProfileEmail, userId, peerReadMapForCurrentChat()) ? (
-                      <span className="msgTick msgTick--read" title="Прочитано">
-                        ✓✓
+                      <span className="msgTick msgTick--read" title="Прочитано" aria-label="Прочитано">
+                        <span className="msgTickChev" aria-hidden>
+                          ✓
+                        </span>
+                        <span className="msgTickChev msgTickChev--overlap" aria-hidden>
+                          ✓
+                        </span>
                       </span>
                     ) : (
-                      <span className="msgTick" title="Доставлено">
+                      <span className="msgTick" title="Доставлено" aria-label="Доставлено">
                         ✓
                       </span>
                     )
@@ -10196,6 +10299,7 @@ export default function App() {
                   mode === "dms"
                     ? ([
                         ["photos", "Фото"],
+                        ["search", "Поиск"],
                         ["files", "Файлы"],
                         ["voice", "Голосовые"],
                         ["links", "Ссылки"],
@@ -10203,6 +10307,7 @@ export default function App() {
                       ] as const)
                     : ([
                         ["about", "Об чате"],
+                        ["search", "Поиск"],
                         ["photos", "Фото"],
                         ["files", "Файлы"],
                         ["voice", "Голосовые"],
@@ -10261,6 +10366,7 @@ export default function App() {
                             >
                               <option value="">— Кого добавить —</option>
                               {users
+                                .filter((u) => !u.deactivatedAt)
                                 .filter((u) => !activeGroupChat.memberIds.includes(u.id))
                                 .map((u) => (
                                   <option key={u.id} value={u.id}>
@@ -10323,6 +10429,7 @@ export default function App() {
                             >
                               <option value="">— Кого добавить —</option>
                               {users
+                                .filter((u) => !u.deactivatedAt)
                                 .filter((u) => !infoPanelChannelMembers.some((m) => m.id === u.id))
                                 .map((u) => (
                                   <option key={u.id} value={u.id}>
@@ -10368,6 +10475,71 @@ export default function App() {
                     </div>
                   ) : null}
                 </>
+              ) : infoPanelSection === "search" ? (
+                <div className="infoPanelSection">
+                  <div className="infoPanelSectionTitle">Поиск по сообщениям</div>
+                  {!activeChannelId && !activeGroupChatId && !activeDirectChatId ? (
+                    <p className="infoPanelHint">Выберите чат слева, затем введите запрос и нажмите «Найти».</p>
+                  ) : (
+                    <>
+                      <p className="infoPanelHint">Поиск выполняется в текущем открытом чате.</p>
+                      <div className="infoPanelAddMemberRow" style={{ flexWrap: "wrap" }}>
+                        <input
+                          ref={threadSearchInputRef}
+                          className="infoPanelInput"
+                          style={{ flex: 1, minWidth: 140 }}
+                          placeholder="Текст для поиска"
+                          value={threadSearchQ}
+                          onChange={(e) => setThreadSearchQ(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") void runThreadSearch();
+                          }}
+                        />
+                        <button
+                          type="button"
+                          className="chip"
+                          onClick={() => void runThreadSearch()}
+                          disabled={!token || !threadSearchQ.trim()}
+                        >
+                          Найти
+                        </button>
+                        {threadSearchOpen ? (
+                          <button type="button" className="chip" onClick={() => setThreadSearchOpen(false)}>
+                            Скрыть результаты
+                          </button>
+                        ) : null}
+                      </div>
+                      {threadSearchOpen ? (
+                        threadSearchHits.length ? (
+                          <div className="infoPanelSearchHits">
+                            <div className="infoPanelHint" style={{ marginBottom: 8 }}>
+                              Совпадений: {threadSearchHits.length}
+                            </div>
+                            {threadSearchHits.map((hm) => (
+                              <button
+                                key={hm.id}
+                                type="button"
+                                className="threadSearchHitBtn"
+                                onClick={() => {
+                                  scrollToMessageInChat(hm.id);
+                                  setShowRightPanel(false);
+                                }}
+                              >
+                                <span style={{ opacity: 0.75 }}>{new Date(hm.createdAt).toLocaleString()}</span> ·{" "}
+                                {messageAuthorLabel(hm)} — {(hm.content || "").slice(0, 120)}
+                                {(hm.content || "").length > 120 ? "…" : ""}
+                              </button>
+                            ))}
+                          </div>
+                        ) : (
+                          <p className="infoPanelHint" style={{ marginTop: 10 }}>
+                            Ничего не найдено.
+                          </p>
+                        )
+                      ) : null}
+                    </>
+                  )}
+                </div>
               ) : infoPanelSection === "photos" ? (
                 <div className="infoPanelSection">
                   <div className="infoPanelSectionTitle">Фотографии ({infoPanelPhotos.length})</div>
