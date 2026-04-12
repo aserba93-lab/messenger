@@ -290,6 +290,24 @@ function getApiBase(): string {
 }
 const API_BASE = getApiBase();
 const GQL = `${API_BASE}/graphql`;
+
+/** Ответ /auth/* должен быть JSON; в Electron без VITE_API_URL fetch("/auth/…") уходит на app:// и получает текст "Not Found". */
+async function readJsonAuthResponse<T>(res: Response): Promise<T> {
+  const text = await res.text();
+  try {
+    return text ? (JSON.parse(text) as T) : ({} as T);
+  } catch {
+    const isElectron = typeof window !== "undefined" && !!window.electronShell?.isElectron;
+    const hint = isElectron
+      ? "Сборка без VITE_API_URL: запросы не доходят до API (возвращается Not Found). Задайте VITE_API_URL=https://ваш-домен при сборке EXE; на сервере в .env: CORS_EXTRA_ORIGINS=app://root. Либо в dist/index.html укажите <meta name=\"tg-api-base\" content=\"https://ваш-домен\" />."
+      : "Проверьте VITE_API_URL / адрес API и что nginx проксирует /auth и /graphql на Node.";
+    throw new Error(
+      res.status === 404 || /^not\s*found$/i.test(String(text).trim())
+        ? `API недоступен (${res.status}). ${hint}`
+        : `Ответ сервера не JSON (${res.status}). ${hint}`,
+    );
+  }
+}
 function getSocketUrl(): string {
   const env = (import.meta as any).env?.VITE_SOCKET_URL as string | undefined;
   if (env && String(env).trim()) return String(env).replace(/\/$/, "");
@@ -3048,7 +3066,7 @@ export default function App() {
         credentials: "include",
         body: JSON.stringify(loginBody),
       });
-      const data = (await res.json()) as LoginResult & { error?: string };
+      const data = await readJsonAuthResponse<LoginResult & { error?: string }>(res);
       if (!res.ok || data.error) throw new Error(data.error || "Login failed");
       if (data.needsEmailOtp && data.challengeId) {
         if (data.organizationId) setOrganizationId(String(data.organizationId));
@@ -3090,7 +3108,7 @@ export default function App() {
         credentials: "include",
         body: JSON.stringify({ challengeId: pendingEmailOtp.challengeId, code, organizationId: orgId }),
       });
-      const data = (await res.json()) as LoginResult & { error?: string };
+      const data = await readJsonAuthResponse<LoginResult & { error?: string }>(res);
       if (!res.ok || data.error) throw new Error(data.error || "Ошибка подтверждения");
       if (!data.accessToken || !data.viewer) throw new Error("Неверный ответ сервера");
       setPendingEmailOtp(null);
@@ -6793,7 +6811,7 @@ export default function App() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ token: passwordResetTokenFromUrl, newPassword: resetNewPassword }),
       });
-      const data = (await res.json()) as { error?: string };
+      const data = await readJsonAuthResponse<{ error?: string }>(res);
       if (!res.ok) throw new Error(data.error || "Не удалось сменить пароль");
       setPasswordResetTokenFromUrl(null);
       setResetNewPassword("");
