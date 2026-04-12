@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "installers:copy-apk": "node scripts/copy-android-apk-to-public.mjs",
     "dev": "tsx watch src/server.ts",
     "dev:worker:filescan": "tsx watch src/workers/fileScanWorker.ts",
     "build": "node scripts/build-backend.mjs",

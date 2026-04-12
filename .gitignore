@@ -14,6 +14,9 @@ web/release/
 web/public/files/*.exe
 web/public/files/*.apk
 web/public/files/*.apk.*
+public/files/*.exe
+public/files/*.apk
+public/files/*.apk.*
 
 # Секреты фронта (Vite): только локально
 web/.env
