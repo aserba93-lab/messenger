@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Дублирует drawable/ic_launcher_foreground для API 24+ -->
+<!-- Монограмма SF (безопасная зона ~66dp в центре 108dp для adaptive icon) -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
     android:height="108dp"

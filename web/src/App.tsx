@@ -1331,6 +1331,11 @@ export default function App() {
     if (groupMeshSpotlightPeerId && groupMeshUi.remotes[groupMeshSpotlightPeerId]) return groupMeshSpotlightPeerId;
     return ids[0];
   }, [groupMeshUi, groupMeshSpotlightPeerId]);
+  /** Личный видеозвонок 1:1 — два равных кадра (вы | собеседник), без «полки» и PiP. */
+  const dmVideoSplitLayout = useMemo(() => {
+    if (!groupMeshUi || groupMeshUi.audioOnly) return false;
+    return groupMeshUi.groupChatId.startsWith(DM_MESH_PREFIX);
+  }, [groupMeshUi]);
   const groupMeshJoiningRef = useRef(false);
   const meshSignalIceBufferRef = useRef<Record<string, unknown[]>>({});
   const meshOfferWhileJoiningRef = useRef<unknown[]>([]);
@@ -4853,8 +4858,8 @@ export default function App() {
     void (async () => {
       try {
         const savedChatKey = readTgLastOpenChatKey();
-        /** Только если есть сохранённый чат — не выбираем «первый попавшийся» до открытия сохранённого. */
-        const avoidAutoFirstChat = Boolean(savedChatKey);
+        /** Не автовыбираем первый чат при входе — показываем список; открываем только явно сохранённый чат. */
+        const avoidAutoFirstChat = true;
 
         if (organizationId) {
           await loadUsers();
@@ -4899,6 +4904,9 @@ export default function App() {
         }
         try {
           if (savedChatKey) await openChatFromList(savedChatKey);
+          else if (typeof window !== "undefined" && window.innerWidth < 800) {
+            setMobileSidebarOpen(true);
+          }
         } catch {
           /* ignore */
         }
@@ -7208,6 +7216,50 @@ export default function App() {
                     </div>
                   );
                 })}
+              </div>
+            ) : dmVideoSplitLayout ? (
+              <div className="groupMeshMeetingBody groupMeshMeetingBody--dmSplit">
+                <div className="groupMeshAudioLayer" aria-hidden>
+                  {groupMeshPeerIdsForUi.map((pid) => {
+                    const stream = groupMeshUi.remotes[pid];
+                    return stream ? (
+                      <GroupMeshRemoteVideo key={`ga-${pid}`} userId={pid} stream={stream} showVideo={false} playAudio />
+                    ) : null;
+                  })}
+                </div>
+                <div className="groupMeshDmSplit">
+                  <div className="groupMeshDmSplitHalf groupMeshDmSplitHalf--local">
+                    <video
+                      key={`gml-${groupMeshUi.groupChatId}-${groupMeshMediaTick}`}
+                      className="groupMeshDmSplitVideo webrtcLocal"
+                      autoPlay
+                      playsInline
+                      muted
+                      ref={(el) => {
+                        if (el && groupMeshUi.localStream) {
+                          el.srcObject = groupMeshUi.localStream;
+                          void el.play().catch(() => {});
+                        }
+                      }}
+                    />
+                    <div className="groupMeshDmSplitLabel">Вы</div>
+                  </div>
+                  <div className="groupMeshDmSplitHalf groupMeshDmSplitHalf--remote">
+                    {groupMeshPeerIdsForUi[0] && groupMeshUi.remotes[groupMeshPeerIdsForUi[0]] ? (
+                      <GroupMeshRemoteVideo
+                        userId={groupMeshPeerIdsForUi[0]}
+                        stream={groupMeshUi.remotes[groupMeshPeerIdsForUi[0]]!}
+                        playAudio={false}
+                        videoClassName="groupMeshDmSplitVideo"
+                      />
+                    ) : (
+                      <div className="groupMeshDmSplitWaiting">Ожидание собеседника…</div>
+                    )}
+                    <div className="groupMeshDmSplitLabel">
+                      {groupMeshPeerIdsForUi[0] ? displayUser(groupMeshPeerIdsForUi[0]) : "Собеседник"}
+                    </div>
+                  </div>
+                </div>
               </div>
             ) : (
               <div className="groupMeshMeetingBody">
