@@ -29,6 +29,10 @@ export const messagesExtraResolvers = {
             const viewer = requireViewer(ctx);
             return ctx.messagesService.unsaveMessage(viewer, String(args.messageId));
         },
+        transcribeVoiceMessage: async (_p, args, ctx) => {
+            const viewer = requireViewer(ctx);
+            return ctx.messagesService.transcribeVoiceMessage(viewer, String(args.messageId ?? ""));
+        },
     },
     Query: {
         threadReadStates: async (_p, args, ctx) => {

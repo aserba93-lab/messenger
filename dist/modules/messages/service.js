@@ -3,6 +3,8 @@ import { emitToChannel, emitToRoom, emitDmToMemberUsers } from "../../socket/emi
 import { prisma } from "../../db/prisma.js";
 import { env } from "../../config/env.js";
 import { NotificationsService } from "../notifications/service.js";
+import fs from "node:fs/promises";
+import path from "node:path";
 function mapReactionsForViewer(reactions, viewerId) {
     const byEmoji = new Map();
     for (const r of reactions) {
@@ -834,5 +836,61 @@ export class MessagesService {
         await this.requireCanAccessMessageThread(viewer, msg);
         const users = await this.repo.listUsersWhoReadMessage(messageId);
         return await this.mapUsersForOrg(users, viewer.organizationId);
+    }
+    /**
+     * Транскрипция голосового файла через OpenAI Whisper (ключ OPENAI_API_KEY на сервере).
+     */
+    async transcribeVoiceMessage(viewer, messageId) {
+        const id = String(messageId ?? "").trim();
+        if (!id)
+            throw new Error("messageId required");
+        const msg = await prisma.message.findUnique({
+            where: { id },
+            include: { file: true },
+        });
+        if (!msg || msg.organizationId !== viewer.organizationId)
+            throw new Error("Not found");
+        if (msg.type !== "voice")
+            throw new Error("Это не голосовое сообщение");
+        if (!msg.fileId || !msg.file)
+            throw new Error("Файл недоступен");
+        await this.requireCanAccessMessageThread(viewer, msg);
+        const av = String(msg.file.avStatus ?? "");
+        if (av !== "clean")
+            throw new Error("Дождитесь проверки файла антивирусом");
+        const url = String(msg.file.url ?? "");
+        if (!url.startsWith("/files/local/"))
+            throw new Error("Транскрипция поддерживается только для файлов в локальном хранилище сервера");
+        const diskPath = path.resolve(process.cwd(), ".local_uploads", msg.fileId);
+        let buf;
+        try {
+            buf = await fs.readFile(diskPath);
+        }
+        catch {
+            throw new Error("Не удалось прочитать аудиофайл на сервере");
+        }
+        const apiKey = String(process.env.OPENAI_API_KEY ?? "").trim();
+        if (!apiKey)
+            throw new Error("Транскрипция не настроена: задайте переменную окружения OPENAI_API_KEY на сервере (OpenAI API).");
+        const mime = String(msg.file.mimeType || "audio/webm");
+        const fname = String(msg.file.originalName || "voice.webm").replace(/[^\w.\-()+]/g, "_") || "voice.webm";
+        const form = new FormData();
+        form.append("file", new Blob([buf], { type: mime }), fname);
+        form.append("model", "whisper-1");
+        form.append("language", "ru");
+        const r = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+            method: "POST",
+            headers: { Authorization: `Bearer ${apiKey}` },
+            body: form,
+        });
+        if (!r.ok) {
+            const t = await r.text();
+            throw new Error(`Транскрипция: ${t.slice(0, 280)}`);
+        }
+        const j = (await r.json());
+        const text = typeof j.text === "string" ? j.text : "";
+        if (!text.trim())
+            throw new Error("Пустой результат распознавания");
+        return text.trim();
     }
 }

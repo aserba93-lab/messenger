@@ -173,6 +173,9 @@ export const typeDefs = /* GraphQL */ `
     grantDepartmentChatPair(userAId: ID!, userBId: ID!): Boolean!
     revokeDepartmentChatPair(userAId: ID!, userBId: ID!): Boolean!
     registerPushDevice(token: String!, platform: String!): Boolean!
+
+    """Расшифровка голосового в текст (Whisper). На сервере нужен OPENAI_API_KEY."""
+    transcribeVoiceMessage(messageId: ID!): String!
   }
 
   input RegisterOrganizationInput {

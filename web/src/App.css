@@ -1641,6 +1641,16 @@ button.authPlatformIcon:disabled {
   padding-top: 2px;
   cursor: context-menu;
 }
+.tgChatPinLine {
+  margin-top: 2px;
+  color: #a89f8f;
+  font-size: 12px;
+  line-height: 1.25;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
 .tgChatSub {
   margin-top: 2px;
   color: #9a9aa3;

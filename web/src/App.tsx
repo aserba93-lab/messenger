@@ -30,20 +30,8 @@ import "./App.css";
 const IOS_WEB_NOTIFICATION_HOME_SCREEN_HINT =
   "На iPhone/iPad в Safari во вкладке веб-уведомления обычно недоступны. Добавьте сайт на экран «Домой» (Поделиться → На экран «Домой»), откройте ярлык — там запрос разрешения возможен (iOS 16.4+). Либо проверьте в Chrome на Android.";
 
-type SpeechRecResultEvent = {
-  resultIndex: number;
-  results: ArrayLike<{ 0: { transcript: string } }>;
-};
-type SpeechRecLike = {
-  lang: string;
-  interimResults: boolean;
-  continuous: boolean;
-  start: () => void;
-  stop: () => void;
-  onresult: ((ev: SpeechRecResultEvent) => void) | null;
-  onerror: ((ev: Event) => void) | null;
-  onend: (() => void) | null;
-};
+/** Сколько сообщений запрашивать за раз (меньше — быстрее первый ответ). */
+const CHAT_MESSAGES_PAGE_LIMIT = 200;
 
 /** Актуальный access token для fetch GraphQL, если замыкание передало undefined */
 const gqlAuthTokenRef = { current: "" };
@@ -727,21 +715,38 @@ function guessMimeFromOriginalNameForUpload(name: string): string | null {
   return null;
 }
 
-/** Имя для списка чатов и заголовков — фамилия, имя, отчество (если есть); без email */
+function emailLocalPart(email: string): string {
+  const e = email.trim();
+  if (!e) return "";
+  const at = e.indexOf("@");
+  return at > 0 ? e.slice(0, at) : e;
+}
+
+/** Имя для списка чатов и заголовков — ФИО; иначе часть email до @; не показываем обрезку id как «имя». */
 function displayUserNameForSidebar(
   u: { email: string; firstName?: string | null; middleName?: string | null; lastName?: string | null } | undefined,
   fallback: string,
 ): string {
-  if (!u) {
-    if (fallback && !fallback.includes("@")) return `Контакт ${fallback.slice(0, 8)}`;
-    return "Участник";
+  if (u) {
+    const last = u.lastName != null ? String(u.lastName).trim() : "";
+    const first = u.firstName != null ? String(u.firstName).trim() : "";
+    const middle = u.middleName != null ? String(u.middleName).trim() : "";
+    const name = [last, first, middle].filter(Boolean).join(" ").trim();
+    if (name) return name;
+    const em = u.email?.trim();
+    if (em) {
+      const local = emailLocalPart(em);
+      if (local) return local;
+    }
   }
-  const last = u.lastName != null ? String(u.lastName).trim() : "";
-  const first = u.firstName != null ? String(u.firstName).trim() : "";
-  const middle = u.middleName != null ? String(u.middleName).trim() : "";
-  const name = [last, first, middle].filter(Boolean).join(" ").trim();
-  if (name) return name;
-  if (fallback && !fallback.includes("@")) return `Контакт ${fallback.slice(0, 8)}`;
+  if (fallback && fallback.includes("@")) {
+    const local = emailLocalPart(fallback);
+    if (local) return local;
+  }
+  const fb = fallback?.trim() ?? "";
+  if (fb && /^c[a-z0-9]{6,32}$/i.test(fb)) return "Собеседник";
+  if (fb && /^[a-f0-9-]{32,36}$/i.test(fb)) return "Собеседник";
+  if (fb && !fb.includes("@")) return `Контакт ${fb.slice(0, 8)}`;
   return "Участник";
 }
 
@@ -1059,10 +1064,11 @@ export default function App() {
     bulkSelectModeRef.current = bulkSelectMode;
   }, [bulkSelectMode]);
   const [bulkSelectedIds, setBulkSelectedIds] = useState<Set<string>>(new Set());
-  /** Распознанный текст для голосовых (Web Speech API), по id сообщения */
+  /** Текст транскрипции голосовых (сервер Whisper), по id сообщения */
   const [voiceTranscriptByMsgId, setVoiceTranscriptByMsgId] = useState<Record<string, string>>({});
-  const [voiceTranscribeActiveId, setVoiceTranscribeActiveId] = useState<string | null>(null);
-  const speechRecognitionRef = useRef<{ stop: () => void } | null>(null);
+  const [voiceTranscribingId, setVoiceTranscribingId] = useState<string | null>(null);
+  /** Первая строка закрепа под названием чата в списке слева */
+  const [sidebarPinLineByKey, setSidebarPinLineByKey] = useState<Record<string, string>>({});
   const [showForwardPicker, setShowForwardPicker] = useState(false);
   const [showLogs, setShowLogs] = useState(false);
   const [webrtcDiagOpen, setWebrtcDiagOpen] = useState(false);
@@ -1146,80 +1152,23 @@ export default function App() {
     [myAccountEmailForMessages],
   );
 
-  const stopVoiceTranscribe = useCallback(() => {
+  async function transcribeVoiceFromServer(messageId: string) {
+    if (!token) return;
+    setVoiceTranscribingId(messageId);
+    setChatError("");
     try {
-      speechRecognitionRef.current?.stop();
-    } catch {
-      /* ignore */
+      const data = await gql<{ transcribeVoiceMessage: string }>(
+        `mutation($id: ID!) { transcribeVoiceMessage(messageId: $id) }`,
+        { id: messageId },
+        token,
+      );
+      setVoiceTranscriptByMsgId((prev) => ({ ...prev, [messageId]: data.transcribeVoiceMessage }));
+    } catch (e: unknown) {
+      setChatError(String((e as Error)?.message ?? e));
+    } finally {
+      setVoiceTranscribingId(null);
     }
-    speechRecognitionRef.current = null;
-    setVoiceTranscribeActiveId(null);
-  }, []);
-
-  const toggleVoiceTranscribe = useCallback(
-    (messageId: string) => {
-      if (voiceTranscribeActiveId === messageId) {
-        stopVoiceTranscribe();
-        return;
-      }
-      const w = window as unknown as { SpeechRecognition?: new () => SpeechRecLike; webkitSpeechRecognition?: new () => SpeechRecLike };
-      const SR = w.SpeechRecognition || w.webkitSpeechRecognition;
-      if (!SR) {
-        setChatError(
-          "Распознавание речи недоступно в этом браузере. Попробуйте Chrome или Edge на компьютере и разрешите микрофон.",
-        );
-        return;
-      }
-      stopVoiceTranscribe();
-      const rec = new SR();
-      rec.lang = "ru-RU";
-      rec.interimResults = true;
-      rec.continuous = true;
-      let buf = "";
-      rec.onresult = (ev: SpeechRecResultEvent) => {
-        let add = "";
-        for (let i = ev.resultIndex; i < ev.results.length; i++) {
-          add += ev.results[i][0].transcript;
-        }
-        buf = (buf + add).trim();
-        setVoiceTranscriptByMsgId((prev) => ({ ...prev, [messageId]: buf }));
-      };
-      rec.onerror = () => {
-        stopVoiceTranscribe();
-      };
-      rec.onend = () => {
-        speechRecognitionRef.current = null;
-        setVoiceTranscribeActiveId(null);
-      };
-      try {
-        rec.start();
-        speechRecognitionRef.current = {
-          stop: () => {
-            try {
-              rec.stop();
-            } catch {
-              /* ignore */
-            }
-          },
-        };
-        setVoiceTranscribeActiveId(messageId);
-        setChatError("");
-      } catch {
-        setChatError("Не удалось запустить распознавание. Разрешите доступ к микрофону.");
-      }
-    },
-    [voiceTranscribeActiveId, stopVoiceTranscribe],
-  );
-
-  useEffect(() => {
-    return () => {
-      try {
-        speechRecognitionRef.current?.stop();
-      } catch {
-        /* ignore */
-      }
-    };
-  }, []);
+  }
 
   useEffect(() => {
     modeRef.current = mode;
@@ -3187,6 +3136,14 @@ export default function App() {
           token,
         );
         setHeaderPinnedMessages(data.pinnedMessages);
+        const pin0 = data.pinnedMessages[0];
+        setSidebarPinLineByKey((prev) => {
+          const next = { ...prev };
+          const k = chatKeyFor("c", activeChannelId);
+          if (pin0) next[k] = pinnedMessageChipLabel(pin0);
+          else delete next[k];
+          return next;
+        });
       } else if (mode === "groups" && activeGroupChatId) {
         const data = await gql<{ pinnedMessages: Message[] }>(
           `query($groupChatId: ID!, $limit: Int!) {
@@ -3196,6 +3153,14 @@ export default function App() {
           token,
         );
         setHeaderPinnedMessages(data.pinnedMessages);
+        const pin0 = data.pinnedMessages[0];
+        setSidebarPinLineByKey((prev) => {
+          const next = { ...prev };
+          const k = chatKeyFor("g", activeGroupChatId);
+          if (pin0) next[k] = pinnedMessageChipLabel(pin0);
+          else delete next[k];
+          return next;
+        });
       } else if (mode === "dms" && activeDirectChatId) {
         const data = await gql<{ pinnedMessages: Message[] }>(
           `query($directChatId: ID!, $limit: Int!) {
@@ -3205,6 +3170,14 @@ export default function App() {
           token,
         );
         setHeaderPinnedMessages(data.pinnedMessages);
+        const pin0 = data.pinnedMessages[0];
+        setSidebarPinLineByKey((prev) => {
+          const next = { ...prev };
+          const k = chatKeyFor("d", activeDirectChatId);
+          if (pin0) next[k] = pinnedMessageChipLabel(pin0);
+          else delete next[k];
+          return next;
+        });
       } else {
         setHeaderPinnedMessages([]);
       }
@@ -3216,6 +3189,69 @@ export default function App() {
   useEffect(() => {
     void refreshHeaderPinnedMessages();
   }, [refreshHeaderPinnedMessages]);
+
+  /** Закреп под названием чата в списке: подгружаем первый закреп для видимых чатов (отложенно). */
+  useEffect(() => {
+    if (!token) return;
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        const acc: Record<string, string> = {};
+        const tasks: Promise<void>[] = [];
+        const addTask = (key: string, run: () => Promise<Message | undefined>) => {
+          tasks.push(
+            (async () => {
+              try {
+                const pm = await run();
+                if (pm) acc[key] = pinnedMessageChipLabel(pm);
+              } catch {
+                /* ignore */
+              }
+            })(),
+          );
+        };
+        for (const d of directChats.slice(0, 16)) {
+          addTask(chatKeyFor("d", d.id), async () => {
+            const data = await gql<{ pinnedMessages: Message[] }>(
+              `query($directChatId: ID!, $limit: Int!) {
+                pinnedMessages(directChatId: $directChatId, limit: $limit) { ${GQL_PINNED_MESSAGE_FIELDS} }
+              }`,
+              { directChatId: d.id, limit: 1 },
+              token,
+            );
+            return data.pinnedMessages[0];
+          });
+        }
+        for (const g of groupChats.slice(0, 12)) {
+          addTask(chatKeyFor("g", g.id), async () => {
+            const data = await gql<{ pinnedMessages: Message[] }>(
+              `query($groupChatId: ID!, $limit: Int!) {
+                pinnedMessages(groupChatId: $groupChatId, limit: $limit) { ${GQL_PINNED_MESSAGE_FIELDS} }
+              }`,
+              { groupChatId: g.id, limit: 1 },
+              token,
+            );
+            return data.pinnedMessages[0];
+          });
+        }
+        for (const c of channels.slice(0, 12)) {
+          addTask(chatKeyFor("c", c.id), async () => {
+            const data = await gql<{ pinnedMessages: Message[] }>(
+              `query($channelId: ID!, $limit: Int!) {
+                pinnedMessages(channelId: $channelId, limit: $limit) { ${GQL_PINNED_MESSAGE_FIELDS} }
+              }`,
+              { channelId: c.id, limit: 1 },
+              token,
+            );
+            return data.pinnedMessages[0];
+          });
+        }
+        await Promise.all(tasks);
+        if (Object.keys(acc).length)
+          setSidebarPinLineByKey((prev) => ({ ...prev, ...acc }));
+      })();
+    }, 600);
+    return () => window.clearTimeout(timer);
+  }, [token, directChats, groupChats, channels]);
 
   async function loadSavedMessages() {
     if (!token) return;
@@ -5911,6 +5947,11 @@ export default function App() {
                 </div>
               </div>
             </div>
+            {sidebarPinLineByKey[chatKeyFor("d", d.id)] ? (
+              <div className="tgChatPinLine" title="Закреплённое сообщение">
+                📌 {sidebarPinLineByKey[chatKeyFor("d", d.id)]}
+              </div>
+            ) : null}
             <div className="tgChatSub">
               {isMuted(chatKeyFor("d", d.id)) ? "🔕 " : ""}
               {chatPreviewByKey[chatKeyFor("d", d.id)]?.text?.trim() || "Нет сообщений"}
@@ -5980,6 +6021,11 @@ export default function App() {
                 </div>
               </div>
             </div>
+            {sidebarPinLineByKey[chatKeyFor("g", g.id)] ? (
+              <div className="tgChatPinLine" title="Закреплённое сообщение">
+                📌 {sidebarPinLineByKey[chatKeyFor("g", g.id)]}
+              </div>
+            ) : null}
             <div className="tgChatSub">
               {isMuted(chatKeyFor("g", g.id)) ? "🔕 " : ""}
               {chatPreviewByKey[chatKeyFor("g", g.id)]?.text?.trim() ||
@@ -6049,6 +6095,11 @@ export default function App() {
               </div>
             </div>
           </div>
+          {sidebarPinLineByKey[chatKeyFor("c", c.id)] ? (
+            <div className="tgChatPinLine" title="Закреплённое сообщение">
+              📌 {sidebarPinLineByKey[chatKeyFor("c", c.id)]}
+            </div>
+          ) : null}
           <div className="tgChatSub">
             {isMuted(chatKeyFor("c", c.id)) ? "🔕 " : ""}
             {chatPreviewByKey[chatKeyFor("c", c.id)]?.text?.trim() || `Канал · ${c.type}`}
@@ -6077,7 +6128,7 @@ export default function App() {
           items { id content createdAt editedAt isDeleted type parentMessageId author { email firstName middleName lastName } reactions { emoji count viewerHasReacted } file { id originalName mimeType size downloadUrl avStatus blockedReason } }
         }
       }`,
-      { channelId, limit: 50 },
+      { channelId, limit: CHAT_MESSAGES_PAGE_LIMIT },
       token,
     );
     if (gen !== messagesLoadGenRef.current) return;
@@ -6087,7 +6138,7 @@ export default function App() {
     const p = previewForMessages(data.messages.items);
     setChatPreviewByKey((prev) => ({ ...prev, [chatKeyFor("c", channelId)]: p }));
     socket?.emit("channel:join", { channelId });
-    await mergeThreadReadStates("c", channelId);
+    void mergeThreadReadStates("c", channelId);
     if (gen !== messagesLoadGenRef.current) return;
     scrollMessagesToBottom();
   }
@@ -6110,7 +6161,7 @@ export default function App() {
           id content createdAt editedAt isDeleted type parentMessageId author { email firstName middleName lastName } reactions { emoji count viewerHasReacted } file { id originalName mimeType size downloadUrl avStatus blockedReason }
         }
       }`,
-      { groupChatId, limit: 500 },
+      { groupChatId, limit: CHAT_MESSAGES_PAGE_LIMIT },
       token,
     );
     if (gen !== messagesLoadGenRef.current) return;
@@ -6120,7 +6171,7 @@ export default function App() {
     const p = previewForMessages(data.groupChatMessages);
     setChatPreviewByKey((prev) => ({ ...prev, [chatKeyFor("g", groupChatId)]: p }));
     socket?.emit("group:join", { groupChatId });
-    await mergeThreadReadStates("g", groupChatId);
+    void mergeThreadReadStates("g", groupChatId);
     if (gen !== messagesLoadGenRef.current) return;
     scrollMessagesToBottom();
   }
@@ -6152,7 +6203,7 @@ export default function App() {
           file { id originalName mimeType size downloadUrl avStatus blockedReason }
         }
       }`,
-      { directChatId, limit: 500 },
+      { directChatId, limit: CHAT_MESSAGES_PAGE_LIMIT },
       token,
     );
     const mapped = data.directChatMessages.map((m) => ({
@@ -6178,7 +6229,7 @@ export default function App() {
     const p = previewForMessages(mapped);
     setChatPreviewByKey((prev) => ({ ...prev, [chatKeyFor("d", directChatId)]: p }));
     socket?.emit("dm:join", { directChatId });
-    await mergeThreadReadStates("d", directChatId);
+    void mergeThreadReadStates("d", directChatId);
     if (gen !== messagesLoadGenRef.current) return;
     scrollMessagesToBottom();
   }
@@ -9444,14 +9495,15 @@ export default function App() {
                             <div className="voiceMsgSideActions">
                               <button
                                 type="button"
-                                className={`voiceToTextBtn ${voiceTranscribeActiveId === m.id ? "voiceToTextBtn--on" : ""}`}
-                                title="Распознавание с микрофона (Chrome/Edge). Нажмите и говорите — текст появится ниже."
+                                className={`voiceToTextBtn ${voiceTranscribingId === m.id ? "voiceToTextBtn--on" : ""}`}
+                                title="Расшифровать голосовое в текст (сервер: Whisper, нужен OPENAI_API_KEY)"
+                                disabled={voiceTranscribingId === m.id}
                                 onClick={(e) => {
                                   e.stopPropagation();
-                                  toggleVoiceTranscribe(m.id);
+                                  void transcribeVoiceFromServer(m.id);
                                 }}
                               >
-                                {voiceTranscribeActiveId === m.id ? "Стоп" : "В текст"}
+                                {voiceTranscribingId === m.id ? "…" : "В текст"}
                               </button>
                               <a
                                 className="fileDownloadIconBtn voiceMsgDownloadBtn"
@@ -9476,9 +9528,6 @@ export default function App() {
                           </div>
                           {voiceTranscriptByMsgId[m.id] ? (
                             <div className="voiceMsgTranscript">{voiceTranscriptByMsgId[m.id]}</div>
-                          ) : null}
-                          {voiceTranscribeActiveId === m.id ? (
-                            <p className="voiceMsgTranscriptHint">Говорите в микрофон — текст появится выше.</p>
                           ) : null}
                         </div>
                       ) : looksLikeImageAttachment(attachmentOriginalNameHint(m), m.file.mimeType) ? (
