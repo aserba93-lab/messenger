@@ -99,10 +99,9 @@ function windowIconPath() {
 
 function messengerChromeColors(theme) {
   if (theme === "light") {
-    return { bg: "#d8dce8", border: "#8b6914" };
+    return { bg: "#d8dce8", border: "#ffffff" };
   }
-  /** Как --tg-bg-app в тёмной теме (серо-коричневая палитра) */
-  return { bg: "#0c0a09", border: "#3d3428" };
+  return { bg: "#0c0a09", border: "#000000" };
 }
 
 function applyWindowChrome(theme) {

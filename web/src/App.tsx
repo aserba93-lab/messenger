@@ -26,6 +26,25 @@ import {
 } from "./tgIcons";
 import "./App.css";
 
+/** Подсказка после неудачного включения push на iPhone/iPad (Safari во вкладке). */
+const IOS_WEB_NOTIFICATION_HOME_SCREEN_HINT =
+  "На iPhone/iPad в Safari во вкладке веб-уведомления обычно недоступны. Добавьте сайт на экран «Домой» (Поделиться → На экран «Домой»), откройте ярлык — там запрос разрешения возможен (iOS 16.4+). Либо проверьте в Chrome на Android.";
+
+type SpeechRecResultEvent = {
+  resultIndex: number;
+  results: ArrayLike<{ 0: { transcript: string } }>;
+};
+type SpeechRecLike = {
+  lang: string;
+  interimResults: boolean;
+  continuous: boolean;
+  start: () => void;
+  stop: () => void;
+  onresult: ((ev: SpeechRecResultEvent) => void) | null;
+  onerror: ((ev: Event) => void) | null;
+  onend: (() => void) | null;
+};
+
 /** Актуальный access token для fetch GraphQL, если замыкание передало undefined */
 const gqlAuthTokenRef = { current: "" };
 
@@ -1033,8 +1052,17 @@ export default function App() {
   const [showPins, setShowPins] = useState(false);
   /** Закрепы текущего чата — полоска под шапкой */
   const [headerPinnedMessages, setHeaderPinnedMessages] = useState<Message[]>([]);
-  const [forwardSelecting, setForwardSelecting] = useState(false);
-  const [forwardSelectedIds, setForwardSelectedIds] = useState<Set<string>>(new Set());
+  /** null — обычный режим; forward — выбор для пересылки; delete — выбор своих сообщений для удаления */
+  const [bulkSelectMode, setBulkSelectMode] = useState<null | "forward" | "delete">(null);
+  const bulkSelectModeRef = useRef<null | "forward" | "delete">(null);
+  useEffect(() => {
+    bulkSelectModeRef.current = bulkSelectMode;
+  }, [bulkSelectMode]);
+  const [bulkSelectedIds, setBulkSelectedIds] = useState<Set<string>>(new Set());
+  /** Распознанный текст для голосовых (Web Speech API), по id сообщения */
+  const [voiceTranscriptByMsgId, setVoiceTranscriptByMsgId] = useState<Record<string, string>>({});
+  const [voiceTranscribeActiveId, setVoiceTranscribeActiveId] = useState<string | null>(null);
+  const speechRecognitionRef = useRef<{ stop: () => void } | null>(null);
   const [showForwardPicker, setShowForwardPicker] = useState(false);
   const [showLogs, setShowLogs] = useState(false);
   const [webrtcDiagOpen, setWebrtcDiagOpen] = useState(false);
@@ -1117,6 +1145,82 @@ export default function App() {
       String(email).trim().toLowerCase() === myAccountEmailForMessages.trim().toLowerCase(),
     [myAccountEmailForMessages],
   );
+
+  const stopVoiceTranscribe = useCallback(() => {
+    try {
+      speechRecognitionRef.current?.stop();
+    } catch {
+      /* ignore */
+    }
+    speechRecognitionRef.current = null;
+    setVoiceTranscribeActiveId(null);
+  }, []);
+
+  const toggleVoiceTranscribe = useCallback(
+    (messageId: string) => {
+      if (voiceTranscribeActiveId === messageId) {
+        stopVoiceTranscribe();
+        return;
+      }
+      const w = window as unknown as { SpeechRecognition?: new () => SpeechRecLike; webkitSpeechRecognition?: new () => SpeechRecLike };
+      const SR = w.SpeechRecognition || w.webkitSpeechRecognition;
+      if (!SR) {
+        setChatError(
+          "Распознавание речи недоступно в этом браузере. Попробуйте Chrome или Edge на компьютере и разрешите микрофон.",
+        );
+        return;
+      }
+      stopVoiceTranscribe();
+      const rec = new SR();
+      rec.lang = "ru-RU";
+      rec.interimResults = true;
+      rec.continuous = true;
+      let buf = "";
+      rec.onresult = (ev: SpeechRecResultEvent) => {
+        let add = "";
+        for (let i = ev.resultIndex; i < ev.results.length; i++) {
+          add += ev.results[i][0].transcript;
+        }
+        buf = (buf + add).trim();
+        setVoiceTranscriptByMsgId((prev) => ({ ...prev, [messageId]: buf }));
+      };
+      rec.onerror = () => {
+        stopVoiceTranscribe();
+      };
+      rec.onend = () => {
+        speechRecognitionRef.current = null;
+        setVoiceTranscribeActiveId(null);
+      };
+      try {
+        rec.start();
+        speechRecognitionRef.current = {
+          stop: () => {
+            try {
+              rec.stop();
+            } catch {
+              /* ignore */
+            }
+          },
+        };
+        setVoiceTranscribeActiveId(messageId);
+        setChatError("");
+      } catch {
+        setChatError("Не удалось запустить распознавание. Разрешите доступ к микрофону.");
+      }
+    },
+    [voiceTranscribeActiveId, stopVoiceTranscribe],
+  );
+
+  useEffect(() => {
+    return () => {
+      try {
+        speechRecognitionRef.current?.stop();
+      } catch {
+        /* ignore */
+      }
+    };
+  }, []);
+
   useEffect(() => {
     modeRef.current = mode;
     activeChannelIdRef.current = activeChannelId;
@@ -1230,7 +1334,7 @@ export default function App() {
     if (typeof Notification === "undefined") {
       const ua = navigator.userAgent || "";
       if (/iPhone|iPad|iPod/i.test(ua)) {
-        return "На iPhone/iPad в Safari во вкладке веб-уведомления обычно недоступны. Добавьте сайт на экран «Домой» (Поделиться → На экран «Домой»), откройте ярлык — там запрос разрешения возможен (iOS 16.4+). Либо проверьте в Chrome на Android.";
+        return IOS_WEB_NOTIFICATION_HOME_SCREEN_HINT;
       }
       return "Этот браузер не отдаёт API уведомлений для сайта. Попробуйте Chrome на Android или другой браузер.";
     }
@@ -2480,16 +2584,16 @@ export default function App() {
   }, [socket, mode, activeChannelId, activeGroupChatId, activeDirectChatId]);
 
   useEffect(() => {
-    if (!forwardSelecting) return;
+    if (!bulkSelectMode) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         e.preventDefault();
-        cancelForwardSelect();
+        cancelBulkSelect();
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [forwardSelecting]);
+  }, [bulkSelectMode]);
 
   useEffect(() => {
     if (!chatMenu) return;
@@ -3186,34 +3290,41 @@ export default function App() {
     void refreshHeaderPinnedMessages();
   }
 
-  function startForwardSelect(firstId?: string) {
-    setForwardSelecting(true);
+  function startBulkSelect(mode: "forward" | "delete", firstId?: string) {
+    setBulkSelectMode(mode);
     setShowForwardPicker(false);
-    setForwardSelectedIds(() => {
+    setBulkSelectedIds(() => {
       const s = new Set<string>();
       if (firstId) s.add(firstId);
       return s;
     });
   }
 
-  function toggleForwardSelected(messageId: string) {
-    setForwardSelectedIds((prev) => {
+  function toggleBulkSelected(messageId: string) {
+    setBulkSelectedIds((prev) => {
+      const mode = bulkSelectModeRef.current;
       const next = new Set(prev);
       if (next.has(messageId)) next.delete(messageId);
-      else next.add(messageId);
+      else {
+        if (mode === "delete") {
+          const mm = messagesRef.current.find((x) => x.id === messageId);
+          if (!mm || !isMyMessageEmail(mm.author?.email)) return prev;
+        }
+        next.add(messageId);
+      }
       return next;
     });
   }
 
-  function cancelForwardSelect() {
-    setForwardSelecting(false);
+  function cancelBulkSelect() {
+    setBulkSelectMode(null);
     setShowForwardPicker(false);
-    setForwardSelectedIds(new Set());
+    setBulkSelectedIds(new Set());
   }
 
   async function forwardSelectedTo(target: { channelId?: string; groupChatId?: string; directChatId?: string }) {
     if (!token) return;
-    const ids = Array.from(forwardSelectedIds);
+    const ids = Array.from(bulkSelectedIds);
     if (!ids.length) throw new Error("Нечего пересылать");
     const hideAuthor = window.confirm("Скрыть автора при пересылке? (hideAuthor=true)");
     await gql<{ forwardMessages: boolean }>(
@@ -3222,7 +3333,7 @@ export default function App() {
       token,
     );
     pushLog(`Forward ok: ${ids.length}`);
-    cancelForwardSelect();
+    cancelBulkSelect();
   }
 
   async function refreshSavedIds() {
@@ -3380,7 +3491,7 @@ export default function App() {
     setTypingUserIds([]);
     setShowSaved(false);
     setShowPins(false);
-    cancelForwardSelect();
+    cancelBulkSelect();
     setShowLogs(false);
     pushLog("Выход выполнен.");
   }
@@ -6394,9 +6505,9 @@ export default function App() {
     }
   }
 
-  async function deleteMessageInChat(messageId: string) {
+  async function deleteMessageInChat(messageId: string, skipConfirm?: boolean) {
     if (!token) return;
-    if (!confirm("Удалить сообщение?")) return;
+    if (!skipConfirm && !confirm("Удалить сообщение?")) return;
     if (mode === "channels") {
       await gql<{ deleteMessage: boolean }>(`mutation($input: DeleteMessageInput!) { deleteMessage(input: $input) }`, { input: { messageId } }, token);
       setMessages((prev) => prev.map((x) => (x.id === messageId ? { ...x, content: "", type: x.type, _localError: undefined } : x)));
@@ -6415,6 +6526,28 @@ export default function App() {
       );
       setMessages((prev) => prev.map((x) => (x.id === messageId ? { ...x, content: "" } : x)));
     }
+  }
+
+  async function deleteSelectedMessagesBulk() {
+    if (!token || bulkSelectMode !== "delete") return;
+    const ids = Array.from(bulkSelectedIds).filter((id) => {
+      const mm = messages.find((x) => x.id === id);
+      return mm && isMyMessageEmail(mm.author?.email);
+    });
+    if (!ids.length) {
+      setChatError("Нет выбранных своих сообщений для удаления.");
+      return;
+    }
+    if (!window.confirm(`Удалить выбранные сообщения (${ids.length})?`)) return;
+    for (const id of ids) {
+      try {
+        await deleteMessageInChat(id, true);
+      } catch (e: unknown) {
+        setChatError(String((e as Error)?.message ?? e));
+        break;
+      }
+    }
+    cancelBulkSelect();
   }
 
   async function uploadAndSend(kind: "file" | "voice", blob: Blob, originalName?: string) {
@@ -7006,7 +7139,9 @@ export default function App() {
   async function resolveClientDownloadUrl(kind: "windows" | "android"): Promise<string | undefined> {
     if (clientDownloadsJsonRef.current === undefined) {
       try {
-        const r = await fetch("/client-downloads.json", { cache: "no-store" });
+        const base = import.meta.env.BASE_URL || "/";
+        const jsonUrl = base.endsWith("/") ? `${base}client-downloads.json` : `${base}/client-downloads.json`;
+        const r = await fetch(jsonUrl, { cache: "no-store" });
         if (r.ok) {
           try {
             clientDownloadsJsonRef.current = await r.json();
@@ -7910,25 +8045,40 @@ export default function App() {
               <div className="moreMenuBody">
                 {token ? (
                   <div className="moreMenuProfileCard">
-                    <div
-                      className={`moreMenuProfileAvatar ${profileAvatarUrl ? "moreMenuProfileAvatar--img" : ""}`}
-                      role={profileAvatarUrl ? "button" : undefined}
-                      tabIndex={profileAvatarUrl ? 0 : undefined}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        if (!profileAvatarUrl) return;
-                        void openMediaInNewPage(String(profileAvatarUrl));
-                      }}
-                      onKeyDown={(e) => {
-                        if (!profileAvatarUrl) return;
-                        if (e.key === "Enter" || e.key === " ") {
-                          e.preventDefault();
+                    <div className="moreMenuProfileAvatarWrap">
+                      <div
+                        className={`moreMenuProfileAvatar ${profileAvatarUrl ? "moreMenuProfileAvatar--img" : ""}`}
+                        role={profileAvatarUrl ? "button" : undefined}
+                        tabIndex={profileAvatarUrl ? 0 : undefined}
+                        onClick={(e) => {
                           e.stopPropagation();
+                          if (!profileAvatarUrl) return;
                           void openMediaInNewPage(String(profileAvatarUrl));
-                        }
-                      }}
-                    >
-                      {profileAvatarUrl ? <img src={profileAvatarUrl} alt="" draggable={false} /> : <span>{initials(myProfileEmail || loginIdentifier)}</span>}
+                        }}
+                        onKeyDown={(e) => {
+                          if (!profileAvatarUrl) return;
+                          if (e.key === "Enter" || e.key === " ") {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            void openMediaInNewPage(String(profileAvatarUrl));
+                          }
+                        }}
+                      >
+                        {profileAvatarUrl ? <img src={profileAvatarUrl} alt="" draggable={false} /> : <span>{initials(myProfileEmail || loginIdentifier)}</span>}
+                      </div>
+                      <button
+                        type="button"
+                        className="moreMenuAvatarEditBtn"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setShowUserCabinet(true);
+                          setProfileMsg("");
+                          void loadMyProfile();
+                          setMoreMenuOpen(false);
+                        }}
+                      >
+                        Изменить
+                      </button>
                     </div>
                     <div className="moreMenuProfileText">
                       <div className="moreMenuProfileName">
@@ -7947,19 +8097,6 @@ export default function App() {
                   </div>
                 ) : null}
                 <div className="moreMenuSection">
-                  <button
-                    type="button"
-                    className="moreMenuWideBtn"
-                    onClick={() => {
-                      setShowUserCabinet(true);
-                      setProfileMsg("");
-                      void loadMyProfile();
-                      setMoreMenuOpen(false);
-                    }}
-                    disabled={!token}
-                  >
-                    Личный кабинет
-                  </button>
                   {isCompanyAdmin ? (
                     <button
                       type="button"
@@ -7990,9 +8127,12 @@ export default function App() {
                         if (!token) return;
                         if (!browserNotify) {
                           if (typeof Notification === "undefined") {
+                            const ua = typeof navigator !== "undefined" ? navigator.userAgent || "" : "";
                             setChatError(
-                              browserNotifyHint ||
-                                "В этом браузере уведомления для сайта недоступны. На iPhone — ярлык на экран «Домой»; на Android — Chrome и разрешение для сайта.",
+                              /iPhone|iPad|iPod/i.test(ua)
+                                ? IOS_WEB_NOTIFICATION_HOME_SCREEN_HINT
+                                : browserNotifyHint ||
+                                    "В этом браузере уведомления для сайта недоступны. На Android — Chrome и разрешение для сайта.",
                             );
                             pushLog("Notifications API недоступен (часто мобильный Safari во вкладке).");
                             return;
@@ -8007,8 +8147,11 @@ export default function App() {
                           if (Notification.permission === "default") {
                             const r = await Notification.requestPermission();
                             if (r !== "granted") {
+                              const ua = typeof navigator !== "undefined" ? navigator.userAgent || "" : "";
                               setChatError(
-                                "Разрешение не выдано (закрыли запрос или нажали «Блокировать»). Разрешите уведомления в настройках сайта и попробуйте снова.",
+                                /iPhone|iPad|iPod/i.test(ua)
+                                  ? IOS_WEB_NOTIFICATION_HOME_SCREEN_HINT
+                                  : "Разрешение не выдано (закрыли запрос или нажали «Блокировать»). Разрешите уведомления в настройках сайта и попробуйте снова.",
                               );
                               setBrowserNotify(false);
                               pushLog(`Notifications permission=${r}`);
@@ -8491,13 +8634,26 @@ export default function App() {
               </div>
             </div>
           ) : null}
-          {forwardSelecting ? (
+          {bulkSelectMode === "forward" ? (
             <div style={{ marginTop: 8, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-              <span style={{ opacity: 0.9, fontSize: 12 }}>Выбрано: {forwardSelectedIds.size}</span>
-              <button onClick={() => setShowForwardPicker(true)} disabled={!forwardSelectedIds.size}>
+              <span style={{ opacity: 0.9, fontSize: 12 }}>Выбрано: {bulkSelectedIds.size}</span>
+              <button type="button" onClick={() => setShowForwardPicker(true)} disabled={!bulkSelectedIds.size}>
                 Переслать →
               </button>
-              <button onClick={cancelForwardSelect}>Отмена</button>
+              <button type="button" onClick={cancelBulkSelect}>
+                Отмена
+              </button>
+            </div>
+          ) : null}
+          {bulkSelectMode === "delete" ? (
+            <div style={{ marginTop: 8, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+              <span style={{ opacity: 0.9, fontSize: 12 }}>К удалению: {bulkSelectedIds.size}</span>
+              <button type="button" className="chip" onClick={() => void deleteSelectedMessagesBulk()} disabled={!bulkSelectedIds.size}>
+                Удалить выбранные
+              </button>
+              <button type="button" onClick={cancelBulkSelect}>
+                Отмена
+              </button>
             </div>
           ) : null}
           {threadRootId ? (
@@ -9158,7 +9314,7 @@ export default function App() {
             <div
               key={m.id}
               data-message-id={m.id}
-              className={`msg ${isMyMessageEmail(m.author?.email) ? "mine" : "other"} ${showMeta ? "" : "compact"} ${forwardSelecting ? "selecting" : ""} ${forwardSelectedIds.has(m.id) ? "selected" : ""}`}
+              className={`msg ${isMyMessageEmail(m.author?.email) ? "mine" : "other"} ${showMeta ? "" : "compact"} ${bulkSelectMode ? "selecting" : ""} ${bulkSelectedIds.has(m.id) ? "selected" : ""}`}
             >
               {showDay ? (
                 <div className="daySep">
@@ -9220,8 +9376,8 @@ export default function App() {
                     suppressMsgBubbleClickRef.current = false;
                     return;
                   }
-                  if (forwardSelecting) {
-                    toggleForwardSelected(m.id);
+                  if (bulkSelectMode) {
+                    toggleBulkSelected(m.id);
                     return;
                   }
                   const el = e.target as HTMLElement;
@@ -9270,32 +9426,60 @@ export default function App() {
                       m.type === "voice" ? (
                         <div className="voiceMsgBlock" onClick={(e) => e.stopPropagation()} onPointerDown={(e) => e.stopPropagation()}>
                           <div className="voiceMsgRow">
-                            <ChatAttachmentAudio
-                              messageKey={m.id}
-                              downloadUrl={m.file.downloadUrl}
-                              token={token}
-                              className="voiceMsgAudio"
-                            />
-                            <a
-                              className="fileDownloadIconBtn"
-                              href={normalizeDownloadUrl(m.file.downloadUrl)}
-                              download={attachmentOriginalNameHint(m) || "voice.webm"}
-                              target="_blank"
-                              rel="noreferrer"
-                              title="Скачать"
-                              aria-label="Скачать"
-                              onClick={(e) => {
-                                const d = m.file?.downloadUrl;
-                                const h = normalizeDownloadUrl(d);
-                                if (token && h && isFilesAccessProxyUrl(h)) {
-                                  e.preventDefault();
-                                  void triggerBrowserDownloadFromUrl(d, token, attachmentOriginalNameHint(m) || "voice.webm");
-                                }
-                              }}
-                            >
-                              ⬇
-                            </a>
+                            <div className="voiceMsgPlayerShell">
+                              <span className="voiceMsgWave" aria-hidden>
+                                <span />
+                                <span />
+                                <span />
+                                <span />
+                                <span />
+                              </span>
+                              <ChatAttachmentAudio
+                                messageKey={m.id}
+                                downloadUrl={m.file.downloadUrl}
+                                token={token}
+                                className="voiceMsgAudio"
+                              />
+                            </div>
+                            <div className="voiceMsgSideActions">
+                              <button
+                                type="button"
+                                className={`voiceToTextBtn ${voiceTranscribeActiveId === m.id ? "voiceToTextBtn--on" : ""}`}
+                                title="Распознавание с микрофона (Chrome/Edge). Нажмите и говорите — текст появится ниже."
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  toggleVoiceTranscribe(m.id);
+                                }}
+                              >
+                                {voiceTranscribeActiveId === m.id ? "Стоп" : "В текст"}
+                              </button>
+                              <a
+                                className="fileDownloadIconBtn voiceMsgDownloadBtn"
+                                href={normalizeDownloadUrl(m.file.downloadUrl)}
+                                download={attachmentOriginalNameHint(m) || "voice.webm"}
+                                target="_blank"
+                                rel="noreferrer"
+                                title="Скачать"
+                                aria-label="Скачать"
+                                onClick={(e) => {
+                                  const d = m.file?.downloadUrl;
+                                  const h = normalizeDownloadUrl(d);
+                                  if (token && h && isFilesAccessProxyUrl(h)) {
+                                    e.preventDefault();
+                                    void triggerBrowserDownloadFromUrl(d, token, attachmentOriginalNameHint(m) || "voice.webm");
+                                  }
+                                }}
+                              >
+                                ⬇
+                              </a>
+                            </div>
                           </div>
+                          {voiceTranscriptByMsgId[m.id] ? (
+                            <div className="voiceMsgTranscript">{voiceTranscriptByMsgId[m.id]}</div>
+                          ) : null}
+                          {voiceTranscribeActiveId === m.id ? (
+                            <p className="voiceMsgTranscriptHint">Говорите в микрофон — текст появится выше.</p>
+                          ) : null}
                         </div>
                       ) : looksLikeImageAttachment(attachmentOriginalNameHint(m), m.file.mimeType) ? (
                         <div className="chatImageWrap" onClick={(e) => e.stopPropagation()} onPointerDown={(e) => e.stopPropagation()}>
@@ -9505,11 +9689,32 @@ export default function App() {
                         type="button"
                         className="msgMenuItem"
                         onClick={() => {
-                          startForwardSelect(mm.id);
+                          startBulkSelect("forward", mm.id);
                           setMsgMenu(null);
                         }}
                       >
                         Переслать
+                      </button>
+                      <button
+                        type="button"
+                        className="msgMenuItem"
+                        onClick={() => {
+                          startBulkSelect("forward");
+                          setMsgMenu(null);
+                        }}
+                      >
+                        Выбрать сообщения
+                      </button>
+                      <button
+                        type="button"
+                        className="msgMenuItem"
+                        disabled={!isMyMessageEmail(mm.author?.email)}
+                        onClick={() => {
+                          startBulkSelect("delete", isMyMessageEmail(mm.author?.email) ? mm.id : undefined);
+                          setMsgMenu(null);
+                        }}
+                      >
+                        Выбрать для удаления
                       </button>
                       <button
                         type="button"
