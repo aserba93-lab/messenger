@@ -4981,17 +4981,37 @@ export default function App() {
         deactivatedAt?: string | null;
       }[];
     };
+    const usersQueryFull = `query($organizationId: ID!) {
+      users(organizationId: $organizationId) {
+        id email avatarUrl phone firstName middleName lastName birthDate role department status lastSeen deactivatedAt
+      }
+    }`;
+    const usersQueryLegacy = `query($organizationId: ID!) {
+      users(organizationId: $organizationId) {
+        id email avatarUrl phone firstName middleName lastName birthDate role department status lastSeen
+      }
+    }`;
     try {
-      data = await gql(
-        `query($organizationId: ID!) { users(organizationId: $organizationId) { id email avatarUrl phone firstName middleName lastName birthDate role department status lastSeen deactivatedAt } }`,
-        { organizationId: orgId },
-        t,
-      );
+      data = await gql(usersQueryFull, { organizationId: orgId }, t);
     } catch (e: unknown) {
       const msg = String((e as Error)?.message ?? e);
-      setChatError(`Не удалось загрузить список сотрудников: ${msg}`);
-      pushLog(`loadUsers: ${msg}`);
-      return;
+      if (/deactivatedAt|Cannot query field/i.test(msg)) {
+        try {
+          data = await gql(usersQueryLegacy, { organizationId: orgId }, t);
+          pushLog(
+            "Список сотрудников загружен без deactivatedAt: обновите бэкенд до схемы с User.deactivatedAt для отображения блокировок.",
+          );
+        } catch (e2: unknown) {
+          const msg2 = String((e2 as Error)?.message ?? e2);
+          setChatError(`Не удалось загрузить список сотрудников: ${msg2}`);
+          pushLog(`loadUsers: ${msg2}`);
+          return;
+        }
+      } else {
+        setChatError(`Не удалось загрузить список сотрудников: ${msg}`);
+        pushLog(`loadUsers: ${msg}`);
+        return;
+      }
     }
     const socketUp = !!socketRef.current?.connected;
     setUsers((prevUsers) => {
