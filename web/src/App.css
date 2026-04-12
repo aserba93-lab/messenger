@@ -14,6 +14,8 @@
   --tg-muted: #9a928a;
   --tg-scroll-fab-bg: rgba(12, 10, 8, 0.92);
   --tg-scroll-fab-border: rgba(255, 255, 255, 0.12);
+  --tg-overlay-backdrop: rgba(8, 6, 4, 0.58);
+  --tg-modal-surface: var(--tg-bg-elevated);
 }
 
 :root[data-theme="light"] {
@@ -31,6 +33,8 @@
   --tg-muted: #4a5160;
   --tg-scroll-fab-bg: rgba(220, 224, 232, 0.96);
   --tg-scroll-fab-border: rgba(0, 0, 0, 0.14);
+  --tg-overlay-backdrop: rgba(18, 22, 32, 0.38);
+  --tg-modal-surface: var(--tg-bg-elevated);
 }
 
 /* Светлая тема: кабинеты, вкладки режимов/папок, таблицы — без «тёмных» плашек поверх светлого фона */
@@ -39,10 +43,10 @@
   background: rgba(0, 0, 0, 0.06);
 }
 :root[data-theme="light"] .companyModalBackdrop {
-  background: rgba(18, 22, 32, 0.35);
+  background: var(--tg-overlay-backdrop);
 }
 :root[data-theme="light"] .companyModal {
-  background: #f6f7fb;
+  background: var(--tg-modal-surface);
   border-color: rgba(0, 0, 0, 0.1);
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.12);
   color: var(--tg-text);
@@ -74,10 +78,10 @@
 }
 
 :root[data-theme="light"] .modalBackdrop {
-  background: rgba(20, 24, 32, 0.4);
+  background: var(--tg-overlay-backdrop);
 }
 :root[data-theme="light"] .modalPanel {
-  background: #f6f7fb;
+  background: var(--tg-modal-surface);
   border-color: rgba(0, 0, 0, 0.1);
   color: var(--tg-text);
   box-shadow: 0 12px 36px rgba(0, 0, 0, 0.12);
@@ -205,6 +209,7 @@ body.electron-app .msg.mine .bubble {
   border-radius: 12px;
   background: var(--tg-bg-elevated);
   border: 1px solid var(--tg-border-subtle);
+  color: var(--tg-text);
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.38);
   overflow: hidden;
   text-align: left;
@@ -577,7 +582,7 @@ button.authPlatformIcon:disabled {
   border: none;
   padding: 0;
   margin: 0;
-  background: rgba(0, 0, 0, 0.45);
+  background: var(--tg-overlay-backdrop);
   cursor: pointer;
 }
 
@@ -860,7 +865,7 @@ button.authPlatformIcon:disabled {
   margin: 6px 4px;
 }
 .tgPopoverItem.tgPopoverItem--active {
-  background: rgba(110, 170, 255, 0.16);
+  background: var(--tg-accent-dim);
   font-weight: 600;
 }
 :root[data-theme="light"] .tgPopoverMenu {
@@ -868,6 +873,9 @@ button.authPlatformIcon:disabled {
 }
 :root[data-theme="light"] .tgPopoverItem:hover:not(:disabled) {
   background: rgba(0, 0, 0, 0.06);
+}
+:root[data-theme="light"] .tgPopoverItem.tgPopoverItem--active {
+  background: rgba(139, 105, 20, 0.18);
 }
 :root[data-theme="light"] .tgChatTitleEditBtn:hover {
   background: rgba(0, 0, 0, 0.06);
@@ -2021,8 +2029,9 @@ button.active {
   max-width: min(300px, calc(100vw - 16px));
   padding: 8px 10px;
   border-radius: 12px;
-  background: rgba(22, 24, 32, 0.96);
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: var(--tg-modal-surface);
+  border: 1px solid var(--tg-border-subtle);
+  color: var(--tg-text);
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
 }
 .msgReactionEmojiBtn {
@@ -2969,7 +2978,7 @@ pre {
   position: fixed;
   inset: 0;
   z-index: 80;
-  background: rgba(0, 0, 0, 0.55);
+  background: var(--tg-overlay-backdrop);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2980,8 +2989,10 @@ pre {
   width: 100%;
   padding: 16px;
   border-radius: 12px;
-  background: rgba(16, 18, 28, 0.98);
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: var(--tg-modal-surface);
+  border: 1px solid var(--tg-border-subtle);
+  color: var(--tg-text);
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.35);
 }
 
 .groupCallJoinModal {
@@ -3255,10 +3266,11 @@ pre {
   bottom: 14px;
   width: min(520px, calc(100vw - 28px));
   height: min(380px, calc(100vh - 28px));
-  background: rgba(8, 12, 20, 0.92);
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: var(--tg-modal-surface);
+  border: 1px solid var(--tg-border-subtle);
+  color: var(--tg-text);
   border-radius: 14px;
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
   display: grid;
   grid-template-rows: auto 1fr;
   z-index: 50;
@@ -3274,20 +3286,22 @@ pre {
   position: fixed;
   z-index: 2147483646;
   min-width: 220px;
-  background: rgba(8, 12, 20, 0.96);
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: var(--tg-modal-surface);
+  border: 1px solid var(--tg-border-subtle);
+  color: var(--tg-text);
   border-radius: 12px;
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
   padding: 6px;
 }
 .chatMenu {
   position: fixed;
   z-index: 2147483647;
   min-width: 240px;
-  background: rgba(8, 12, 20, 0.96);
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: var(--tg-modal-surface);
+  border: 1px solid var(--tg-border-subtle);
+  color: var(--tg-text);
   border-radius: 12px;
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
   padding: 6px;
 }
 .chatMenu--wide {
@@ -3311,8 +3325,8 @@ pre {
   background: transparent;
 }
 .msgMenuItem:hover {
-  background: rgba(255, 255, 255, 0.06);
-  border-color: rgba(255, 255, 255, 0.08);
+  background: rgba(184, 149, 106, 0.12);
+  border-color: var(--tg-border-subtle);
 }
 .msgMenuItem--emph {
   font-weight: 600;
@@ -3323,7 +3337,7 @@ pre {
 }
 .msgMenuSep {
   height: 1px;
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--tg-border-subtle);
   margin: 6px 4px;
 }
 .logsHeader {
@@ -3331,7 +3345,7 @@ pre {
   justify-content: space-between;
   align-items: center;
   padding: 10px 10px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  border-bottom: 1px solid var(--tg-border-subtle);
 }
 .logsBody {
   margin: 0;
@@ -3343,7 +3357,7 @@ pre {
 .companyModalBackdrop {
   position: fixed;
   inset: 0;
-  background: rgba(4, 8, 16, 0.6);
+  background: var(--tg-overlay-backdrop);
   backdrop-filter: blur(2px);
   z-index: 70;
   display: grid;
@@ -3357,9 +3371,10 @@ pre {
   max-height: min(720px, calc(100dvh - 32px));
   overflow: auto;
   border-radius: 16px;
-  background: rgba(8, 12, 20, 0.98);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
+  background: var(--tg-modal-surface);
+  border: 1px solid var(--tg-border-subtle);
+  color: var(--tg-text);
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.45);
   padding: 14px;
   -webkit-overflow-scrolling: touch;
   display: flex;
@@ -3520,6 +3535,9 @@ pre {
   padding: 6px 10px;
   font-size: 13px;
   border-radius: 10px;
+  background: var(--tg-bg-chat);
+  border: 1px solid var(--tg-border-subtle);
+  color: var(--tg-text);
 }
 
 .userCabinetFileInput {
@@ -3839,7 +3857,7 @@ pre {
   position: fixed;
   inset: 0;
   z-index: 55;
-  background: rgba(0, 0, 0, 0.45);
+  background: var(--tg-overlay-backdrop);
   border: none;
   padding: 0;
   cursor: pointer;
@@ -4147,7 +4165,7 @@ pre {
   border: none;
   padding: 0;
   margin: 0;
-  background: rgba(0, 0, 0, 0.4);
+  background: var(--tg-overlay-backdrop);
   cursor: pointer;
 }
 

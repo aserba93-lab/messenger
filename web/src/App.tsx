@@ -1102,6 +1102,8 @@ export default function App() {
   const [wizardBusy, setWizardBusy] = useState(false);
   const [wizardError, setWizardError] = useState("");
   const [showRightPanel, setShowRightPanel] = useState(false);
+  /** Чтобы при смене чата не сбрасывать вкладку «Поиск» / «Фото» в панели сведений. */
+  const showRightPanelPrevRef = useRef(false);
   const [infoPanelSection, setInfoPanelSection] = useState<
     "about" | "search" | "photos" | "files" | "voice" | "links" | "notify"
   >("about");
@@ -1164,7 +1166,14 @@ export default function App() {
       );
       setVoiceTranscriptByMsgId((prev) => ({ ...prev, [messageId]: data.transcribeVoiceMessage }));
     } catch (e: unknown) {
-      setChatError(String((e as Error)?.message ?? e));
+      const msg = String((e as Error)?.message ?? e);
+      if (/transcribeVoiceMessage|Cannot query field/i.test(msg)) {
+        setChatError(
+          "Расшифровка голоса на сервере недоступна: обновите API до сборки с мутацией transcribeVoiceMessage и задайте OPENAI_API_KEY на бэкенде.",
+        );
+      } else {
+        setChatError(msg);
+      }
     } finally {
       setVoiceTranscribingId(null);
     }
@@ -3064,7 +3073,9 @@ export default function App() {
   }, [token, mode, activeChannelId, activeGroupChatId, activeDirectChatId]);
 
   useEffect(() => {
-    if (!showRightPanel) return;
+    const justOpened = showRightPanel && !showRightPanelPrevRef.current;
+    showRightPanelPrevRef.current = showRightPanel;
+    if (!justOpened) return;
     setInfoPanelSection(mode === "dms" ? "photos" : "about");
   }, [showRightPanel, mode]);
 
@@ -4954,7 +4965,7 @@ export default function App() {
     const t = tokenOverride ?? token;
     const orgId = orgIdOverride ?? organizationId;
     if (!t || !orgId) return;
-    const data = await gql<{
+    let data: {
       users: {
         id: string;
         email: string;
@@ -4969,11 +4980,19 @@ export default function App() {
         lastSeen?: string | null;
         deactivatedAt?: string | null;
       }[];
-    }>(
-      `query($organizationId: ID!) { users(organizationId: $organizationId) { id email avatarUrl phone firstName middleName lastName birthDate role department status lastSeen deactivatedAt } }`,
-      { organizationId: orgId },
-      t,
-    );
+    };
+    try {
+      data = await gql(
+        `query($organizationId: ID!) { users(organizationId: $organizationId) { id email avatarUrl phone firstName middleName lastName birthDate role department status lastSeen deactivatedAt } }`,
+        { organizationId: orgId },
+        t,
+      );
+    } catch (e: unknown) {
+      const msg = String((e as Error)?.message ?? e);
+      setChatError(`Не удалось загрузить список сотрудников: ${msg}`);
+      pushLog(`loadUsers: ${msg}`);
+      return;
+    }
     const socketUp = !!socketRef.current?.connected;
     setUsers((prevUsers) => {
       const prevById = new Map(prevUsers.map((u) => [u.id, u]));
@@ -5297,7 +5316,8 @@ export default function App() {
   useEffect(() => {
     if (!moreMenuOpen || !token) return;
     void loadMyProfile();
-  }, [moreMenuOpen, token]);
+    if (organizationId.trim()) void loadUsersRef.current?.();
+  }, [moreMenuOpen, token, organizationId]);
 
   useEffect(() => {
     if (!token || !isSelfNotesActiveDm) return;
@@ -7951,7 +7971,7 @@ export default function App() {
             value={chatSearch}
             onChange={(e) => setChatSearch(e.target.value)}
             ref={chatSearchRef}
-            title="Ctrl/Cmd + K"
+            title="Фильтр списка чатов. Поиск по тексту сообщений — откройте чат → кнопка «сведения» (ℹ) → вкладка «Поиск». Ctrl/Cmd+K — фокус сюда."
           />
         </div>
 

@@ -57,21 +57,23 @@ export class AuthService {
     async listUsers(params) {
         if (!params.viewer)
             throw new Error("Unauthorized");
+        const me = await prisma.organizationMember.findUnique({
+            where: {
+                organizationId_userId: { organizationId: params.viewer.organizationId, userId: params.viewer.userId },
+            },
+            select: { department: true, role: true },
+        });
+        /** Роль из БД — источник истины; JWT может отставать после смены роли. */
+        const effectiveRole = me?.role ?? params.viewer.role;
         const rows = await this.repo.listUsers({
             organizationId: params.viewer.organizationId,
             role: params.role,
             department: params.department,
             status: params.status,
-            includeDeactivated: params.viewer.role === "owner" || params.viewer.role === "admin",
+            includeDeactivated: effectiveRole === "owner" || effectiveRole === "admin",
         });
-        if (params.viewer.role !== "manager")
+        if (effectiveRole !== "manager")
             return rows;
-        const me = await prisma.organizationMember.findUnique({
-            where: {
-                organizationId_userId: { organizationId: params.viewer.organizationId, userId: params.viewer.userId },
-            },
-            select: { department: true },
-        });
         if (!me)
             return rows;
         const out = [];
